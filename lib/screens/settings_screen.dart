@@ -672,6 +672,73 @@ class _SettingsBody extends StatelessWidget {
               ),
               const SizedBox(height: 28),
 
+              // ── Eidetic Dojo ──────────────────────────────
+              _sectionHeader(context, 'Eidetic Dojo'),
+              const SizedBox(height: 8),
+              _card(
+                context,
+                child: ListTile(
+                  leading: Container(
+                    width: 36,
+                    height: 36,
+                    decoration: BoxDecoration(
+                      color: AppColors.accent.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Icon(Icons.forum_outlined,
+                        size: 18, color: AppColors.accent),
+                  ),
+                  title: Text(
+                    'Debate Arena',
+                    style: TextStyle(color: context.text, fontSize: 14),
+                  ),
+                  subtitle: Text(
+                    'Watch two AI personas debate a topic',
+                    style: TextStyle(color: context.textD, fontSize: 12),
+                  ),
+                  trailing: Icon(Icons.arrow_forward_ios_rounded,
+                      size: 14, color: context.textD),
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 4,
+                  ),
+                  onTap: () => Get.toNamed('/arena'),
+                ),
+              ),
+              const SizedBox(height: 12),
+              _card(
+                context,
+                child: ListTile(
+                  leading: Container(
+                    width: 36,
+                    height: 36,
+                    decoration: BoxDecoration(
+                      color: AppColors.custom.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Icon(Icons.psychology_rounded,
+                        size: 18, color: AppColors.custom),
+                  ),
+                  title: Text(
+                    'Introspection Dojo',
+                    style: TextStyle(color: context.text, fontSize: 14),
+                  ),
+                  subtitle: Text(
+                    'Consolidate memory into durable long-term facts',
+                    style: TextStyle(color: context.textD, fontSize: 12),
+                  ),
+                  trailing: Icon(Icons.arrow_forward_ios_rounded,
+                      size: 14, color: context.textD),
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 4,
+                  ),
+                  onTap: () => Get.toNamed('/introspection'),
+                ),
+              ),
+
+              const SizedBox(height: 28),
+
               // ── App Logs ──────────────────────────────────
               _sectionHeader(context, 'Debugging'),
               const SizedBox(height: 8),

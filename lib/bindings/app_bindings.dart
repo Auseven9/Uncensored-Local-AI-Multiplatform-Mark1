@@ -9,6 +9,11 @@ import '../services/log_service.dart';
 import '../controllers/chat_controller.dart';
 import '../controllers/model_controller.dart';
 import '../controllers/theme_controller.dart';
+import '../core/engine/inference_worker.dart';
+import '../core/memory/eidetic_memory_engine.dart';
+import '../core/memory/memory_manager.dart';
+import '../features/rooms/arena_controller.dart';
+import '../features/rooms/introspection_controller.dart';
 
 /// Initial bindings — registers all services and controllers with GetX DI.
 class AppBindings extends Bindings {
@@ -22,11 +27,24 @@ class AppBindings extends Bindings {
     Get.lazyPut(() => WakelockService(), fenix: true);
     Get.lazyPut(() => LogService(), fenix: true);
 
+    // ── Eidetic Dojo engine ──────────────────────────────────────
+    Get.lazyPut(() => InferenceWorker(), fenix: true);
+    Get.lazyPut(() => EideticMemoryEngine(), fenix: true);
+    Get.lazyPut(
+      () => MemoryManager(
+        memory: Get.find<EideticMemoryEngine>(),
+        worker: Get.find<InferenceWorker>(),
+      ),
+      fenix: true,
+    );
+
     // ── Controllers ──────────────────────────────────────────────
     Get.put(
       ThemeController(),
     ); // Put instead of lazyPut since we need theme immediately
     Get.lazyPut(() => ChatController(), fenix: true);
     Get.lazyPut(() => ModelController(), fenix: true);
+    Get.lazyPut(() => ArenaController(), fenix: true);
+    Get.lazyPut(() => IntrospectionController(), fenix: true);
   }
 }

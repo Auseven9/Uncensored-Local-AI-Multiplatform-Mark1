@@ -20,6 +20,10 @@ dependencies:
   hive_flutter: ^1.1.0             # Hive with Flutter init helpers
   hive: ^2.2.3                     # Hive core key-value + box storage
 
+  # ── Eidetic Memory (SQLite ledger) ──────────────────────────────
+  sqflite: ^2.3.0                  # SQLite ledger on Android/iOS/macOS
+  sqflite_common_ffi: ^2.3.3       # SQLite via FFI on Linux/Windows + unit tests
+
   # ── Networking / Downloads ──────────────────────────────────────
   http: ^1.2.2                     # HTTP requests + model downloading
 
