@@ -64,22 +64,42 @@ class MemoryService extends GetxService {
     _log?.info('$tag · $summary', source: 'Memory');
   }
 
-  /// RECALL: build a context block of the most relevant remembered facts for
-  /// [query]. Returns '' when nothing is relevant. Always logged as a call.
-  Future<String> remembering(String query, {int k = 6}) async {
-    List<SemanticFact> facts;
+  /// RECALL: build a context block of remembered facts to inject before the
+  /// model answers. Always logged as a call.
+  ///
+  /// Keyword hits for [query] come first, then the block is topped up with the
+  /// most recent facts. This is deliberate: keyword search cannot bridge
+  /// phrasing (a third-person fact "Alesis runs on llama.cpp" never lexically
+  /// matches "what do you remember?"), so without a top-up the model would get
+  /// no memory at all for most questions. Real relevance ranking arrives with
+  /// embeddings; until then, surfacing memory beats surfacing nothing.
+  Future<String> remembering(String query, {int k = 8}) async {
+    List<SemanticFact> hits;
+    List<SemanticFact> recent;
     try {
-      facts = await _memory.recall(query, k: k);
+      hits = await _memory.recall(query, k: k);
+      recent = await _memory.recentFacts(limit: k * 2);
     } catch (e) {
       _record(MemoryCallType.recall, 'query="${_short(query)}" → error: $e');
       return '';
     }
+
+    final seen = <String>{};
+    final merged = <SemanticFact>[];
+    for (final f in [...hits, ...recent]) {
+      final key = f.id?.toString() ?? f.dedupeHash;
+      if (seen.add(key)) merged.add(f);
+      if (merged.length >= k) break;
+    }
+
     _record(MemoryCallType.recall,
-        'query="${_short(query)}" → ${facts.length} fact(s)');
-    if (facts.isEmpty) return '';
-    final buf = StringBuffer('Relevant things you remember about this user:\n');
-    for (final f in facts) {
-      buf.writeln('- (${f.category.name}) ${f.text}');
+        'query="${_short(query)}" → keyword ${hits.length}, injected ${merged.length}');
+
+    if (merged.isEmpty) return '';
+    final buf = StringBuffer(
+        'Things you remember (your long-term memory — treat as true):\n');
+    for (final f in merged) {
+      buf.writeln('- ${f.text}');
     }
     return buf.toString().trim();
   }
