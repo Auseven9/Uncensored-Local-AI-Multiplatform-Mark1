@@ -8,6 +8,7 @@ import '../screens/api_endpoints_screen.dart';
 import '../screens/logs_screen.dart';
 import '../features/rooms/arena_screen.dart';
 import '../features/rooms/introspection_screen.dart';
+import '../features/memory/memory_panel_screen.dart';
 
 class AppRoutes {
   static const splash = '/splash';
@@ -18,6 +19,7 @@ class AppRoutes {
   static const logs = '/logs';
   static const arena = '/arena';
   static const introspection = '/introspection';
+  static const memory = '/memory';
 
   static final pages = [
     GetPage(name: splash, page: () => const SplashScreen()),
@@ -50,6 +52,11 @@ class AppRoutes {
     GetPage(
       name: introspection,
       page: () => const IntrospectionScreen(),
+      transition: Transition.rightToLeft,
+    ),
+    GetPage(
+      name: memory,
+      page: () => const MemoryPanelScreen(),
       transition: Transition.rightToLeft,
     ),
   ];

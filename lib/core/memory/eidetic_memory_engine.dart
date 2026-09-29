@@ -169,6 +169,37 @@ class EideticMemoryEngine extends GetxService {
     return _store.factCount();
   }
 
+  // ── Editing (memory panel) ──────────────────────────────────
+
+  Future<void> updateFact(int id,
+      {String? text, SemanticCategory? category, double? confidence}) async {
+    await _ensureInit();
+    await _store.updateFact(id,
+        text: text, category: category, confidence: confidence);
+  }
+
+  Future<void> deleteFact(int id) async {
+    await _ensureInit();
+    await _store.deleteFact(id);
+  }
+
+  Future<void> updateEpisodicContent(int id, String content) async {
+    await _ensureInit();
+    await _store.updateEpisodicContent(id, content);
+  }
+
+  Future<void> deleteEpisodic(int id) async {
+    await _ensureInit();
+    await _store.deleteEpisodic(id);
+    await _refreshPending();
+  }
+
+  Future<void> clearAll() async {
+    await _ensureInit();
+    await _store.clearAll();
+    await _refreshPending();
+  }
+
   Future<void> _refreshPending() async {
     episodicPending.value = await _store.pendingCount();
   }

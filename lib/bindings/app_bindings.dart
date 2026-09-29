@@ -13,8 +13,10 @@ import '../controllers/theme_controller.dart';
 import '../core/engine/inference_worker.dart';
 import '../core/memory/eidetic_memory_engine.dart';
 import '../core/memory/memory_manager.dart';
+import '../core/memory/memory_service.dart';
 import '../features/rooms/arena_controller.dart';
 import '../features/rooms/introspection_controller.dart';
+import '../features/memory/memory_panel_controller.dart';
 
 /// Initial bindings — registers all services and controllers with GetX DI.
 class AppBindings extends Bindings {
@@ -39,6 +41,13 @@ class AppBindings extends Bindings {
       ),
       fenix: true,
     );
+    Get.lazyPut(
+      () => MemoryService(
+        memory: Get.find<EideticMemoryEngine>(),
+        manager: Get.find<MemoryManager>(),
+      ),
+      fenix: true,
+    );
 
     // ── Controllers ──────────────────────────────────────────────
     Get.put(
@@ -48,5 +57,6 @@ class AppBindings extends Bindings {
     Get.lazyPut(() => ModelController(), fenix: true);
     Get.lazyPut(() => ArenaController(), fenix: true);
     Get.lazyPut(() => IntrospectionController(), fenix: true);
+    Get.lazyPut(() => MemoryPanelController(), fenix: true);
   }
 }

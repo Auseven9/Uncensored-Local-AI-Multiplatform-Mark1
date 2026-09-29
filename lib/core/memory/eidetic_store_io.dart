@@ -189,6 +189,43 @@ class SqliteEideticStore implements EideticStore {
   }
 
   @override
+  Future<void> updateFact(int id,
+      {String? text, SemanticCategory? category, double? confidence}) async {
+    final values = <String, Object?>{};
+    if (text != null) {
+      values['text'] = text;
+      values['dedupe_hash'] = stableContentHash(text);
+    }
+    if (category != null) values['category'] = category.name;
+    if (confidence != null) values['confidence'] = confidence;
+    if (values.isEmpty) return;
+    await _database
+        .update('semantic_facts', values, where: 'id = ?', whereArgs: [id]);
+  }
+
+  @override
+  Future<void> deleteFact(int id) async {
+    await _database.delete('semantic_facts', where: 'id = ?', whereArgs: [id]);
+  }
+
+  @override
+  Future<void> updateEpisodicContent(int id, String content) async {
+    await _database.update('episodic_log', {'content': content},
+        where: 'id = ?', whereArgs: [id]);
+  }
+
+  @override
+  Future<void> deleteEpisodic(int id) async {
+    await _database.delete('episodic_log', where: 'id = ?', whereArgs: [id]);
+  }
+
+  @override
+  Future<void> clearAll() async {
+    await _database.delete('episodic_log');
+    await _database.delete('semantic_facts');
+  }
+
+  @override
   Future<void> close() async {
     await _db?.close();
     _db = null;

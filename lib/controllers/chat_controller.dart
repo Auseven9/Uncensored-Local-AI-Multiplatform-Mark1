@@ -6,6 +6,7 @@ import '../models/message_model.dart';
 import '../services/llm_service.dart';
 import '../services/chat_storage_service.dart';
 import '../services/log_service.dart';
+import '../core/memory/memory_service.dart';
 
 class ChatController extends GetxController {
   final LlmService _llm = Get.find<LlmService>();
@@ -14,6 +15,14 @@ class ChatController extends GetxController {
   LogService? get _log {
     try {
       return Get.find<LogService>();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  MemoryService? get _memory {
+    try {
+      return Get.find<MemoryService>();
     } catch (_) {
       return null;
     }
@@ -112,6 +121,20 @@ class ChatController extends GetxController {
         .map((m) => m.toLlamaMessage())
         .toList();
 
+    // ── MEMORY: remembering (recall) before generating ─────────
+    final baseSystem =
+        chat.systemPrompt.isNotEmpty ? chat.systemPrompt : systemPrompt.value;
+    final recalled = await _memory?.remembering(text.trim()) ?? '';
+    final effectiveSystem =
+        recalled.isEmpty ? baseSystem : '$baseSystem\n\n$recalled';
+
+    // ── MEMORY: remember the user turn up front (survives a crash) ──
+    await _memory?.remember(
+      sessionId: chat.id,
+      role: 'user',
+      content: text.trim(),
+    );
+
     // Start generation
     isGenerating.value = true;
     streamedResponse.value = '';
@@ -126,9 +149,7 @@ class ChatController extends GetxController {
     try {
       final stream = _llm.generate(
         messages: history,
-        systemPrompt: chat.systemPrompt.isNotEmpty
-            ? chat.systemPrompt
-            : systemPrompt.value,
+        systemPrompt: effectiveSystem,
         temperature: temperature.value,
       );
 
@@ -159,6 +180,17 @@ class ChatController extends GetxController {
       chat.updatedAt = DateTime.now();
       _storage.saveChat(chat);
       chats.refresh();
+
+      // ── MEMORY: remember the assistant turn + opportunistic consolidate ──
+      final mem = _memory;
+      if (mem != null && aiMsg.content.isNotEmpty) {
+        await mem.remember(
+          sessionId: chat.id,
+          role: 'assistant',
+          content: aiMsg.content,
+        );
+        unawaited(mem.maybeConsolidate());
+      }
     }
   }
 

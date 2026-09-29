@@ -34,6 +34,17 @@ abstract class EideticStore {
   Future<List<SemanticFact>> recentFacts({int limit = 50});
   Future<int> factCount();
 
+  // ── Editing (memory panel) ──────────────────────────────────
+  /// Update a fact's fields; recomputes the dedupe hash when [text] changes.
+  Future<void> updateFact(int id,
+      {String? text, SemanticCategory? category, double? confidence});
+  Future<void> deleteFact(int id);
+  Future<void> updateEpisodicContent(int id, String content);
+  Future<void> deleteEpisodic(int id);
+
+  /// Wipe both tiers (destructive — used by the panel's "clear all").
+  Future<void> clearAll();
+
   Future<void> close();
 }
 
@@ -171,6 +182,57 @@ class InMemoryEideticStore implements EideticStore {
 
   @override
   Future<int> factCount() async => _facts.length;
+
+  @override
+  Future<void> updateFact(int id,
+      {String? text, SemanticCategory? category, double? confidence}) async {
+    final i = _facts.indexWhere((f) => f.id == id);
+    if (i < 0) return;
+    final old = _facts[i];
+    final newText = text ?? old.text;
+    _facts[i] = SemanticFact(
+      id: old.id,
+      createdUtc: old.createdUtc,
+      category: category ?? old.category,
+      text: newText,
+      sourceSessionId: old.sourceSessionId,
+      confidence: confidence ?? old.confidence,
+      dedupeHash: text == null ? old.dedupeHash : stableContentHash(newText),
+      embedding: old.embedding,
+    );
+  }
+
+  @override
+  Future<void> deleteFact(int id) async =>
+      _facts.removeWhere((f) => f.id == id);
+
+  @override
+  Future<void> updateEpisodicContent(int id, String content) async {
+    final i = _episodic.indexWhere((e) => e.id == id);
+    if (i < 0) return;
+    final e = _episodic[i];
+    _episodic[i] = EpisodicEntry(
+      id: e.id,
+      sessionId: e.sessionId,
+      timestampUtc: e.timestampUtc,
+      sequence: e.sequence,
+      kind: e.kind,
+      role: e.role,
+      content: content,
+      metadata: e.metadata,
+      consolidated: e.consolidated,
+    );
+  }
+
+  @override
+  Future<void> deleteEpisodic(int id) async =>
+      _episodic.removeWhere((e) => e.id == id);
+
+  @override
+  Future<void> clearAll() async {
+    _episodic.clear();
+    _facts.clear();
+  }
 
   @override
   Future<void> close() async {}
