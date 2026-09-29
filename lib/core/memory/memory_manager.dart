@@ -106,6 +106,9 @@ class MemoryManager {
         ],
         temperature: 0.2,
         priority: TaskPriority.backgroundIntrospection,
+        // Sampler-enforced structure: the curator can only emit a JSON object,
+        // so parsing below cannot misfire on a grammar-capable backend.
+        grammar: GbnfToolEngine.buildJsonObjectGrammar(),
       );
     } on InferenceCancelledException {
       // A higher-priority (user) task preempted us — leave the entries pending

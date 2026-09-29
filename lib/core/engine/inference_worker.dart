@@ -30,6 +30,10 @@ class InferenceTask {
   final double temperature;
   final TaskPriority priority;
 
+  /// Optional GBNF grammar. When set, the task is generated with
+  /// sampler-enforced grammar constraints via [LlmService.generateWithGrammar].
+  final String? grammar;
+
   /// Optional live-token callback, invoked on the main isolate for each
   /// cleaned chunk as it is produced (used by the Arena to stream turns).
   final void Function(String token)? onToken;
@@ -44,6 +48,7 @@ class InferenceTask {
     this.systemPrompt,
     this.temperature = 0.7,
     this.priority = TaskPriority.userInteraction,
+    this.grammar,
     this.onToken,
   });
 
@@ -101,6 +106,7 @@ class InferenceWorker extends GetxService {
     String? systemPrompt,
     double temperature = 0.7,
     TaskPriority priority = TaskPriority.userInteraction,
+    String? grammar,
     void Function(String token)? onToken,
   }) {
     return submit(InferenceTask(
@@ -109,6 +115,7 @@ class InferenceWorker extends GetxService {
       systemPrompt: systemPrompt,
       temperature: temperature,
       priority: priority,
+      grammar: grammar,
       onToken: onToken,
     ));
   }
@@ -187,11 +194,19 @@ class InferenceWorker extends GetxService {
           }
 
           final buffer = StringBuffer();
-          final stream = _llm.generate(
-            messages: task.messages,
-            systemPrompt: task.systemPrompt,
-            temperature: task.temperature,
-          );
+          final grammar = task.grammar;
+          final stream = grammar == null
+              ? _llm.generate(
+                  messages: task.messages,
+                  systemPrompt: task.systemPrompt,
+                  temperature: task.temperature,
+                )
+              : _llm.generateWithGrammar(
+                  messages: task.messages,
+                  grammar: grammar,
+                  systemPrompt: task.systemPrompt,
+                  temperature: task.temperature,
+                );
 
           await for (final chunk in stream) {
             if (task._cancelled) {

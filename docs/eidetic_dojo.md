@@ -62,7 +62,7 @@ offline-memory design.
 
 | Blueprint | What we did | Why |
 |---|---|---|
-| `llamadart` / `llamadart_native` as `path:` deps | Kept the published `llamadart: ^0.6.10` | The app already builds against pub.dev; native backends are wired via the existing `hooks: user_defines` block, not a separate package. |
+| `llamadart` / `llamadart_native` as `path:` deps | Bumped the published `llamadart` to `^0.8.24` | Still pub.dev (native backends via the existing `hooks: user_defines` block, no separate package); 0.8.x adds the grammar-constrained sampling this layer now uses. |
 | Raw FFI (`llama_init_from_file`, `native_llama_decode`) in a dedicated isolate | Priority scheduler over the existing `LlmService`/`llamadart` | `llamadart` already owns the native context off the UI isolate. A second owner via raw FFI is what *causes* the double-frees/SIGSEGVs the blueprint aimed to prevent. |
 | `llama_index:` path dependency | Not added | `Auseven9/llama_index` is the **Python** framework; it cannot be a Flutter dependency. Semantic retrieval is provided directly by the SQLite tier. |
 | `mcp_dart: ^0.1.0`, `Mutex` from `package:async` | Not added / not used | `mcp_dart` was unverifiable here and `Mutex` is not in `package:async`; the scheduler needs neither. |
@@ -70,25 +70,31 @@ offline-memory design.
 | Introspection = `Timer.periodic(5m)` running inference forever | Idle by default; scheduled mode only wakes the model when `hasPendingWork()` is true | Matches "run the model only when there's actual work"; avoids keeping the neural net hot. |
 | Per-turn writes to the vector store | Gated summarise + curate + dedupe | Prevents database poisoning. |
 
-## GBNF constrained sampling — upgrade path
+## GBNF constrained sampling (enabled)
 
-`GbnfToolEngine.buildToolCallGrammar` produces a real llama.cpp GBNF grammar,
-but grammar-*constrained sampling* needs a grammar-capable backend.
-`llamadart 0.6.x` does not expose `GenerationParams.grammar` (added in 0.7.0),
-so the compiled path relies on strict post-hoc parsing/repair instead — which
-is where most of the "no parser misfires / no crash on bad JSON" value lives.
+With `llamadart ^0.8.24`, grammar-constrained sampling is wired end-to-end:
 
-To enable live constrained sampling later:
+- `GbnfToolEngine.buildToolCallGrammar(tools)` / `buildJsonObjectGrammar()`
+  produce real llama.cpp GBNF grammars (tool names constrained to the exact
+  registered set).
+- `LlmService.generateWithGrammar(...)` passes a grammar through
+  `GenerationParams.grammar`, so the sampler can only emit conforming tokens.
+- `InferenceWorker` carries an optional `grammar` per task, and
+  `MemoryManager` uses `buildJsonObjectGrammar()` for its consolidation pass —
+  the curator can only emit a JSON object, so promotion cannot misfire on a
+  grammar-capable backend.
 
-1. Bump `llamadart` to `^0.7.0` (or newer) in `pubspec.yaml`.
-2. Add a method to `LlmService` that calls the engine's grammar-capable path,
-   e.g. `_engine.create(messages, params: GenerationParams(grammar: grammarString))`.
-3. Pass `GbnfToolEngine.buildToolCallGrammar(tools)` as that `grammarString`.
+`GbnfToolEngine.parseToolCall` still runs as defence in depth, and remains the
+sole guard on backends that cannot enforce grammars (e.g. some web/LiteRT
+paths). Grammar constraints require a grammar-capable backend; the native
+llama.cpp backends used on mobile/desktop support them, so a
+`generateWithGrammar` call may throw `LlamaUnsupportedException` on a backend
+that does not — `MemoryManager` treats that as a benign skipped pass.
 
-Semantic retrieval has a parallel upgrade: `SemanticFact.embedding` and the
-store already carry an optional vector column, so cosine ranking can replace
-keyword search once embeddings are wired (llamadart exposes embeddings from
-0.9.0).
+Semantic retrieval has a parallel upgrade still open: `SemanticFact.embedding`
+and the store already carry an optional vector column, so cosine ranking can
+replace keyword search once embeddings are wired (llamadart exposes embeddings
+from 0.9.0).
 
 ## Verification status
 

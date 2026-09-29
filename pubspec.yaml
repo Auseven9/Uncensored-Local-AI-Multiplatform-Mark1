@@ -11,7 +11,10 @@ dependencies:
     sdk: flutter
 
   # ── LLM Engine ──────────────────────────────────────────────────
-  llamadart: ^0.6.10
+  # 0.8.x adds GBNF grammar-constrained sampling (GenerationParams.grammar),
+  # used by the Eidetic tool/JSON grammar path. Pinned <0.9.0 to the API
+  # verified against this app's call sites.
+  llamadart: ^0.8.24
 
   # ── State Management ────────────────────────────────────────────
   get: ^4.7.2                      # GetX - controllers, routing, state

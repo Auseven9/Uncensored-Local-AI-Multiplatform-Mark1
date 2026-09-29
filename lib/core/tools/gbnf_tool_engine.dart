@@ -18,13 +18,12 @@ import 'dart:convert';
 ///
 /// ## On grammar-constrained sampling
 ///
-/// GBNF-constrained *sampling* requires a grammar-capable backend. The
-/// `llamadart` version this app currently pins (0.6.x) does **not** expose
-/// `GenerationParams.grammar`; that field arrived in llamadart 0.7.0. The
-/// grammar string produced here is therefore ready to hand to the sampler the
-/// moment the dependency is bumped — see `docs/eidetic_dojo.md` for the exact
-/// one-line change. Until then, [parseToolCall] enforces structure after the
-/// fact, which is where the bulk of the robustness comes from in practice.
+/// The grammar strings produced here are enforced by the sampler on
+/// grammar-capable backends (the native llama.cpp backends used on
+/// mobile/desktop). `LlmService.generateWithGrammar` passes them via
+/// `GenerationParams.grammar` (llamadart >= 0.8). [parseToolCall] still runs
+/// afterwards as defence in depth — and remains the sole guard on backends
+/// that cannot enforce grammars (e.g. some web/LiteRT paths).
 class GbnfToolEngine {
   const GbnfToolEngine._();
 
@@ -36,21 +35,30 @@ class GbnfToolEngine {
   /// When [tools] is empty the `tool` field accepts any JSON string, so the
   /// grammar still guarantees well-formed structure.
   static String buildToolCallGrammar(List<ToolSpec> tools) {
-    final String toolNameRule;
-    if (tools.isEmpty) {
-      toolNameRule = 'toolname ::= string';
-    } else {
-      final alternatives =
-          tools.map((t) => _gbnfStringLiteral(t.name)).join(' | ');
-      toolNameRule = 'toolname ::= $alternatives';
-    }
+    final toolNameRule = tools.isEmpty
+        ? 'toolname ::= string'
+        : 'toolname ::= ${tools.map((t) => _gbnfStringLiteral(t.name)).join(' | ')}';
 
-    // A conservative, self-contained JSON grammar. Kept intentionally simple:
-    // it constrains structure, not per-argument types, so it composes with any
-    // tool schema without a combinatorial blow-up in the grammar size.
+    // Constrains structure (and the tool name), not per-argument types, so it
+    // composes with any tool schema without a combinatorial blow-up.
     return '''
 root      ::= ws "{" ws "\\"tool\\"" ws ":" ws toolname ws "," ws "\\"arguments\\"" ws ":" ws object ws "}" ws
 $toolNameRule
+$_sharedJsonRules
+''';
+  }
+
+  /// Builds a GBNF grammar that accepts any single well-formed JSON object.
+  /// Used to force structured, parseable output from summary/curation passes.
+  static String buildJsonObjectGrammar() {
+    return '''
+root      ::= ws object ws
+$_sharedJsonRules
+''';
+  }
+
+  /// Shared JSON production rules (no `root` — callers prepend their own).
+  static const _sharedJsonRules = '''
 object    ::= "{" ws ( member ( ws "," ws member )* )? ws "}"
 member    ::= string ws ":" ws value
 value     ::= object | array | string | number | "true" | "false" | "null"
@@ -58,9 +66,7 @@ array     ::= "[" ws ( value ( ws "," ws value )* )? ws "]"
 string    ::= "\\"" ( [^"\\\\] | "\\\\" ["\\\\/bfnrt] | "\\\\u" hex hex hex hex )* "\\""
 number    ::= "-"? ( "0" | [1-9] [0-9]* ) ( "." [0-9]+ )? ( [eE] [-+]? [0-9]+ )?
 hex       ::= [0-9a-fA-F]
-ws        ::= [ \\t\\n\\r]*
-''';
-  }
+ws        ::= [ \\t\\n\\r]*''';
 
   /// Emits a GBNF literal that matches the JSON string `"value"` (quotes
   /// included). Any embedded quotes/backslashes in [value] are escaped.

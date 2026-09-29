@@ -386,6 +386,56 @@ class LlmService extends GetxService {
     }
   }
 
+  /// Generate a response whose tokens are constrained by a GBNF [grammar].
+  ///
+  /// The grammar is enforced by the sampler (llamadart >= 0.8), so output
+  /// structurally conforms to it — e.g. valid tool-call JSON or a single JSON
+  /// object. Requires a grammar-capable backend; the native llama.cpp backends
+  /// used on mobile/desktop support it. Tokens are streamed raw (no stop-token
+  /// scrubbing) so the structured payload is preserved for the caller to parse.
+  Stream<String> generateWithGrammar({
+    required List<Map<String, String>> messages,
+    required String grammar,
+    String? systemPrompt,
+    double temperature = 0.7,
+    String grammarRoot = 'root',
+  }) async* {
+    if (_engine == null || !isLoaded.value) {
+      throw StateError('No model loaded. Call loadModel() first.');
+    }
+    if (isGenerating.value) {
+      throw StateError('Another generation is already in progress.');
+    }
+
+    isGenerating.value = true;
+    tokensPerSecond.value = 0.0;
+    final stopwatch = Stopwatch()..start();
+    int tokenCount = 0;
+
+    try {
+      final prompt = _buildPrompt(messages, systemPrompt);
+      final params = GenerationParams(
+        temp: temperature,
+        grammar: grammar,
+        grammarRoot: grammarRoot,
+      );
+
+      await for (final token in _engine!.generate(prompt, params: params)) {
+        tokenCount++;
+        if (stopwatch.elapsedMilliseconds > 0) {
+          tokensPerSecond.value =
+              tokenCount / (stopwatch.elapsedMilliseconds / 1000);
+        }
+        yield token;
+      }
+    } finally {
+      stopwatch.stop();
+      lastGenerationTokens.value = tokenCount;
+      lastGenerationSpeed.value = tokensPerSecond.value;
+      isGenerating.value = false;
+    }
+  }
+
   Future<int> countTokens(String text) async {
     if (_engine == null || !isLoaded.value) return 0;
     try {

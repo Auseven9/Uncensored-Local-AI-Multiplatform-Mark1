@@ -16,13 +16,20 @@ void main() {
       final grammar = GbnfToolEngine.buildToolCallGrammar(tools);
       expect(grammar, contains(r'"\"get-weather\""'));
       expect(grammar, contains(r'"\"search\""'));
-      expect(grammar, contains('root ::='));
       expect(grammar, contains('toolname ::='));
+      expect(grammar, contains('arguments'));
     });
 
     test('falls back to any string when no tools are given', () {
       final grammar = GbnfToolEngine.buildToolCallGrammar(const []);
       expect(grammar, contains('toolname ::= string'));
+    });
+
+    test('buildJsonObjectGrammar accepts a single object', () {
+      final grammar = GbnfToolEngine.buildJsonObjectGrammar();
+      expect(grammar, contains('ws object ws'));
+      expect(grammar, contains('"true" | "false" | "null"'));
+      expect(grammar, isNot(contains('toolname')));
     });
   });
 
