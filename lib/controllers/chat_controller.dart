@@ -121,12 +121,24 @@ class ChatController extends GetxController {
         .map((m) => m.toLlamaMessage())
         .toList();
 
+    // ── System prompt: never send an empty one ─────────────────
+    // Falls back to the stored global (uncensored) default. Without this,
+    // switching to a chat whose systemPrompt is empty clears the persona and
+    // the model runs with no system prompt at all (sysPromptLen=0).
+    final baseSystem = chat.systemPrompt.isNotEmpty
+        ? chat.systemPrompt
+        : (systemPrompt.value.isNotEmpty
+            ? systemPrompt.value
+            : _storage.globalSystemPrompt);
+
     // ── MEMORY: remembering (recall) before generating ─────────
-    final baseSystem =
-        chat.systemPrompt.isNotEmpty ? chat.systemPrompt : systemPrompt.value;
     final recalled = await _memory?.remembering(text.trim()) ?? '';
     final effectiveSystem =
         recalled.isEmpty ? baseSystem : '$baseSystem\n\n$recalled';
+    _log?.info(
+      'sendMessage: sysPrompt=${baseSystem.length} chars, memory=${recalled.length} chars',
+      source: 'Chat',
+    );
 
     // ── MEMORY: remember the user turn up front (survives a crash) ──
     await _memory?.remember(
