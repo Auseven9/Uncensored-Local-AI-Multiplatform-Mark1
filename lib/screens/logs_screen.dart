@@ -50,12 +50,12 @@ class LogsScreen extends StatelessWidget {
                   IconButton(
                     icon: Icon(Icons.copy_rounded, size: 20, color: context.textM),
                     tooltip: 'Copy all logs',
-                    onPressed: () {
-                      final text = logService.exportAll();
-                      Clipboard.setData(ClipboardData(text: text));
+                    onPressed: () async {
+                      final text = await logService.exportPersisted();
+                      await Clipboard.setData(ClipboardData(text: text));
                       Get.snackbar(
                         'Copied',
-                        'All logs copied to clipboard. Share on Telegram or GitHub!',
+                        'Logs (incl. previous/crash session) copied to clipboard.',
                         snackPosition: SnackPosition.BOTTOM,
                         duration: const Duration(seconds: 2),
                       );
@@ -137,12 +137,12 @@ class LogsScreen extends StatelessWidget {
             child: SizedBox(
               width: double.infinity,
               child: ElevatedButton.icon(
-                onPressed: () {
-                  final text = logService.exportAll();
-                  Clipboard.setData(ClipboardData(text: text));
+                onPressed: () async {
+                  final text = await logService.exportPersisted();
+                  await Clipboard.setData(ClipboardData(text: text));
                   Get.snackbar(
                     'Logs Copied!',
-                    'Paste in Telegram or GitHub Issues to share with developers.',
+                    'Includes the previous (crash) session. Paste in GitHub Issues.',
                     snackPosition: SnackPosition.BOTTOM,
                     duration: const Duration(seconds: 3),
                   );

@@ -6,6 +6,7 @@ import '../services/chat_storage_service.dart';
 import '../services/local_api_server_service.dart';
 import '../services/wakelock_service.dart';
 import '../services/log_service.dart';
+import '../services/system_health_monitor.dart';
 import '../controllers/chat_controller.dart';
 import '../controllers/model_controller.dart';
 import '../controllers/theme_controller.dart';
@@ -26,6 +27,7 @@ class AppBindings extends Bindings {
     Get.lazyPut(() => LocalApiServerService(), fenix: true);
     Get.lazyPut(() => WakelockService(), fenix: true);
     Get.lazyPut(() => LogService(), fenix: true);
+    Get.lazyPut(() => SystemHealthMonitor(), fenix: true);
 
     // ── Eidetic Dojo engine ──────────────────────────────────────
     Get.lazyPut(() => InferenceWorker(), fenix: true);

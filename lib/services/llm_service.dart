@@ -47,6 +47,14 @@ class LlmService extends GetxService {
         .replaceAll(RegExp(r'^-|-$'), '');
   }
 
+  LogService? get _log {
+    try {
+      return Get.find<LogService>();
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Initialize the service.
   Future<LlmService> init() async {
     // Backend is created fresh per loadModel() call — no init needed here
@@ -180,7 +188,9 @@ class LlmService extends GetxService {
 
       log?.info('Backend=$parsedBackend, GPU layers=$userGpuLayers, ctx=$contextSize, threads=${Platform.numberOfProcessors > 4 ? 4 : 0}', source: 'LLM');
 
+      log?.info('invoking native engine.loadModel() …', source: 'LLM');
       await _engine!.loadModel(path, modelParams: params);
+      log?.info('native engine.loadModel() returned OK', source: 'LLM');
       progressTimer.cancel();
 
       if (_loadingCancelled) {
@@ -281,12 +291,27 @@ class LlmService extends GetxService {
     // Buffer to detect multi-token stop sequences
     String buffer = '';
 
+    _log?.info(
+      'generate: start · msgs=${messages.length} sysPromptLen=${systemPrompt?.length ?? 0} temp=$temperature model=$loadedModelFilename',
+      source: 'LLM',
+    );
+
     try {
       // Build the full prompt from messages
       final prompt = _buildPrompt(messages, systemPrompt);
+      _log?.debug('generate: prompt built · chars=${prompt.length}',
+          source: 'LLM');
+      _log?.info('generate: invoking native engine.generate() …',
+          source: 'LLM');
 
       await for (final token in _engine!.generate(prompt)) {
+        if (tokenCount == 0) {
+          _log?.info('generate: first token received', source: 'LLM');
+        }
         tokenCount++;
+        if (tokenCount % 64 == 0) {
+          _log?.debug('generate: streamed $tokenCount tokens', source: 'LLM');
+        }
         if (stopwatch.elapsedMilliseconds > 0) {
           tokensPerSecond.value =
               tokenCount / (stopwatch.elapsedMilliseconds / 1000);
@@ -336,11 +361,20 @@ class LlmService extends GetxService {
           yield cleaned;
         }
       }
+    } catch (e, st) {
+      _log?.error('generate: FAILED after $tokenCount tokens · $e',
+          source: 'LLM');
+      _log?.debug('generate: stack · $st', source: 'LLM');
+      rethrow;
     } finally {
       stopwatch.stop();
       lastGenerationTokens.value = tokenCount;
       lastGenerationSpeed.value = tokensPerSecond.value;
       isGenerating.value = false;
+      _log?.info(
+        'generate: end · tokens=$tokenCount tps=${tokensPerSecond.value.toStringAsFixed(1)}',
+        source: 'LLM',
+      );
     }
   }
 
@@ -412,6 +446,11 @@ class LlmService extends GetxService {
     final stopwatch = Stopwatch()..start();
     int tokenCount = 0;
 
+    _log?.info(
+      'generateWithGrammar: start · msgs=${messages.length} grammarLen=${grammar.length} root=$grammarRoot temp=$temperature model=$loadedModelFilename',
+      source: 'LLM',
+    );
+
     try {
       final prompt = _buildPrompt(messages, systemPrompt);
       final params = GenerationParams(
@@ -419,8 +458,17 @@ class LlmService extends GetxService {
         grammar: grammar,
         grammarRoot: grammarRoot,
       );
+      _log?.debug('generateWithGrammar: prompt built · chars=${prompt.length}',
+          source: 'LLM');
+      _log?.info(
+          'generateWithGrammar: invoking native engine.generate(grammar) …',
+          source: 'LLM');
 
       await for (final token in _engine!.generate(prompt, params: params)) {
+        if (tokenCount == 0) {
+          _log?.info('generateWithGrammar: first token received',
+              source: 'LLM');
+        }
         tokenCount++;
         if (stopwatch.elapsedMilliseconds > 0) {
           tokensPerSecond.value =
@@ -428,11 +476,21 @@ class LlmService extends GetxService {
         }
         yield token;
       }
+    } catch (e, st) {
+      _log?.error(
+          'generateWithGrammar: FAILED after $tokenCount tokens · $e',
+          source: 'LLM');
+      _log?.debug('generateWithGrammar: stack · $st', source: 'LLM');
+      rethrow;
     } finally {
       stopwatch.stop();
       lastGenerationTokens.value = tokenCount;
       lastGenerationSpeed.value = tokensPerSecond.value;
       isGenerating.value = false;
+      _log?.info(
+        'generateWithGrammar: end · tokens=$tokenCount tps=${tokensPerSecond.value.toStringAsFixed(1)}',
+        source: 'LLM',
+      );
     }
   }
 

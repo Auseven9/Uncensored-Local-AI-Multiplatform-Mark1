@@ -11,6 +11,7 @@ import '../services/wakelock_service.dart';
 import '../services/log_service.dart';
 import '../services/background_optimizer_service.dart';
 import '../core/memory/eidetic_memory_engine.dart';
+import '../services/system_health_monitor.dart';
 import '../routes/app_routes.dart';
 
 class SplashScreen extends StatefulWidget {
@@ -57,6 +58,9 @@ class _SplashScreenState extends State<SplashScreen> {
       setState(() => _status = 'Setting up background services...');
       log.info('Setting up background services...', source: 'Splash');
       await Get.find<WakelockService>().init();
+
+      // Start health monitoring + run arming checks now that services exist.
+      Get.find<SystemHealthMonitor>().start();
 
       setState(() => _status = 'Ready!');
       log.info('All services initialized successfully', source: 'Splash');

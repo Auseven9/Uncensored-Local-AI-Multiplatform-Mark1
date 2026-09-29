@@ -188,6 +188,11 @@ class InferenceWorker extends GetxService {
 
         _running = task;
         activeTaskId.value = task.id;
+        _log?.info(
+          'dispatch: ${task.id} · prio=${task.priority.name} '
+          'grammar=${task.grammar != null} queueLeft=${_queue.length}',
+          source: 'Inference',
+        );
         try {
           if (!_llm.isLoaded.value) {
             throw StateError('No model is loaded. Load a model first.');
@@ -218,11 +223,16 @@ class InferenceWorker extends GetxService {
           }
 
           if (task._cancelled) {
+            _log?.warn('cancelled: ${task.id}', source: 'Inference');
             _fail(task, InferenceCancelledException(task.id));
           } else if (!task._completer.isCompleted) {
+            _log?.info('done: ${task.id} · chars=${buffer.length}',
+                source: 'Inference');
             task._completer.complete(buffer.toString().trim());
           }
         } catch (e, st) {
+          _log?.error('task ${task.id} FAILED · $e', source: 'Inference');
+          _log?.debug('task ${task.id} stack · $st', source: 'Inference');
           _fail(task, e, st);
         } finally {
           _running = null;

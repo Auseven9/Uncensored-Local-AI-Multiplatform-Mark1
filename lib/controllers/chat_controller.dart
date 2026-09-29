@@ -5,10 +5,19 @@ import '../models/chat_model.dart';
 import '../models/message_model.dart';
 import '../services/llm_service.dart';
 import '../services/chat_storage_service.dart';
+import '../services/log_service.dart';
 
 class ChatController extends GetxController {
   final LlmService _llm = Get.find<LlmService>();
   final ChatStorageService _storage = Get.find<ChatStorageService>();
+
+  LogService? get _log {
+    try {
+      return Get.find<LogService>();
+    } catch (_) {
+      return null;
+    }
+  }
 
   final chats = <ChatModel>[].obs;
   final activeChatId = RxnString();
@@ -73,7 +82,15 @@ class ChatController extends GetxController {
   Future<void> sendMessage(String text, {String? modelFilename}) async {
     if (text.trim().isEmpty) return;
     final chat = activeChat;
-    if (chat == null) return;
+    if (chat == null) {
+      _log?.warn('sendMessage: no active chat', source: 'Chat');
+      return;
+    }
+    _log?.info(
+      'sendMessage: chat=${chat.id} userLen=${text.trim().length} '
+      'modelLoaded=${_llm.isLoaded.value} model=${_llm.loadedModelFilename}',
+      source: 'Chat',
+    );
 
     // Add user message
     final userMsg = MessageModel(role: MessageRole.user, content: text.trim());
@@ -103,6 +120,9 @@ class ChatController extends GetxController {
     chat.messages.add(aiMsg);
     chats.refresh();
 
+    _log?.info('sendMessage: history=${history.length} msgs · awaiting stream',
+        source: 'Chat');
+
     try {
       final stream = _llm.generate(
         messages: history,
@@ -118,7 +138,10 @@ class ChatController extends GetxController {
         // Throttle UI refreshes
         chats.refresh();
       }
+      _log?.info('sendMessage: stream complete · responseLen=${aiMsg.content.length}',
+          source: 'Chat');
     } catch (e) {
+      _log?.error('sendMessage: stream error · $e', source: 'Chat');
       if (aiMsg.content.isEmpty) {
         aiMsg.content = '⚠ Error: ${e.toString()}';
       }
