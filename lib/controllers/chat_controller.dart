@@ -147,7 +147,10 @@ class ChatController extends GetxController {
         source: 'Chat');
 
     try {
-      final stream = _llm.generate(
+      // Use the model's own chat template (via llamadart's create()) so it stops
+      // cleanly at its real end-of-turn instead of repeating the reply — the
+      // hand-rolled template in _buildPrompt only fits Phi-style models.
+      final stream = _llm.generateChat(
         messages: history,
         systemPrompt: effectiveSystem,
         temperature: temperature.value,

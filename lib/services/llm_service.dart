@@ -420,6 +420,36 @@ class LlmService extends GetxService {
     }
   }
 
+  /// Generate a chat reply using the MODEL'S OWN chat template (read from the
+  /// GGUF metadata by llama.cpp), instead of the hand-rolled Phi-style format in
+  /// [_buildPrompt].
+  ///
+  /// This is the correct path for real chat: [_buildPrompt] hardcodes
+  /// `<|user|>`/`<|assistant|>`/`<|end|>` for every model, so a model whose real
+  /// template differs (Gemma's `<start_of_turn>`, Llama-3's headers, …) never
+  /// sees its true end-of-turn token, doesn't stop, and repeats itself. Routing
+  /// through [generateChatCompletion] lets llama.cpp apply the model's own
+  /// template and stop cleanly for any family.
+  Stream<String> generateChat({
+    required List<Map<String, String>> messages,
+    String? systemPrompt,
+    double temperature = 0.7,
+  }) {
+    final chat = <LlamaChatMessage>[
+      if (systemPrompt != null && systemPrompt.trim().isNotEmpty)
+        LlamaChatMessage(role: 'system', content: systemPrompt),
+      for (final m in messages)
+        LlamaChatMessage(
+          role: m['role'] ?? 'user',
+          content: m['content'] ?? '',
+        ),
+    ];
+    return generateChatCompletion(
+      messages: chat,
+      params: GenerationParams(temp: temperature),
+    );
+  }
+
   /// Generate a response whose tokens are constrained by a GBNF [grammar].
   ///
   /// The grammar is enforced by the sampler (llamadart >= 0.8), so output
