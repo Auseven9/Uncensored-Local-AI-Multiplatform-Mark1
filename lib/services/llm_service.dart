@@ -449,6 +449,7 @@ class LlmService extends GetxService {
     required List<Map<String, String>> messages,
     String? systemPrompt,
     double temperature = 0.7,
+    int? maxTokens,
   }) {
     final chat = <LlamaChatMessage>[
       if (systemPrompt != null && systemPrompt.trim().isNotEmpty)
@@ -459,9 +460,14 @@ class LlmService extends GetxService {
           content: m['content'] ?? '',
         ),
     ];
+    // maxTokens is the user's adjustable output budget (gen.maxTokens). It caps
+    // reply length; the model still stops early at its own end-of-turn. Null
+    // falls back to llamadart's own default.
     return generateChatCompletion(
       messages: chat,
-      params: GenerationParams(temp: temperature),
+      params: (maxTokens != null && maxTokens > 0)
+          ? GenerationParams(temp: temperature, maxTokens: maxTokens)
+          : GenerationParams(temp: temperature),
     );
   }
 

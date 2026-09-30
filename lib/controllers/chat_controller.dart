@@ -8,6 +8,7 @@ import '../services/chat_storage_service.dart';
 import '../services/log_service.dart';
 import '../core/engine/inference_worker.dart';
 import '../core/memory/memory_service.dart';
+import '../core/params/parameters_service.dart';
 
 class ChatController extends GetxController {
   final LlmService _llm = Get.find<LlmService>();
@@ -24,6 +25,14 @@ class ChatController extends GetxController {
   MemoryService? get _memory {
     try {
       return Get.find<MemoryService>();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  ParametersService? get _params {
+    try {
+      return Get.find<ParametersService>();
     } catch (_) {
       return null;
     }
@@ -164,10 +173,16 @@ class ChatController extends GetxController {
       // Use the model's own chat template (via llamadart's create()) so it stops
       // cleanly at its real end-of-turn instead of repeating the reply — the
       // hand-rolled template in _buildPrompt only fits Phi-style models.
+      // Output budget: user-adjustable ceiling on the reply length
+      // (gen.maxTokens). Caps runaway/looping; the model still stops early at
+      // its own end-of-turn.
+      final maxTokens = _params?.getInt('gen.maxTokens');
+
       final stream = _llm.generateChat(
         messages: history,
         systemPrompt: effectiveSystem,
         temperature: temperature.value,
+        maxTokens: maxTokens,
       );
 
       await for (final token in stream) {

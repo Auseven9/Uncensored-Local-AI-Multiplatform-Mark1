@@ -36,7 +36,7 @@ const List<ParamSpec> aetherParamRegistry = [
   ParamSpec(key: 'gen.topP', label: 'Top-P', group: 'Generation', type: ParamType.doubleType, def: 0.9, min: 0.0, max: 1.0),
   ParamSpec(key: 'gen.topK', label: 'Top-K', group: 'Generation', type: ParamType.intType, def: 40, min: 0, max: 200),
   ParamSpec(key: 'gen.repeatPenalty', label: 'Repeat penalty', group: 'Generation', type: ParamType.doubleType, def: 1.1, min: 0.5, max: 2.0),
-  ParamSpec(key: 'gen.maxTokens', label: 'Max tokens', group: 'Generation', type: ParamType.intType, def: 4096, min: 64, max: 8192),
+  ParamSpec(key: 'gen.maxTokens', label: 'Output budget (max reply tokens)', group: 'Generation', type: ParamType.intType, def: 512, min: 16, max: 8192, help: 'Ceiling on a reply\'s length. The model still stops early at its own end-of-turn; this only caps runaway/looping. On slow on-device inference (~1 tok/s) output length IS the wait — lower it for short, fast replies; raise it for long-form (essays, code).'),
 
   // ── Recall (associative recall engine) ──────────────────────
   ParamSpec(key: 'recall.k', label: 'Max memories injected (k)', group: 'Recall', type: ParamType.intType, def: 8, min: 0, max: 30, help: 'Upper bound on memories injected per turn (0 disables recall).'),
