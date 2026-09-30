@@ -1,6 +1,6 @@
 # AETHER — Cognitive Runtime (Flutter port) — Canonical Build Spec
 
-Status: Phase 1 landed. This is the single reference we execute from.
+Status: Phase 2a landed (graph + spreading activation); 2b (embeddings) next. This is the single reference we execute from.
 
 AETHER is **not a new model**. It is a runtime layer wrapping an off-the-shelf
 local GGUF model (via `llamadart`, in-process) that adds persistent memory, a
@@ -52,7 +52,8 @@ Flutter/Dart app, running inference **in-process** — no Python, no Termux, no
 ## 5. Phased roadmap (each = shippable APK)
 - **Phase 0 — Baseline (DONE):** reverted forced persona; blank chats; SQLite WAL; **data-driven Parameters registry + panel** (`recall.*` and `consolidate.*` wired live); this spec.
 - **Phase 1 — Grounding + Event Log (DONE):** append-only `event_log` table (SQLite v2 migration, WAL) written through `EideticMemoryEngine.appendEvent`; every episodic write (the live chat path) and each app launch and consolidation is mirrored to it. Each event carries a `SensorAnchor`. **As-built:** the anchor is built from two independent, dependency-free clocks — wall clock + monotonic process uptime — plus a per-launch `sessionId`; their divergence (`clockSkewMs`) is the ground-truth signal that detects sleep/suspend/clock-jumps and gaps between launches. `batteryPercent`/`latitude`/`longitude` are reserved nullable fields, captured only once `ground.sensorsEnabled` is on and a sensor plugin is added — never faked. Causal `parentEventIds` are threaded in the paired `rememberTurn` path; the two-call chat path leaves them empty (events stay time/session-ordered). Visible in the Memory panel's **Events** tab; tunable via the **Event log** parameter group.
-- **Phase 2 — Epistemic Graph + spreading activation + embedding helper:** claims/edges/provenance + semantic recall.
+- **Phase 2a — Epistemic Graph + spreading activation (DONE):** `semantic_facts` upgraded into claim nodes (salience/status/supersedes) with `relation_edges` and `provenance` tables (SQLite v2→v3 migration, additive ALTER — no data loss). Consolidation now emits typed relations (supports/contradicts/causes/part_of/related) between the facts it extracts, and links each new claim to its consolidation event (provenance). Recall is now **spreading activation** (`spreading.*` params): keyword hits seed activation that flows across edges (bidirectional, α-decayed, ≤maxHops), so related claims surface even without lexical overlap. Degrades to plain keyword recall when the graph has no edges yet. Pure activation function is unit-tested; store + migration covered by FFI tests.
+- **Phase 2b — Embedding helper model (NEXT):** load a small embedding GGUF (separate engine in embedding mode — llamadart 0.8.24 exposes `BackendEmbeddings.embed`), embed claims + queries, and seed activation by cosine similarity instead of just keywords. Carries real RAM/model-management cost, so it gets its own pass.
 - **Phase 3 — Self-Schema + competence + Ebbinghaus decay.**
 - **Phase 4 — U-score + System 1/2 gating + mutation validator + convergence.**
 - **Phase 5 — Behavior Verifier + falsifiability + idle autonomous loop** (charging + idle only).

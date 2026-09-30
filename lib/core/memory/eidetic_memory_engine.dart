@@ -6,6 +6,7 @@ import '../../services/log_service.dart';
 import 'eidetic_store.dart';
 import 'event_records.dart';
 import 'memory_records.dart';
+import 'spreading_activation.dart';
 
 /// A random, per-launch session id. Groups events produced by one app run so
 /// gaps *between* runs are visible in the log.
@@ -144,6 +145,66 @@ class EideticMemoryEngine extends GetxService {
     return _store.eventCount();
   }
 
+  // ── Epistemic graph + spreading-activation recall (Phase 2) ──
+
+  Future<int> addEdge(RelationEdge edge) async {
+    await _ensureInit();
+    return _store.addEdge(edge);
+  }
+
+  Future<List<RelationEdge>> allEdges() async {
+    await _ensureInit();
+    return _store.allEdges();
+  }
+
+  Future<void> addProvenance(int factId, int eventId) async {
+    await _ensureInit();
+    await _store.addProvenance(factId, eventId);
+  }
+
+  /// Graph-aware recall: keyword hits seed a spreading-activation pass over the
+  /// relation edges, so related claims surface even when they don't lexically
+  /// match [query]. Falls back to just the keyword seeds when there are no
+  /// edges yet (early on), so it never does worse than plain keyword recall.
+  Future<List<SemanticFact>> recallByActivation(
+    String query, {
+    int k = 8,
+    double alpha = 0.85,
+    double threshold = 0.15,
+    int maxHops = 2,
+    int seedK = 10,
+  }) async {
+    await _ensureInit();
+    final seeds = await _store.searchFacts(query, limit: seedK);
+    final seedMap = <int, double>{
+      for (final f in seeds)
+        if (f.id != null) f.id!: 1.0,
+    };
+    if (seedMap.isEmpty) return const [];
+
+    final edges = await _store.allEdges();
+    final ranked = spreadActivation(
+      seeds: seedMap,
+      edges: edges,
+      alpha: alpha,
+      threshold: threshold,
+      maxHops: maxHops,
+    ).ranked();
+    if (ranked.isEmpty) return const [];
+
+    final topIds = ranked.take(k).toList();
+    final facts = await _store.factsByIds(topIds);
+    final byId = {for (final f in facts) f.id: f};
+    // Re-apply activation order (factsByIds returns arbitrary order) and drop
+    // superseded claims from what the model sees.
+    final ordered = <SemanticFact>[];
+    for (final id in topIds) {
+      final f = byId[id];
+      if (f != null && f.status != ClaimStatus.superseded) ordered.add(f);
+    }
+    return ordered;
+  }
+
   Future<void> _ensureInit() async {
     if (!_initialized) await init();
   }
@@ -222,8 +283,9 @@ class EideticMemoryEngine extends GetxService {
 
   // ── Semantic tier (long-term) ───────────────────────────────
 
-  /// Persist one durable fact. Returns false if it was deduplicated.
-  Future<bool> rememberFact(SemanticFact fact) async {
+  /// Persist one durable fact. Returns the new claim id, or null if it was
+  /// deduplicated against an existing claim.
+  Future<int?> rememberFact(SemanticFact fact) async {
     await _ensureInit();
     return _store.insertFact(fact);
   }

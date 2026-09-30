@@ -157,6 +157,54 @@ void main() {
         type: 'app_launch',
         anchor: _anchor()));
     expect(await store.eventCount(), 1);
+
+    // …and the epistemic-graph tables were created during the v1->v3 upgrade
+    // (allEdges would throw if relation_edges did not exist).
+    expect(await store.allEdges(), isEmpty);
+    final oldFactId = (await store.recentFacts(limit: 1)).first.id!;
+    final newFactId = await store.insertFact(SemanticFact(
+      createdUtc: DateTime.now().toUtc(),
+      category: SemanticCategory.fact,
+      text: 'a claim added after migration',
+    ));
+    await store.addEdge(RelationEdge(
+        fromFact: oldFactId, toFact: newFactId!, type: RelationType.supports));
+    expect((await store.allEdges()).length, 1);
+    await store.close();
+  });
+
+  test('epistemic graph: edges + provenance round-trip on a fresh v3 db',
+      () async {
+    final store = SqliteEideticStore(path: p.join(tempDir.path, 'graph.db'));
+    await store.initialize();
+
+    final a = await store.insertFact(SemanticFact(
+        createdUtc: DateTime.now().toUtc(),
+        category: SemanticCategory.fact,
+        text: 'claim A'));
+    final b = await store.insertFact(SemanticFact(
+        createdUtc: DateTime.now().toUtc(),
+        category: SemanticCategory.fact,
+        text: 'claim B'));
+    expect(a, isNotNull);
+    expect(b, isNotNull);
+
+    await store.addEdge(RelationEdge(
+        fromFact: a!, toFact: b!, type: RelationType.supports, weight: 0.9));
+    await store.addProvenance(a, 42);
+
+    final edges = await store.allEdges();
+    expect(edges.length, 1);
+    expect(edges.first.fromFact, a);
+    expect(edges.first.toFact, b);
+    expect(edges.first.type, RelationType.supports);
+    expect(edges.first.weight, closeTo(0.9, 1e-9));
+
+    final fetched = await store.factsByIds([a, b]);
+    expect(fetched.map((f) => f.id).toSet(), {a, b});
+    // New claim columns present with their defaults.
+    expect(fetched.first.status, ClaimStatus.active);
+    expect(fetched.first.salience, 0.5);
     await store.close();
   });
 }

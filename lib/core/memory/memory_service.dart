@@ -89,11 +89,24 @@ class MemoryService extends GetxService {
       return '';
     }
     final topUp = _params?.getBool('recall.topUpRecent') ?? true;
+    final alpha = _params?.getDouble('spreading.alpha') ?? 0.85;
+    final threshold = _params?.getDouble('spreading.threshold') ?? 0.15;
+    final maxHops = _params?.getInt('spreading.maxHops') ?? 2;
+    final seedK = _params?.getInt('spreading.seedK') ?? 10;
 
     List<SemanticFact> hits;
     List<SemanticFact> recent;
     try {
-      hits = await _memory.recall(query, k: kk);
+      // Graph-aware recall: keyword hits seed spreading activation, so related
+      // claims surface too. Degrades to plain keyword recall when no edges yet.
+      hits = await _memory.recallByActivation(
+        query,
+        k: kk,
+        alpha: alpha,
+        threshold: threshold,
+        maxHops: maxHops,
+        seedK: seedK,
+      );
       recent =
           topUp ? await _memory.recentFacts(limit: kk * 2) : <SemanticFact>[];
     } catch (e) {
@@ -110,7 +123,7 @@ class MemoryService extends GetxService {
     }
 
     _record(MemoryCallType.recall,
-        'query="${_short(query)}" → keyword ${hits.length}, injected ${merged.length}');
+        'query="${_short(query)}" → activation ${hits.length}, injected ${merged.length}');
 
     if (merged.isEmpty) return '';
     final buf = StringBuffer(
@@ -213,18 +226,24 @@ class MemoryService extends GetxService {
       final result = await _manager.consolidatePending();
       if (result.ran) {
         _record(MemoryCallType.consolidate,
-            'reviewed ${result.considered} · +${result.promoted} stored · ${result.deduped} dup');
+            'reviewed ${result.considered} · +${result.promoted} stored · ${result.deduped} dup · ${result.relationsAdded} links');
         if (_params?.getBool('events.enabled') ?? true) {
           try {
-            await _memory.appendEvent(
+            final eventId = await _memory.appendEvent(
               source: 'memory',
               type: 'consolidate',
               payload: {
                 'considered': result.considered,
                 'promoted': result.promoted,
                 'deduped': result.deduped,
+                'relations': result.relationsAdded,
               },
             );
+            // Provenance: link each new claim to the consolidation event it came
+            // from, which in turn links back to the episodic batch.
+            for (final factId in result.promotedFactIds) {
+              await _memory.addProvenance(factId, eventId);
+            }
           } catch (_) {}
         }
       }

@@ -59,8 +59,8 @@ class SqliteEideticStore implements EideticStore {
 
     _db = await openDatabase(
       path,
-      // v2 adds the append-only, sensor-anchored event_log table (Phase 1).
-      version: 2,
+      // v2: event_log (Phase 1). v3: epistemic-graph columns + tables (Phase 2).
+      version: 3,
       onConfigure: (db) async {
         // Write-Ahead Logging: durable, low-latency appends for the event log.
         //
@@ -86,6 +86,18 @@ class SqliteEideticStore implements EideticStore {
     if (oldVersion < 2) {
       await _createEventLog(db);
     }
+    if (oldVersion < 3) {
+      // Upgrade semantic_facts into epistemic-graph claim nodes, and add the
+      // relation/provenance tables. ADD COLUMN with a DEFAULT back-fills every
+      // existing row, so no user data is lost.
+      await db.execute(
+          "ALTER TABLE semantic_facts ADD COLUMN salience REAL NOT NULL DEFAULT 0.5");
+      await db.execute(
+          "ALTER TABLE semantic_facts ADD COLUMN status TEXT NOT NULL DEFAULT 'active'");
+      await db.execute(
+          "ALTER TABLE semantic_facts ADD COLUMN supersedes INTEGER");
+      await _createGraphTables(db);
+    }
   }
 
   /// The append-only event log (Phase 1 grounding spine). Created for fresh
@@ -109,6 +121,36 @@ class SqliteEideticStore implements EideticStore {
         'CREATE INDEX IF NOT EXISTS idx_event_session ON event_log(session_id)');
     await db.execute(
         'CREATE INDEX IF NOT EXISTS idx_event_millis ON event_log(timestamp_millis)');
+  }
+
+  /// The epistemic-graph tables (Phase 2): directed relation edges between
+  /// claims, and provenance linking a claim to the event(s) it came from.
+  /// Created for fresh installs in [_onCreate] and back-filled in [_onUpgrade].
+  Future<void> _createGraphTables(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS relation_edges (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        from_fact INTEGER NOT NULL,
+        to_fact INTEGER NOT NULL,
+        type TEXT NOT NULL,
+        weight REAL NOT NULL DEFAULT 1.0,
+        created_utc TEXT NOT NULL
+      )
+    ''');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_edge_from ON relation_edges(from_fact)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_edge_to ON relation_edges(to_fact)');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS provenance (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        fact_id INTEGER NOT NULL,
+        event_id INTEGER NOT NULL,
+        created_utc TEXT NOT NULL
+      )
+    ''');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_prov_fact ON provenance(fact_id)');
   }
 
   Future<void> _onCreate(Database db, int version) async {
@@ -140,13 +182,17 @@ class SqliteEideticStore implements EideticStore {
         source_session_id TEXT,
         confidence REAL NOT NULL DEFAULT 0.5,
         dedupe_hash TEXT NOT NULL UNIQUE,
-        embedding_json TEXT
+        embedding_json TEXT,
+        salience REAL NOT NULL DEFAULT 0.5,
+        status TEXT NOT NULL DEFAULT 'active',
+        supersedes INTEGER
       )
     ''');
     await db.execute(
         'CREATE INDEX idx_facts_category ON semantic_facts(category)');
 
     await _createEventLog(db);
+    await _createGraphTables(db);
   }
 
   @override
@@ -206,14 +252,14 @@ class SqliteEideticStore implements EideticStore {
   }
 
   @override
-  Future<bool> insertFact(SemanticFact fact) async {
+  Future<int?> insertFact(SemanticFact fact) async {
     final id = await _database.insert(
       'semantic_facts',
       fact.toRow(),
       conflictAlgorithm: ConflictAlgorithm.ignore,
     );
     // insert() returns 0 when the row was ignored due to the UNIQUE dedupe_hash.
-    return id != 0;
+    return id == 0 ? null : id;
   }
 
   @override
@@ -272,6 +318,40 @@ class SqliteEideticStore implements EideticStore {
     return (rows.first['c'] as num).toInt();
   }
 
+  // ── Epistemic graph (Phase 2) ───────────────────────────────
+
+  @override
+  Future<int> addEdge(RelationEdge edge) async {
+    return _database.insert('relation_edges', edge.toRow());
+  }
+
+  @override
+  Future<List<RelationEdge>> allEdges() async {
+    final rows = await _database.query('relation_edges');
+    return rows.map(RelationEdge.fromRow).toList();
+  }
+
+  @override
+  Future<void> addProvenance(int factId, int eventId) async {
+    await _database.insert('provenance', {
+      'fact_id': factId,
+      'event_id': eventId,
+      'created_utc': DateTime.now().toUtc().toIso8601String(),
+    });
+  }
+
+  @override
+  Future<List<SemanticFact>> factsByIds(List<int> ids) async {
+    if (ids.isEmpty) return const [];
+    final placeholders = List.filled(ids.length, '?').join(', ');
+    final rows = await _database.query(
+      'semantic_facts',
+      where: 'id IN ($placeholders)',
+      whereArgs: ids,
+    );
+    return rows.map(SemanticFact.fromRow).toList();
+  }
+
   @override
   Future<void> updateFact(int id,
       {String? text, SemanticCategory? category, double? confidence}) async {
@@ -308,6 +388,8 @@ class SqliteEideticStore implements EideticStore {
     await _database.delete('episodic_log');
     await _database.delete('semantic_facts');
     await _database.delete('event_log');
+    await _database.delete('relation_edges');
+    await _database.delete('provenance');
   }
 
   @override

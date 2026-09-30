@@ -19,6 +19,23 @@ SemanticCategory semanticCategoryFromName(String name) =>
       orElse: () => SemanticCategory.fact,
     );
 
+/// Lifecycle state of a claim (a [SemanticFact] viewed as an epistemic node).
+enum ClaimStatus { active, superseded, ambiguous }
+
+ClaimStatus claimStatusFromName(String name) => ClaimStatus.values.firstWhere(
+      (e) => e.name == name,
+      orElse: () => ClaimStatus.active,
+    );
+
+/// The kind of relation a [RelationEdge] asserts between two claims.
+enum RelationType { supports, contradicts, causes, partOf, related }
+
+RelationType relationTypeFromName(String name) =>
+    RelationType.values.firstWhere(
+      (e) => e.name == name,
+      orElse: () => RelationType.related,
+    );
+
 /// One millisecond-timestamped row of the episodic ledger.
 class EpisodicEntry {
   final int? id;
@@ -84,10 +101,21 @@ class SemanticFact {
   final double confidence;
   final String dedupeHash;
 
-  /// Optional embedding vector. Null until an embedding provider is wired in
-  /// (llamadart exposes embeddings from 0.9.0). Retrieval falls back to
-  /// keyword search when this is absent.
+  /// Optional embedding vector. Null until the embedding helper model is wired
+  /// in (Phase 2b). Retrieval falls back to keyword/graph recall when absent.
   final List<double>? embedding;
+
+  // ── Epistemic-graph fields (Phase 2): a fact is a claim node. ──
+  /// Current activation/importance of this claim (0..1). Spreading-activation
+  /// recall reads it as a prior and can reinforce it over time.
+  final double salience;
+
+  /// Lifecycle state: active, superseded by a newer claim, or ambiguous
+  /// (in an unresolved contradiction).
+  final ClaimStatus status;
+
+  /// If this claim supersedes an older one, that claim's id.
+  final int? supersedes;
 
   SemanticFact({
     this.id,
@@ -98,6 +126,9 @@ class SemanticFact {
     this.confidence = 0.5,
     String? dedupeHash,
     this.embedding,
+    this.salience = 0.5,
+    this.status = ClaimStatus.active,
+    this.supersedes,
   }) : dedupeHash = dedupeHash ?? stableContentHash(text);
 
   Map<String, Object?> toRow() => {
@@ -108,6 +139,9 @@ class SemanticFact {
         'confidence': confidence,
         'dedupe_hash': dedupeHash,
         'embedding_json': embedding == null ? null : json.encode(embedding),
+        'salience': salience,
+        'status': status.name,
+        'supersedes': supersedes,
       };
 
   static SemanticFact fromRow(Map<String, Object?> row) {
@@ -122,9 +156,79 @@ class SemanticFact {
       dedupeHash: row['dedupe_hash'] as String,
       embedding: embRaw == null
           ? null
-          : (json.decode(embRaw) as List).map((e) => (e as num).toDouble()).toList(),
+          : (json.decode(embRaw) as List)
+              .map((e) => (e as num).toDouble())
+              .toList(),
+      salience: (row['salience'] as num?)?.toDouble() ?? 0.5,
+      status: claimStatusFromName((row['status'] as String?) ?? 'active'),
+      supersedes: (row['supersedes'] as num?)?.toInt(),
     );
   }
+
+  /// A copy with selected fields replaced (used when the in-memory store needs
+  /// to assign an id or mutate claim fields without losing the others).
+  SemanticFact copyWith({
+    int? id,
+    SemanticCategory? category,
+    String? text,
+    double? confidence,
+    double? salience,
+    ClaimStatus? status,
+    int? supersedes,
+    List<double>? embedding,
+  }) {
+    final newText = text ?? this.text;
+    return SemanticFact(
+      id: id ?? this.id,
+      createdUtc: createdUtc,
+      category: category ?? this.category,
+      text: newText,
+      sourceSessionId: sourceSessionId,
+      confidence: confidence ?? this.confidence,
+      dedupeHash: text == null ? dedupeHash : stableContentHash(newText),
+      embedding: embedding ?? this.embedding,
+      salience: salience ?? this.salience,
+      status: status ?? this.status,
+      supersedes: supersedes ?? this.supersedes,
+    );
+  }
+}
+
+/// One directed edge in the epistemic graph: [fromFact] --(type)--> [toFact].
+/// Spreading-activation recall walks these edges to pull in related claims.
+class RelationEdge {
+  final int? id;
+  final int fromFact;
+  final int toFact;
+  final RelationType type;
+  final double weight;
+  final DateTime createdUtc;
+
+  RelationEdge({
+    this.id,
+    required this.fromFact,
+    required this.toFact,
+    this.type = RelationType.related,
+    this.weight = 1.0,
+    DateTime? createdUtc,
+  }) : createdUtc = createdUtc ?? DateTime.now().toUtc();
+
+  Map<String, Object?> toRow() => {
+        'from_fact': fromFact,
+        'to_fact': toFact,
+        'type': type.name,
+        'weight': weight,
+        'created_utc': createdUtc.toUtc().toIso8601String(),
+      };
+
+  static RelationEdge fromRow(Map<String, Object?> row) => RelationEdge(
+        id: row['id'] as int?,
+        fromFact: (row['from_fact'] as num).toInt(),
+        toFact: (row['to_fact'] as num).toInt(),
+        type: relationTypeFromName(row['type'] as String),
+        weight: (row['weight'] as num?)?.toDouble() ?? 1.0,
+        createdUtc: DateTime.parse(row['created_utc'] as String).toUtc(),
+      );
 }
 
 /// Deterministic content hash used to deduplicate semantic facts (the primary

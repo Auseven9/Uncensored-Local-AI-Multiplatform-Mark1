@@ -67,8 +67,8 @@ void main() {
         category: SemanticCategory.preference,
         text: 'user prefers DARK mode', // same after normalisation
       ));
-      expect(first, isTrue);
-      expect(second, isFalse);
+      expect(first, isNotNull); // inserted → new id
+      expect(second, isNull); // deduplicated
       expect(await engine.factCount(), 1);
     });
 
@@ -96,6 +96,29 @@ void main() {
       await engine.appendEvent(source: 'user', type: 'user_message');
       await engine.clearAll();
       expect(await engine.eventCount(), 0);
+    });
+
+    test('recallByActivation surfaces related claims via edges', () async {
+      final now = DateTime.now().toUtc();
+      final a = await engine.rememberFact(SemanticFact(
+          createdUtc: now,
+          category: SemanticCategory.fact,
+          text: 'Alesis runs on llama.cpp'));
+      final b = await engine.rememberFact(SemanticFact(
+          createdUtc: now,
+          category: SemanticCategory.fact,
+          text: 'The GGUF model is quantized to Q4'));
+      expect(a, isNotNull);
+      expect(b, isNotNull);
+      // Link them so a query hitting A also surfaces B.
+      await engine.addEdge(
+          RelationEdge(fromFact: a!, toFact: b!, type: RelationType.related));
+
+      final hits = await engine.recallByActivation('llama',
+          k: 8, alpha: 0.85, threshold: 0.15, maxHops: 2, seedK: 10);
+      final texts = hits.map((f) => f.text).toList();
+      expect(texts.any((t) => t.contains('llama.cpp')), isTrue); // seed A
+      expect(texts.any((t) => t.contains('quantized')), isTrue); // via edge B
     });
 
     test('recall finds facts by keyword', () async {

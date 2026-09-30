@@ -28,9 +28,9 @@ abstract class EideticStore {
   Future<void> markConsolidated(List<int> ids);
 
   // ── Semantic (long-term) ───────────────────────────────────
-  /// Returns true if the fact was inserted, false if a row with the same
+  /// Inserts a fact and returns its new row id, or null if a row with the same
   /// [SemanticFact.dedupeHash] already existed (deduplicated).
-  Future<bool> insertFact(SemanticFact fact);
+  Future<int?> insertFact(SemanticFact fact);
   Future<List<SemanticFact>> searchFacts(String query, {int limit = 8});
   Future<List<SemanticFact>> recentFacts({int limit = 50});
   Future<int> factCount();
@@ -40,6 +40,15 @@ abstract class EideticStore {
   Future<int> appendEvent(AppEvent event);
   Future<List<AppEvent>> recentEvents({int limit = 100});
   Future<int> eventCount();
+
+  // ── Epistemic graph (Phase 2) ───────────────────────────────
+  /// Add a directed relation edge between two claims. Returns its row id.
+  Future<int> addEdge(RelationEdge edge);
+  Future<List<RelationEdge>> allEdges();
+  /// Record that a claim ([factId]) originated from an event ([eventId]).
+  Future<void> addProvenance(int factId, int eventId);
+  /// Fetch the claims (facts) with the given ids, in arbitrary order.
+  Future<List<SemanticFact>> factsByIds(List<int> ids);
 
   // ── Editing (memory panel) ──────────────────────────────────
   /// Update a fact's fields; recomputes the dedupe hash when [text] changes.
@@ -74,6 +83,8 @@ class InMemoryEideticStore implements EideticStore {
   final List<EpisodicEntry> _episodic = [];
   final List<SemanticFact> _facts = [];
   final List<AppEvent> _events = [];
+  final List<RelationEdge> _edges = [];
+  final List<({int factId, int eventId})> _provenance = [];
   int _autoId = 0;
 
   @override
@@ -151,19 +162,11 @@ class InMemoryEideticStore implements EideticStore {
   }
 
   @override
-  Future<bool> insertFact(SemanticFact fact) async {
-    if (_facts.any((f) => f.dedupeHash == fact.dedupeHash)) return false;
-    _facts.add(SemanticFact(
-      id: ++_autoId,
-      createdUtc: fact.createdUtc,
-      category: fact.category,
-      text: fact.text,
-      sourceSessionId: fact.sourceSessionId,
-      confidence: fact.confidence,
-      dedupeHash: fact.dedupeHash,
-      embedding: fact.embedding,
-    ));
-    return true;
+  Future<int?> insertFact(SemanticFact fact) async {
+    if (_facts.any((f) => f.dedupeHash == fact.dedupeHash)) return null;
+    final id = ++_autoId;
+    _facts.add(fact.copyWith(id: id));
+    return id;
   }
 
   @override
@@ -216,22 +219,40 @@ class InMemoryEideticStore implements EideticStore {
   Future<int> eventCount() async => _events.length;
 
   @override
+  Future<int> addEdge(RelationEdge edge) async {
+    final id = ++_autoId;
+    _edges.add(RelationEdge(
+      id: id,
+      fromFact: edge.fromFact,
+      toFact: edge.toFact,
+      type: edge.type,
+      weight: edge.weight,
+      createdUtc: edge.createdUtc,
+    ));
+    return id;
+  }
+
+  @override
+  Future<List<RelationEdge>> allEdges() async => List.unmodifiable(_edges);
+
+  @override
+  Future<void> addProvenance(int factId, int eventId) async {
+    _provenance.add((factId: factId, eventId: eventId));
+  }
+
+  @override
+  Future<List<SemanticFact>> factsByIds(List<int> ids) async {
+    final set = ids.toSet();
+    return _facts.where((f) => f.id != null && set.contains(f.id)).toList();
+  }
+
+  @override
   Future<void> updateFact(int id,
       {String? text, SemanticCategory? category, double? confidence}) async {
     final i = _facts.indexWhere((f) => f.id == id);
     if (i < 0) return;
-    final old = _facts[i];
-    final newText = text ?? old.text;
-    _facts[i] = SemanticFact(
-      id: old.id,
-      createdUtc: old.createdUtc,
-      category: category ?? old.category,
-      text: newText,
-      sourceSessionId: old.sourceSessionId,
-      confidence: confidence ?? old.confidence,
-      dedupeHash: text == null ? old.dedupeHash : stableContentHash(newText),
-      embedding: old.embedding,
-    );
+    _facts[i] = _facts[i]
+        .copyWith(text: text, category: category, confidence: confidence);
   }
 
   @override
@@ -265,6 +286,8 @@ class InMemoryEideticStore implements EideticStore {
     _episodic.clear();
     _facts.clear();
     _events.clear();
+    _edges.clear();
+    _provenance.clear();
   }
 
   @override
