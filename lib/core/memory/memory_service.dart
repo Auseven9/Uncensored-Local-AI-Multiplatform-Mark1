@@ -2,7 +2,10 @@ import 'dart:async';
 
 import 'package:get/get.dart';
 
+import '../../services/chat_storage_service.dart';
+import '../../services/embedding_service.dart';
 import '../../services/log_service.dart';
+import '../../services/model_manager.dart';
 import '../params/parameters_service.dart';
 import 'eidetic_memory_engine.dart';
 import 'eidetic_store.dart' show tokenizeQuery;
@@ -59,6 +62,71 @@ class MemoryService extends GetxService {
       return Get.find<ParametersService>();
     } catch (_) {
       return null;
+    }
+  }
+
+  EmbeddingService? get _embeddings {
+    try {
+      return Get.find<EmbeddingService>();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  ChatStorageService? get _storage {
+    try {
+      return Get.find<ChatStorageService>();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  ModelManager? get _models {
+    try {
+      return Get.find<ModelManager>();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  bool _embedLoading = false;
+
+  /// Load the embedding model from the stored selection when meaning-based
+  /// recall is enabled — lazily and best-effort, so the first recall after
+  /// enabling isn't blocked (it uses keyword+graph seeding until the embedder
+  /// is ready, then meaning-seeding kicks in on subsequent turns).
+  Future<void> _ensureEmbeddingLoaded() async {
+    if (_embedLoading) return;
+    final storage = _storage;
+    final emb = _embeddings;
+    final models = _models;
+    if (storage == null || emb == null || models == null) return;
+    if (!storage.embeddingsEnabled) return;
+    final fn = storage.embeddingModelFilename;
+    if (fn.isEmpty) return;
+    final path = models.getModelPathByFilename(fn);
+    if (emb.isReady.value && emb.loadedModelPath.value == path) return;
+    _embedLoading = true;
+    try {
+      await emb.load(path);
+    } finally {
+      _embedLoading = false;
+    }
+  }
+
+  /// Embed [ids]' claim text and store the vectors (best-effort; skips any that
+  /// fail). Used for newly-promoted claims and the backfill queue.
+  Future<void> _embedAndStore(List<int> ids) async {
+    final emb = _embeddings;
+    if (emb == null || !emb.isReady.value || ids.isEmpty) return;
+    final facts = await _memory.factsByIds(ids);
+    for (final f in facts) {
+      final id = f.id;
+      if (id == null) continue;
+      final v = await emb.embed(f.text);
+      if (v != null && v.isNotEmpty) {
+        await _memory.storeEmbedding(id, v, model: emb.loadedModelPath.value);
+      }
     }
   }
 
@@ -122,6 +190,18 @@ class MemoryService extends GetxService {
     final wRec = _params?.getDouble('recall.wRecency') ?? 0.15;
     final halfLife = _params?.getDouble('recall.recencyHalfLifeHours') ?? 72.0;
 
+    // Meaning-based recall (Phase 2b): embed the cue when an embedding model is
+    // ready. Loading is kicked off best-effort and non-blocking — recall keeps
+    // running on keyword+graph seeding until the embedder is up, then meaning
+    // seeds are added on subsequent turns.
+    unawaited(_ensureEmbeddingLoaded());
+    List<double>? cueVec;
+    if (_embeddings?.isReady.value ?? false) {
+      cueVec = await _embeddings!.embed(cue);
+    }
+    final embSeedK = _params?.getInt('embeddings.seedK') ?? 10;
+    final embThreshold = _params?.getDouble('embeddings.threshold') ?? 0.3;
+
     List<({SemanticFact fact, double score})> semantic;
     List<EpisodicEntry> episodic;
     try {
@@ -130,7 +210,10 @@ class MemoryService extends GetxService {
           alpha: alpha,
           threshold: threshold,
           maxHops: maxHops,
-          seedK: seedK);
+          seedK: seedK,
+          queryEmbedding: cueVec,
+          embedSeedK: embSeedK,
+          embedThreshold: embThreshold);
       episodic = await _memory.searchEpisodic(cue, limit: epiDepth);
     } catch (e) {
       _record(MemoryCallType.recall, 'query="${_short(query)}" → error: $e');
@@ -309,6 +392,21 @@ class MemoryService extends GetxService {
             // from, which in turn links back to the episodic batch.
             for (final factId in result.promotedFactIds) {
               await _memory.addProvenance(factId, eventId);
+            }
+          } catch (_) {}
+        }
+        // Meaning index (Phase 2b): embed the new claims, then chip away at the
+        // backfill so recall's embedding seeds stay current. Best-effort; runs
+        // only when an embedder is loaded, off the chat path.
+        if (_embeddings?.isReady.value ?? false) {
+          try {
+            await _embedAndStore(result.promotedFactIds);
+            final perPass = _params?.getInt('embeddings.backfillPerPass') ?? 16;
+            if (perPass > 0) {
+              final missing =
+                  await _memory.claimsMissingEmbedding(limit: perPass);
+              await _embedAndStore(
+                  missing.map((f) => f.id).whereType<int>().toList());
             }
           } catch (_) {}
         }

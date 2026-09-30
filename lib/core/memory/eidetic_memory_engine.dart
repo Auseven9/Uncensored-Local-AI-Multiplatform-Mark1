@@ -175,6 +175,12 @@ class EideticMemoryEngine extends GetxService {
   /// recall ranker: keyword hits seed a spreading-activation pass over the
   /// relation edges, so related claims surface even when they don't lexically
   /// match [query]. Returns empty when there are no seeds.
+  ///
+  /// When [queryEmbedding] is supplied (Phase 2b), the claims whose stored
+  /// embeddings are nearest by cosine are unioned into the seed set alongside
+  /// the keyword hits — so a claim close in *meaning* seeds activation even
+  /// with no lexical overlap. Omitting it leaves recall on pure keyword+graph
+  /// seeding, so this is strictly additive.
   Future<List<({SemanticFact fact, double score})>> recallSemanticScored(
     String query, {
     int k = 8,
@@ -182,6 +188,9 @@ class EideticMemoryEngine extends GetxService {
     double threshold = 0.15,
     int maxHops = 2,
     int seedK = 10,
+    List<double>? queryEmbedding,
+    int embedSeedK = 10,
+    double embedThreshold = 0.0,
   }) async {
     await _ensureInit();
     final seeds = await _store.searchFacts(query, limit: seedK);
@@ -189,6 +198,14 @@ class EideticMemoryEngine extends GetxService {
       for (final f in seeds)
         if (f.id != null) f.id!: 1.0,
     };
+    // Meaning-based seeds: union nearest-by-embedding claims into the seeds.
+    if (queryEmbedding != null && queryEmbedding.isNotEmpty) {
+      final nearIds = await nearestClaimIds(queryEmbedding,
+          k: embedSeedK, threshold: embedThreshold);
+      for (final id in nearIds) {
+        seedMap[id] = 1.0;
+      }
+    }
     if (seedMap.isEmpty) return const [];
 
     final edges = await _store.allEdges();
@@ -268,6 +285,28 @@ class EideticMemoryEngine extends GetxService {
   Future<int> embeddingCount() async {
     await _ensureInit();
     return (await _store.allEmbeddings()).length;
+  }
+
+  /// Fetch claims by id (e.g. to read their text for embedding).
+  Future<List<SemanticFact>> factsByIds(List<int> ids) async {
+    await _ensureInit();
+    return _store.factsByIds(ids);
+  }
+
+  /// Claims that don't yet have an embedding — the backfill queue, newest
+  /// first, capped at [limit]. Empty once every claim is indexed.
+  Future<List<SemanticFact>> claimsMissingEmbedding({int limit = 50}) async {
+    await _ensureInit();
+    final have = (await _store.allEmbeddings()).keys.toSet();
+    final facts = await _store.recentFacts(limit: 1000);
+    final missing = <SemanticFact>[];
+    for (final f in facts) {
+      if (f.id != null && !have.contains(f.id)) {
+        missing.add(f);
+        if (missing.length >= limit) break;
+      }
+    }
+    return missing;
   }
 
   Future<void> _ensureInit() async {

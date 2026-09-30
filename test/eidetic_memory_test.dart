@@ -159,6 +159,27 @@ void main() {
       // Empty query or empty corpus degrades to no seeds (recall falls back).
       expect(await engine.nearestClaimIds(const [], k: 2), isEmpty);
     });
+
+    test('recallSemanticScored seeds by embedding with no keyword overlap',
+        () async {
+      final now = DateTime.now().toUtc();
+      final dog = await engine.rememberFact(SemanticFact(
+          createdUtc: now,
+          category: SemanticCategory.fact,
+          text: 'has a dog named Rex'));
+      final other = await engine.rememberFact(SemanticFact(
+          createdUtc: now,
+          category: SemanticCategory.fact,
+          text: 'the capital of France is Paris'));
+      await engine.storeEmbedding(dog!, [1.0, 0.0]);
+      await engine.storeEmbedding(other!, [0.0, 1.0]);
+
+      // "pet" shares no keyword with either claim, but its embedding is near
+      // the dog claim's — meaning-seeding should still surface Rex.
+      final hits = await engine.recallSemanticScored('pet',
+          queryEmbedding: [0.95, 0.05], embedSeedK: 5, embedThreshold: 0.5);
+      expect(hits.map((e) => e.fact.text).any((t) => t.contains('Rex')), isTrue);
+    });
   });
 
   group('MemoryManager gate', () {

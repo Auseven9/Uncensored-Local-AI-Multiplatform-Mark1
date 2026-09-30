@@ -124,4 +124,23 @@ class ChatStorageService extends GetxService {
       (_settingsBox.get('context_size', defaultValue: 4096) as num).toInt();
 
   set contextSize(int value) => _settingsBox.put('context_size', value);
+
+  // ── Embedding model (meaning-based recall, Phase 2b) ────────
+
+  /// Filename (in the models folder) of the embedding model, or '' when none
+  /// is selected. Resolved to a full path via ModelManager.
+  String get embeddingModelFilename =>
+      _settingsBox.get('embedding_model_filename', defaultValue: '') as String;
+
+  set embeddingModelFilename(String value) =>
+      _settingsBox.put('embedding_model_filename', value);
+
+  /// Whether meaning-based (embedding) recall is enabled. Off by default —
+  /// recall runs on keyword + graph seeding until the user opts in with a
+  /// model, so this can only ever deepen recall, never break it.
+  bool get embeddingsEnabled =>
+      _settingsBox.get('embeddings_enabled', defaultValue: false) as bool;
+
+  set embeddingsEnabled(bool value) =>
+      _settingsBox.put('embeddings_enabled', value);
 }

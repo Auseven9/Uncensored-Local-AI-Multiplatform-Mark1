@@ -10,6 +10,7 @@ import '../services/local_api_server_service.dart';
 import '../services/model_manager.dart';
 import '../services/background_optimizer_service.dart';
 import '../services/chat_storage_service.dart';
+import '../services/embedding_service.dart';
 
 class SettingsScreen extends StatelessWidget {
   /// When true, no Scaffold — just the body content for embedding in tabs.
@@ -281,6 +282,13 @@ class _SettingsBody extends StatelessWidget {
               _sectionHeader(context, 'Hardware Configuration'),
               const SizedBox(height: 8),
               _HardwareSettingsCard(storage: storage),
+
+              const SizedBox(height: 28),
+
+              // ── Meaning-based Memory (Embeddings) ───────────────
+              _sectionHeader(context, 'Meaning-based Memory'),
+              const SizedBox(height: 8),
+              _EmbeddingSettingsCard(storage: storage),
 
               const SizedBox(height: 28),
 
@@ -1306,6 +1314,188 @@ class _HardwareSettingsCardState extends State<_HardwareSettingsCard> {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Selects and loads the embedding model that powers meaning-based recall
+/// (Phase 2b). Opt-in: recall works on keyword + graph seeding until a model
+/// is loaded here.
+class _EmbeddingSettingsCard extends StatefulWidget {
+  final ChatStorageService storage;
+
+  const _EmbeddingSettingsCard({required this.storage});
+
+  @override
+  State<_EmbeddingSettingsCard> createState() => _EmbeddingSettingsCardState();
+}
+
+class _EmbeddingSettingsCardState extends State<_EmbeddingSettingsCard> {
+  EmbeddingService get _emb => Get.find<EmbeddingService>();
+  ModelManager get _models => Get.find<ModelManager>();
+
+  late bool _enabled;
+  String? _selected;
+
+  @override
+  void initState() {
+    super.initState();
+    _enabled = widget.storage.embeddingsEnabled;
+    final fn = widget.storage.embeddingModelFilename;
+    _selected = fn.isEmpty ? null : fn;
+  }
+
+  Future<void> _loadSelected() async {
+    final fn = _selected;
+    if (fn == null || fn.isEmpty) return;
+    final path = _models.getModelPathByFilename(fn);
+    final ok = await _emb.load(path);
+    Get.snackbar(
+      ok ? 'Embedding model loaded' : 'Load failed',
+      ok ? fn : (_emb.lastError.value ?? 'Unknown error'),
+      snackPosition: SnackPosition.BOTTOM,
+      duration: const Duration(seconds: 3),
+    );
+  }
+
+  Future<void> _onToggle(bool value) async {
+    setState(() => _enabled = value);
+    widget.storage.embeddingsEnabled = value;
+    if (value) {
+      await _loadSelected();
+    } else {
+      await _emb.unload();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: context.bgPanel,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: context.border),
+      ),
+      padding: const EdgeInsets.all(16),
+      child: Obx(() {
+        final downloaded = _models.downloadedModels.toList();
+        final ready = _emb.isReady.value;
+        final dim = _emb.dimensions;
+        final err = _emb.lastError.value;
+        final value = downloaded.contains(_selected) ? _selected : null;
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.hub_rounded, size: 18, color: AppColors.accent),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Meaning-based recall',
+                    style: TextStyle(
+                        color: context.text,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600),
+                  ),
+                ),
+                Switch(
+                  value: _enabled,
+                  activeColor: AppColors.accent,
+                  onChanged: _onToggle,
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Recalls memories by meaning, not just keywords, using a small '
+              'embedding model loaded alongside the chat model. Off = recall '
+              'runs on keyword + graph only.',
+              style: TextStyle(color: context.textM, fontSize: 12),
+            ),
+            const SizedBox(height: 12),
+            Text('Embedding model',
+                style: TextStyle(color: context.text, fontSize: 13)),
+            const SizedBox(height: 6),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              decoration: BoxDecoration(
+                color: context.bgInput,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: context.border),
+              ),
+              child: downloaded.isEmpty
+                  ? Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      child: Text(
+                        'No models downloaded. Add a small embedding GGUF '
+                        '(e.g. nomic-embed-text) on the Models screen first.',
+                        style: TextStyle(color: context.textD, fontSize: 12),
+                      ),
+                    )
+                  : DropdownButtonHideUnderline(
+                      child: DropdownButton<String>(
+                        isExpanded: true,
+                        value: value,
+                        hint: Text('Select a model',
+                            style: TextStyle(
+                                color: context.textD, fontSize: 13)),
+                        dropdownColor: context.bgPanel,
+                        style: TextStyle(color: context.text, fontSize: 13),
+                        items: [
+                          for (final m in downloaded)
+                            DropdownMenuItem(value: m, child: Text(m)),
+                        ],
+                        onChanged: (v) {
+                          setState(() => _selected = v);
+                          widget.storage.embeddingModelFilename = v ?? '';
+                        },
+                      ),
+                    ),
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                ElevatedButton.icon(
+                  onPressed: value == null ? null : _loadSelected,
+                  icon: const Icon(Icons.download_done_rounded, size: 16),
+                  label: Text(ready ? 'Reload' : 'Load model'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.accent,
+                    foregroundColor: Colors.white,
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8)),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    ready
+                        ? '● Ready${dim > 0 ? ' · $dim-dim' : ''}'
+                        : (err != null ? '● Error' : '○ Not loaded'),
+                    style: TextStyle(
+                      color: ready
+                          ? Colors.green
+                          : (err != null ? Colors.redAccent : context.textD),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            if (err != null && !ready) ...[
+              const SizedBox(height: 6),
+              Text(err,
+                  style: TextStyle(color: context.textD, fontSize: 11),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis),
+            ],
+          ],
+        );
+      }),
     );
   }
 }

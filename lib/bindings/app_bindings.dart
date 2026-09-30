@@ -1,6 +1,7 @@
 import 'package:get/get.dart';
 
 import '../services/llm_service.dart';
+import '../services/embedding_service.dart';
 import '../services/model_manager.dart';
 import '../services/chat_storage_service.dart';
 import '../services/local_api_server_service.dart';
@@ -25,6 +26,7 @@ class AppBindings extends Bindings {
   void dependencies() {
     // ── Services (async init happens in splash) ──────────────────
     Get.lazyPut(() => LlmService(), fenix: true);
+    Get.lazyPut(() => EmbeddingService(), fenix: true);
     Get.lazyPut(() => ModelManager(), fenix: true);
     Get.lazyPut(() => ChatStorageService(), fenix: true);
     Get.lazyPut(() => LocalApiServerService(), fenix: true);

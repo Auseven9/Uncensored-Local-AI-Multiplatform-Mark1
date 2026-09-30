@@ -49,6 +49,11 @@ const List<ParamSpec> aetherParamRegistry = [
   ParamSpec(key: 'recall.recencyHalfLifeHours', label: 'Recency half-life (h)', group: 'Recall', type: ParamType.doubleType, def: 72.0, min: 1.0, max: 8760.0),
   ParamSpec(key: 'recall.minTokenLen', label: 'Min keyword length', group: 'Recall', type: ParamType.intType, def: 3, min: 1, max: 8),
 
+  // ── Embeddings (meaning-based recall, Phase 2b) ─────────────
+  ParamSpec(key: 'embeddings.seedK', label: 'Embedding seeds (K)', group: 'Embeddings', type: ParamType.intType, def: 10, min: 1, max: 40, help: 'How many nearest claims by meaning seed recall (in addition to keyword hits).'),
+  ParamSpec(key: 'embeddings.threshold', label: 'Similarity floor', group: 'Embeddings', type: ParamType.doubleType, def: 0.3, min: 0.0, max: 1.0, help: 'Minimum cosine similarity for a claim to seed recall.'),
+  ParamSpec(key: 'embeddings.backfillPerPass', label: 'Backfill per pass', group: 'Embeddings', type: ParamType.intType, def: 16, min: 0, max: 200, help: 'Existing claims embedded per consolidation pass until all are indexed.'),
+
   // ── Consolidation gate (episodic → semantic) ────────────────
   ParamSpec(key: 'consolidate.minEntries', label: 'Min pending to run', group: 'Consolidation', type: ParamType.intType, def: 6, min: 1, max: 50, help: 'Below this, no model pass runs (0% compute).'),
   ParamSpec(key: 'consolidate.maxEntriesPerPass', label: 'Max entries per pass', group: 'Consolidation', type: ParamType.intType, def: 40, min: 5, max: 200),
