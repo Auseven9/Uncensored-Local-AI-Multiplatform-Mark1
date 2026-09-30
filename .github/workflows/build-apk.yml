@@ -78,11 +78,11 @@ jobs:
   smoke-test:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # Informational for now: the x86_64 emulator can't reliably host this
-    # arm64-native (llama.cpp) app, and the app is verified on real hardware.
-    # Parked, not deleted — revisit when we have an arm64 runner or a headless
-    # DB-init entrypoint. build + test are the gating jobs.
-    continue-on-error: true
+    # Gating: proven to run this app to DB-init on an x86_64 emulator (run #12).
+    # This is the Android-runtime guard the WAL startup crash showed we needed —
+    # it catches init crashes that only reproduce on real Android SQLite. If it
+    # turns out flaky over time, downgrade to continue-on-error rather than
+    # deleting it.
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
