@@ -12,6 +12,7 @@ import '../services/background_optimizer_service.dart';
 import '../services/chat_storage_service.dart';
 import '../services/embedding_service.dart';
 import '../services/llm_service.dart';
+import '../core/memory/memory_service.dart';
 
 class SettingsScreen extends StatelessWidget {
   /// When true, no Scaffold — just the body content for embedding in tabs.
@@ -1370,6 +1371,26 @@ class _EmbeddingSettingsCardState extends State<_EmbeddingSettingsCard> {
       snackPosition: SnackPosition.BOTTOM,
       duration: const Duration(seconds: 3),
     );
+
+    // Now that the embedder is loaded (and the chat model is idle), index any
+    // existing memories that don't have an embedding yet — so meaning-based
+    // recall can actually match the back catalogue instead of waiting for
+    // future consolidations. Best-effort and off the UI thread; the recall
+    // chips' "idx N" reflects progress.
+    if (ok) {
+      try {
+        final mem = Get.find<MemoryService>();
+        final added = await mem.backfillEmbeddings();
+        if (added > 0) {
+          Get.snackbar(
+            'Meaning index built',
+            'Embedded $added memory item(s) for meaning-based recall.',
+            snackPosition: SnackPosition.BOTTOM,
+            duration: const Duration(seconds: 3),
+          );
+        }
+      } catch (_) {}
+    }
   }
 
   Future<void> _onToggle(bool value) async {

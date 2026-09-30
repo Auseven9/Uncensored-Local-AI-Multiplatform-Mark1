@@ -269,6 +269,21 @@ class EideticMemoryEngine extends GetxService {
     int k = 10,
     double threshold = 0.0,
   }) async {
+    return (await nearestClaimsScored(queryVector, k: k, threshold: threshold))
+        .map((e) => e.id)
+        .toList();
+  }
+
+  /// Like [nearestClaimIds] but keeps the cosine score for each match — used by
+  /// recall diagnostics (to surface the *best* similarity even when it falls
+  /// below the seed threshold, so "0 meaning" can be told apart from "no
+  /// embeddings" and from "a dimension mismatch that zeroes every score").
+  /// Pass [threshold] 0.0 (or negative) to see everything.
+  Future<List<({int id, double score})>> nearestClaimsScored(
+    List<double> queryVector, {
+    int k = 10,
+    double threshold = 0.0,
+  }) async {
     await _ensureInit();
     if (queryVector.isEmpty) return const [];
     final corpus = await _store.allEmbeddings();
@@ -278,7 +293,7 @@ class EideticMemoryEngine extends GetxService {
       corpus: corpus,
       k: k,
       threshold: threshold,
-    ).map((e) => e.id).toList();
+    );
   }
 
   /// How many claims currently have an embedding (for diagnostics / backfill).

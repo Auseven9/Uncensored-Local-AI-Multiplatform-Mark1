@@ -99,6 +99,11 @@ class MemoryService extends GetxService {
     if (emb == null || !emb.isReady.value || ids.isEmpty || _chatBusy) return;
     final facts = await _memory.factsByIds(ids);
     for (final f in facts) {
+      // Yield the moment a chat turn begins: the embedder is a second native
+      // engine and running it concurrently with chat generation crashes the
+      // process. Re-checking each iteration keeps a long backfill cooperative —
+      // it stops cleanly and the next idle pass resumes the remainder.
+      if (_chatBusy) break;
       final id = f.id;
       if (id == null) continue;
       final v = await emb.embed(f.text);
@@ -106,6 +111,31 @@ class MemoryService extends GetxService {
         await _memory.storeEmbedding(id, v, model: emb.loadedModelPath.value);
       }
     }
+  }
+
+  /// Embed every claim not yet in the meaning index (up to [max] this call), so
+  /// meaning-based recall has something to match against. This is what makes
+  /// "load the embedder ⇒ my existing memories become searchable by meaning"
+  /// actually true — otherwise the index only fills incidentally, on chat
+  /// consolidations, and a debate-only or load-late session never indexes its
+  /// back catalogue. Best-effort and idle-only (never while the chat model is
+  /// generating — a second live engine crashes on-device). Returns how many
+  /// claims were newly embedded.
+  Future<int> backfillEmbeddings({int max = 500}) async {
+    final emb = _embeddings;
+    if (emb == null || !emb.isReady.value || _chatBusy) return 0;
+    final missing = await _memory.claimsMissingEmbedding(limit: max);
+    final ids = missing.map((f) => f.id).whereType<int>().toList();
+    if (ids.isEmpty) return 0;
+    final before = await _memory.embeddingCount();
+    await _embedAndStore(ids);
+    final after = await _memory.embeddingCount();
+    final added = after - before;
+    if (added > 0) {
+      _record(MemoryCallType.consolidate,
+          'meaning index backfill → +$added embedded ($after total)');
+    }
+    return added;
   }
 
   void _record(MemoryCallType type, String summary) {
@@ -185,12 +215,23 @@ class MemoryService extends GetxService {
 
     // Which claims were direct meaning matches (embedding nearest neighbours),
     // so recalled chips can show whether embeddings actually contributed.
+    // Also capture two diagnostics so "0 meaning" is explainable rather than
+    // mysterious: how many claims are actually indexed, and the BEST cosine the
+    // cue scored against any of them (regardless of the seed threshold). A top
+    // of exactly 0.00 with a non-empty index points at a dimension mismatch
+    // (e.g. the embedder was swapped); a low-but-nonzero top means the 0.3
+    // threshold is simply higher than this cue's real similarity.
     Set<int> embSeedIds = const {};
+    int embIndexed = 0;
+    double? embTop;
     if (cueVec != null && cueVec.isNotEmpty) {
       try {
-        embSeedIds = (await _memory.nearestClaimIds(cueVec,
-                k: embSeedK, threshold: embThreshold))
-            .toSet();
+        embIndexed = await _memory.embeddingCount();
+        final scored = await _memory.nearestClaimsScored(cueVec,
+            k: embSeedK, threshold: 0.0);
+        if (scored.isNotEmpty) embTop = scored.first.score;
+        embSeedIds =
+            scored.where((e) => e.score >= embThreshold).map((e) => e.id).toSet();
       } catch (_) {}
     }
 
@@ -257,11 +298,21 @@ class MemoryService extends GetxService {
     lastRecall.value = RecallResult(
       injected: ranked,
       embeddingsActive: embOn,
+      embeddingIndexed: embIndexed,
+      embeddingTop: embTop,
       cue: _short(query),
     );
 
+    // Diagnostics make "0 meaning" explainable at a glance:
+    //   idx N  — claims that actually have an embedding (0 ⇒ nothing indexed yet)
+    //   top X  — best cosine the cue scored vs any claim, threshold aside
+    //            (0.00 with idx>0 ⇒ dimension mismatch; low ⇒ threshold too high)
+    final embInfo = embOn
+        ? ' · emb on ($embMatches meaning · idx $embIndexed'
+            '${embTop != null ? ' · top ${embTop!.toStringAsFixed(2)}' : ''})'
+        : '';
     _record(MemoryCallType.recall,
-        'cue="${_short(query)}" → sem ${semantic.length}, epi ${episodic.length}, injected ${ranked.length}${embOn ? ' · emb on ($embMatches meaning)' : ''}');
+        'cue="${_short(query)}" → sem ${semantic.length}, epi ${episodic.length}, injected ${ranked.length}$embInfo');
 
     if (ranked.isEmpty) return emptyResult();
 

@@ -49,14 +49,30 @@ class RecallResult {
   /// Whether an embedding model contributed meaning-based seeds this turn.
   final bool embeddingsActive;
 
+  /// How many claims currently have an embedding in the meaning index. 0 while
+  /// [embeddingsActive] is true means nothing has been indexed yet (so meaning
+  /// recall can't match anything, no matter the cue).
+  final int embeddingIndexed;
+
+  /// The best cosine similarity the cue scored against any indexed claim this
+  /// turn, threshold aside. Null when embeddings were off or the index empty.
+  /// Exactly 0.0 with a non-empty index signals a dimension mismatch; a low
+  /// positive value means the seed threshold is simply higher than reality.
+  final double? embeddingTop;
+
   /// The cue that drove this recall (short, for display/debug).
   final String cue;
 
   const RecallResult({
     required this.injected,
     required this.embeddingsActive,
+    this.embeddingIndexed = 0,
+    this.embeddingTop,
     this.cue = '',
   });
+
+  /// How many of the injected candidates were meaning (embedding) matches.
+  int get meaningMatches => injected.where((c) => c.viaEmbedding).length;
 
   bool get isEmpty => injected.isEmpty;
 }

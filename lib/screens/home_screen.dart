@@ -1062,7 +1062,9 @@ class _HomeScreenState extends State<HomeScreen> {
                         borderRadius: BorderRadius.circular(6),
                       ),
                       child: Text(
-                        'meaning on',
+                        result.meaningMatches > 0
+                            ? '${result.meaningMatches} meaning'
+                            : 'meaning on',
                         style: TextStyle(
                           fontSize: 9.5,
                           fontWeight: FontWeight.w600,
@@ -1070,6 +1072,15 @@ class _HomeScreenState extends State<HomeScreen> {
                           letterSpacing: 0.2,
                         ),
                       ),
+                    ),
+                    const SizedBox(width: 6),
+                    // Diagnostic: index size + best cosine this turn, so "0
+                    // meaning" is legible (idx 0 = nothing embedded; top 0.00 =
+                    // dimension mismatch; low top = threshold above reality).
+                    Text(
+                      'idx ${result.embeddingIndexed}'
+                      '${result.embeddingTop != null ? ' · top ${result.embeddingTop!.toStringAsFixed(2)}' : ''}',
+                      style: TextStyle(fontSize: 9.5, color: context.textM),
                     ),
                   ],
                 ],
