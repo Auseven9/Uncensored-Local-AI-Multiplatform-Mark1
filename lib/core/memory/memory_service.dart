@@ -133,7 +133,44 @@ class MemoryService extends GetxService {
         sessionId: sessionId, kind: kind, role: role, content: content);
     _record(MemoryCallType.remember,
         '$role → episodic #$id (${content.length} chars)');
+    // Every episodic write is also mirrored to the grounded event log. This is
+    // the live chat path (the controller records user and assistant turns
+    // through remember), so this is what makes the event log populate at all.
+    await _appendMessageEvent(role, content);
     return id;
+  }
+
+  /// Map an episodic role to an event (source, type) pair.
+  static (String, String) _eventKindForRole(String role) {
+    switch (role) {
+      case 'user':
+        return ('user', 'user_message');
+      case 'assistant':
+        return ('assistant', 'assistant_message');
+      default:
+        return ('system', 'system_message');
+    }
+  }
+
+  /// Append one message to the grounded, append-only event log (best-effort;
+  /// gated by the `events.enabled` parameter). Returns the new event id, or null
+  /// if disabled/empty/failed. Never throws — the log is a passive record and
+  /// must not fail a turn.
+  Future<int?> _appendMessageEvent(String role, String content,
+      {List<int> parents = const []}) async {
+    if (!(_params?.getBool('events.enabled') ?? true)) return null;
+    if (content.trim().isEmpty) return null;
+    try {
+      final (source, type) = _eventKindForRole(role);
+      return await _memory.appendEvent(
+        source: source,
+        type: type,
+        payload: {'chars': content.length, 'preview': _short(content)},
+        parents: parents,
+      );
+    } catch (_) {
+      return null;
+    }
   }
 
   /// REMEMBER both sides of a chat turn, then opportunistically consolidate.
@@ -160,6 +197,10 @@ class MemoryService extends GetxService {
     }
     _record(MemoryCallType.remember,
         'turn stored → episodic user#${userId ?? '-'} ai#${aiId ?? '-'}');
+    // Grounded event log: assistant event links back to the user event.
+    final userEv = await _appendMessageEvent('user', userText);
+    await _appendMessageEvent('assistant', aiText,
+        parents: userEv == null ? const [] : [userEv]);
     unawaited(_maybeConsolidate());
   }
 
@@ -173,6 +214,19 @@ class MemoryService extends GetxService {
       if (result.ran) {
         _record(MemoryCallType.consolidate,
             'reviewed ${result.considered} · +${result.promoted} stored · ${result.deduped} dup');
+        if (_params?.getBool('events.enabled') ?? true) {
+          try {
+            await _memory.appendEvent(
+              source: 'memory',
+              type: 'consolidate',
+              payload: {
+                'considered': result.considered,
+                'promoted': result.promoted,
+                'deduped': result.deduped,
+              },
+            );
+          } catch (_) {}
+        }
       }
     } catch (_) {
       // Consolidation is best-effort; never surface as a turn failure.

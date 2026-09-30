@@ -1,6 +1,6 @@
 # AETHER — Cognitive Runtime (Flutter port) — Canonical Build Spec
 
-Status: Phase 0 landed. This is the single reference we execute from.
+Status: Phase 1 landed. This is the single reference we execute from.
 
 AETHER is **not a new model**. It is a runtime layer wrapping an off-the-shelf
 local GGUF model (via `llamadart`, in-process) that adds persistent memory, a
@@ -30,7 +30,7 @@ Flutter/Dart app, running inference **in-process** — no Python, no Termux, no
 | GPS/accel/time sensors | `geolocator`, `sensors_plus`, `battery_plus`, `device_info_plus` |
 
 ## 2. Data layers (all in the existing SQLite DB)
-1. **Event Log** — append-only: `id, ts, source, type, payload_json, parent_events_json, sensor_state_json`. WAL, never updated/deleted. Upgrades `episodic_log`.
+1. **Event Log** — append-only (`event_log`, live as of Phase 1): `id, ts, source, type, payload_json, parent_events_json, sensor_state_json` (+ `session_id`, `monotonic_ms`). WAL, never updated/deleted in normal operation. Runs *alongside* `episodic_log` (the grounded spine over the summarisable ledger), not as a replacement.
 2. **Epistemic Graph** — `claim_nodes` (`proposition, confidence, salience, status[ACTIVE|SUPERSEDED|AMBIGUOUS], supersedes`) + `provenance` (claim→event) + `relation_edges` (`SUPPORTS|CONTRADICTS|CAUSES|PART_OF`, weight). Upgrades `semantic_facts` into a graph.
 3. **Self-Schema** — `identity/goals/lessons` (starts empty) + `domain_capability` (`success/fail → empirical_confidence`).
 4. **Grounding** — `SensorAnchor` snapshot on every event; `FalsifiabilityVerifier`; `BehaviorVerifier`.
@@ -51,7 +51,7 @@ Flutter/Dart app, running inference **in-process** — no Python, no Termux, no
 
 ## 5. Phased roadmap (each = shippable APK)
 - **Phase 0 — Baseline (DONE):** reverted forced persona; blank chats; SQLite WAL; **data-driven Parameters registry + panel** (`recall.*` and `consolidate.*` wired live); this spec.
-- **Phase 1 — Grounding + Event Log:** append-only event log + `SensorAnchor` (time/boot/GPS/battery) on every event. (Cheap; the anti-BS spine.)
+- **Phase 1 — Grounding + Event Log (DONE):** append-only `event_log` table (SQLite v2 migration, WAL) written through `EideticMemoryEngine.appendEvent`; every episodic write (the live chat path) and each app launch and consolidation is mirrored to it. Each event carries a `SensorAnchor`. **As-built:** the anchor is built from two independent, dependency-free clocks — wall clock + monotonic process uptime — plus a per-launch `sessionId`; their divergence (`clockSkewMs`) is the ground-truth signal that detects sleep/suspend/clock-jumps and gaps between launches. `batteryPercent`/`latitude`/`longitude` are reserved nullable fields, captured only once `ground.sensorsEnabled` is on and a sensor plugin is added — never faked. Causal `parentEventIds` are threaded in the paired `rememberTurn` path; the two-call chat path leaves them empty (events stay time/session-ordered). Visible in the Memory panel's **Events** tab; tunable via the **Event log** parameter group.
 - **Phase 2 — Epistemic Graph + spreading activation + embedding helper:** claims/edges/provenance + semantic recall.
 - **Phase 3 — Self-Schema + competence + Ebbinghaus decay.**
 - **Phase 4 — U-score + System 1/2 gating + mutation validator + convergence.**

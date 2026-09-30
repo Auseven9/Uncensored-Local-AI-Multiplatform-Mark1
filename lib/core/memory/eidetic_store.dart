@@ -1,3 +1,4 @@
+import 'event_records.dart';
 import 'memory_records.dart';
 
 // Platform-specific factory. On native (dart:io present) this resolves to the
@@ -34,6 +35,12 @@ abstract class EideticStore {
   Future<List<SemanticFact>> recentFacts({int limit = 50});
   Future<int> factCount();
 
+  // ── Event log (append-only, grounded) ───────────────────────
+  /// Append one immutable, sensor-anchored event. Returns its row id.
+  Future<int> appendEvent(AppEvent event);
+  Future<List<AppEvent>> recentEvents({int limit = 100});
+  Future<int> eventCount();
+
   // ── Editing (memory panel) ──────────────────────────────────
   /// Update a fact's fields; recomputes the dedupe hash when [text] changes.
   Future<void> updateFact(int id,
@@ -66,6 +73,7 @@ List<String> tokenizeQuery(String query) {
 class InMemoryEideticStore implements EideticStore {
   final List<EpisodicEntry> _episodic = [];
   final List<SemanticFact> _facts = [];
+  final List<AppEvent> _events = [];
   int _autoId = 0;
 
   @override
@@ -184,6 +192,30 @@ class InMemoryEideticStore implements EideticStore {
   Future<int> factCount() async => _facts.length;
 
   @override
+  Future<int> appendEvent(AppEvent event) async {
+    final id = ++_autoId;
+    _events.add(AppEvent(
+      id: id,
+      timestampUtc: event.timestampUtc,
+      source: event.source,
+      type: event.type,
+      payload: event.payload,
+      parentEventIds: event.parentEventIds,
+      anchor: event.anchor,
+    ));
+    return id;
+  }
+
+  @override
+  Future<List<AppEvent>> recentEvents({int limit = 100}) async {
+    final rows = [..._events]..sort((a, b) => b.id!.compareTo(a.id!));
+    return rows.take(limit).toList();
+  }
+
+  @override
+  Future<int> eventCount() async => _events.length;
+
+  @override
   Future<void> updateFact(int id,
       {String? text, SemanticCategory? category, double? confidence}) async {
     final i = _facts.indexWhere((f) => f.id == id);
@@ -232,6 +264,7 @@ class InMemoryEideticStore implements EideticStore {
   Future<void> clearAll() async {
     _episodic.clear();
     _facts.clear();
+    _events.clear();
   }
 
   @override

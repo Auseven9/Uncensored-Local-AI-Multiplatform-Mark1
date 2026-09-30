@@ -72,6 +72,32 @@ void main() {
       expect(await engine.factCount(), 1);
     });
 
+    test('appends events and reads them back newest-first', () async {
+      // init() already recorded one app_launch event.
+      final userId = await engine.appendEvent(
+          source: 'user', type: 'user_message', payload: {'preview': 'hi'});
+      await engine.appendEvent(
+          source: 'assistant',
+          type: 'assistant_message',
+          payload: {'preview': 'hello'},
+          parents: [userId]);
+
+      expect(await engine.eventCount(), 3); // launch + user + assistant
+
+      final events = await engine.recentEvents(limit: 10);
+      expect(events.first.type, 'assistant_message');
+      expect(events.first.parentEventIds, [userId]);
+      // Every event carries a grounding anchor from this session.
+      expect(events.first.anchor.sessionId, engine.sessionId);
+      expect(events.first.anchor.monotonicMs, greaterThanOrEqualTo(0));
+    });
+
+    test('clearAll wipes the event log too', () async {
+      await engine.appendEvent(source: 'user', type: 'user_message');
+      await engine.clearAll();
+      expect(await engine.eventCount(), 0);
+    });
+
     test('recall finds facts by keyword', () async {
       final now = DateTime.now().toUtc();
       await engine.rememberFact(SemanticFact(

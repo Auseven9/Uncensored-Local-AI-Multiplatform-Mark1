@@ -1,8 +1,19 @@
+import 'dart:math';
+
 import 'package:get/get.dart';
 
 import '../../services/log_service.dart';
 import 'eidetic_store.dart';
+import 'event_records.dart';
 import 'memory_records.dart';
+
+/// A random, per-launch session id. Groups events produced by one app run so
+/// gaps *between* runs are visible in the log.
+String _newSessionId() {
+  final t = DateTime.now().microsecondsSinceEpoch;
+  final r = Random().nextInt(0x7fffffff);
+  return '${t.toRadixString(36)}-${r.toRadixString(36)}';
+}
 
 /// An item held in the ephemeral working tier (the live context window).
 class WorkingMemoryItem {
@@ -37,6 +48,16 @@ class EideticMemoryEngine extends GetxService {
 
   bool _initialized = false;
 
+  // ── Grounding clocks (Phase 1) ──────────────────────────────
+  // Two independent clocks captured at construction (≈ app launch). Their
+  // divergence is the ground-truth temporal signal: see [snapshot].
+  final String _sessionId = _newSessionId();
+  final Stopwatch _uptime = Stopwatch()..start();
+  final DateTime _sessionStartWall = DateTime.now().toUtc();
+
+  /// This app run's session id (stable for the process lifetime).
+  String get sessionId => _sessionId;
+
   /// True once the backing store is open and queryable.
   final isReady = false.obs;
 
@@ -61,11 +82,66 @@ class EideticMemoryEngine extends GetxService {
     _initialized = true;
     isReady.value = true;
     await _refreshPending();
+    // Mark this launch in the grounded event log (best-effort).
+    try {
+      await appendEvent(source: 'system', type: 'app_launch', payload: {
+        'persistent': _store.isPersistent,
+      });
+    } catch (_) {}
     _log?.info(
       'Eidetic memory ready (persistent=${_store.isPersistent})',
       source: 'Memory',
     );
     return this;
+  }
+
+  // ── Event log (append-only grounded spine) ──────────────────
+
+  /// A fresh grounding snapshot for the current instant. [clockSkewMs] is the
+  /// difference between the wall clock now and where the wall clock *would* be
+  /// if only monotonic uptime had elapsed since session start — non-zero when
+  /// the process was frozen (backgrounded/suspended) or the wall clock jumped.
+  SensorAnchor snapshot() {
+    final now = DateTime.now().toUtc();
+    final mono = _uptime.elapsedMilliseconds;
+    final expected = _sessionStartWall.add(Duration(milliseconds: mono));
+    final skew = now.difference(expected).inMilliseconds;
+    // battery/GPS are captured only once sensor grounding is switched on
+    // (`ground.sensorsEnabled`) and a sensor plugin is added; null until then.
+    return SensorAnchor(
+      wallClockUtc: now,
+      monotonicMs: mono,
+      sessionId: _sessionId,
+      clockSkewMs: skew,
+    );
+  }
+
+  /// Append one immutable, sensor-anchored event. Returns its row id.
+  Future<int> appendEvent({
+    required String source,
+    required String type,
+    Map<String, dynamic> payload = const {},
+    List<int> parents = const [],
+  }) async {
+    await _ensureInit();
+    return _store.appendEvent(AppEvent(
+      timestampUtc: DateTime.now().toUtc(),
+      source: source,
+      type: type,
+      payload: payload,
+      parentEventIds: parents,
+      anchor: snapshot(),
+    ));
+  }
+
+  Future<List<AppEvent>> recentEvents({int limit = 100}) async {
+    await _ensureInit();
+    return _store.recentEvents(limit: limit);
+  }
+
+  Future<int> eventCount() async {
+    await _ensureInit();
+    return _store.eventCount();
   }
 
   Future<void> _ensureInit() async {

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
+import '../../core/memory/event_records.dart';
 import '../../core/memory/memory_records.dart';
 import '../../core/memory/memory_service.dart';
 import '../../theme/app_colors.dart';
@@ -15,7 +16,7 @@ class MemoryPanelScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = Get.find<MemoryPanelController>();
     return DefaultTabController(
-      length: 3,
+      length: 4,
       child: Scaffold(
         backgroundColor: context.bg,
         appBar: AppBar(
@@ -33,9 +34,11 @@ class MemoryPanelScreen extends StatelessWidget {
             ),
           ],
           bottom: const TabBar(
+            isScrollable: true,
             tabs: [
               Tab(text: 'Facts'),
               Tab(text: 'Episodic'),
+              Tab(text: 'Events'),
               Tab(text: 'Activity'),
             ],
           ),
@@ -44,6 +47,7 @@ class MemoryPanelScreen extends StatelessWidget {
           children: [
             _FactsTab(c: c),
             _EpisodicTab(c: c),
+            _EventsTab(c: c),
             _ActivityTab(c: c),
           ],
         ),
@@ -220,6 +224,112 @@ class _ActivityTab extends StatelessWidget {
         },
       );
     });
+  }
+}
+
+// ── Events tab (append-only grounded log) ────────────────────
+class _EventsTab extends StatelessWidget {
+  final MemoryPanelController c;
+  const _EventsTab({required this.c});
+
+  @override
+  Widget build(BuildContext context) {
+    return Obx(() {
+      if (c.loading.value) {
+        return const Center(child: CircularProgressIndicator());
+      }
+      if (c.events.isEmpty) {
+        return _empty(context, Icons.event_note_outlined,
+            'No events yet.\nEvery launch, message and consolidation is\nrecorded here with a time anchor.');
+      }
+      return ListView.builder(
+        padding: const EdgeInsets.all(12),
+        itemCount: c.events.length,
+        itemBuilder: (ctx, i) => _eventCard(ctx, c.events[i]),
+      );
+    });
+  }
+}
+
+Widget _eventCard(BuildContext context, AppEvent e) {
+  final color = _eventColor(e.source);
+  final a = e.anchor;
+  final local = e.timestampUtc.toLocal().toString().split('.').first;
+  final preview = e.payload['preview']?.toString();
+  final skew = a.clockSkewMs;
+  // A large wall-vs-monotonic divergence means real time passed the process
+  // didn't see (sleep/suspend) — surface it as a "gap" chip.
+  final gapLabel = (skew != null && skew.abs() >= 2000)
+      ? 'gap ${(skew / 1000).toStringAsFixed(0)}s'
+      : null;
+  return Card(
+    margin: const EdgeInsets.only(bottom: 8),
+    child: ListTile(
+      leading: Icon(_eventIcon(e.source), color: color),
+      title: Text('${e.source} · ${e.type}',
+          style: TextStyle(
+              fontSize: 13, fontWeight: FontWeight.w600, color: color)),
+      subtitle: Padding(
+        padding: const EdgeInsets.only(top: 4),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (preview != null && preview.isNotEmpty)
+              Text(preview,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 12, color: context.textM)),
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 4,
+                children: [
+                  _chip(local, context.textD),
+                  _chip('t+${(a.monotonicMs / 1000).toStringAsFixed(0)}s',
+                      context.textM),
+                  _chip('sess ${_shortSession(a.sessionId)}', AppColors.standard),
+                  if (e.parentEventIds.isNotEmpty)
+                    _chip('←#${e.parentEventIds.first}', context.textD),
+                  if (gapLabel != null) _chip(gapLabel, AppColors.orange),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+String _shortSession(String id) =>
+    id.length <= 6 ? id : id.substring(id.length - 6);
+
+IconData _eventIcon(String source) {
+  switch (source) {
+    case 'user':
+      return Icons.person_outline_rounded;
+    case 'assistant':
+      return Icons.smart_toy_outlined;
+    case 'memory':
+      return Icons.auto_awesome_outlined;
+    case 'system':
+    default:
+      return Icons.bolt_rounded;
+  }
+}
+
+Color _eventColor(String source) {
+  switch (source) {
+    case 'user':
+      return AppColors.accent;
+    case 'assistant':
+      return AppColors.standard;
+    case 'memory':
+      return AppColors.orange;
+    case 'system':
+    default:
+      return AppColors.custom;
   }
 }
 

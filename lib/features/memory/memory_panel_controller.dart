@@ -1,8 +1,10 @@
 import 'package:get/get.dart';
 
 import '../../core/memory/eidetic_memory_engine.dart';
+import '../../core/memory/event_records.dart';
 import '../../core/memory/memory_records.dart';
 import '../../core/memory/memory_service.dart';
+import '../../core/params/parameters_service.dart';
 
 /// Backs the Memory Panel: loads every stored memory, applies edits/deletes,
 /// and exposes the live memory-call activity feed.
@@ -16,9 +18,18 @@ class MemoryPanelController extends GetxController {
 
   final facts = <SemanticFact>[].obs;
   final episodic = <EpisodicEntry>[].obs;
+  final events = <AppEvent>[].obs;
   final loading = false.obs;
   final persistent = true.obs;
   String _query = '';
+
+  int _eventLimit() {
+    try {
+      return Get.find<ParametersService>().getInt('events.maxDisplay');
+    } catch (_) {
+      return 100;
+    }
+  }
 
   /// Live feed of remember/recall/consolidate calls (newest first).
   RxList<MemoryCall> get calls => _service.recentCalls;
@@ -43,6 +54,7 @@ class MemoryPanelController extends GetxController {
           : recent
               .where((e) => e.content.toLowerCase().contains(q.toLowerCase()))
               .toList();
+      events.value = await _memory.recentEvents(limit: _eventLimit());
     } finally {
       loading.value = false;
     }

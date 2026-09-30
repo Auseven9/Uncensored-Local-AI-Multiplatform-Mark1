@@ -92,6 +92,10 @@ const List<ParamSpec> aetherParamRegistry = [
   ParamSpec(key: 'falsify.durationFactor', label: 'Falsifiability slack', group: 'Grounding & verification', type: ParamType.doubleType, def: 1.5, min: 1.0, max: 5.0),
   ParamSpec(key: 'ground.sensorsEnabled', label: 'Sensor grounding enabled', group: 'Grounding & verification', type: ParamType.boolType, def: false, help: 'Attach GPS/time/device state to events (needs permission).'),
 
+  // ── Event log (grounded history) ────────────────────────────
+  ParamSpec(key: 'events.enabled', label: 'Record event log', group: 'Event log', type: ParamType.boolType, def: true, help: 'Append-only, sensor-anchored log of what actually happened.'),
+  ParamSpec(key: 'events.maxDisplay', label: 'Events shown in panel', group: 'Event log', type: ParamType.intType, def: 100, min: 10, max: 1000),
+
   // ── Idle autonomous loop ────────────────────────────────────
   ParamSpec(key: 'idle.enabled', label: 'Background introspection', group: 'Idle loop', type: ParamType.boolType, def: false),
   ParamSpec(key: 'idle.intervalMinutes', label: 'Check interval (min)', group: 'Idle loop', type: ParamType.intType, def: 10, min: 1, max: 120),

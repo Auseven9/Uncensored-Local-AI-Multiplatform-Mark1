@@ -5,6 +5,7 @@ import 'package:sqflite/sqflite.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'eidetic_store.dart';
+import 'event_records.dart';
 import 'memory_records.dart';
 
 /// Native (dart:io) factory: a SQLite-backed store. Selected via conditional
@@ -46,13 +47,47 @@ class SqliteEideticStore implements EideticStore {
 
     _db = await openDatabase(
       path,
-      version: 1,
+      // v2 adds the append-only, sensor-anchored event_log table (Phase 1).
+      version: 2,
       onConfigure: (db) async {
         // Write-Ahead Logging: durable, low-latency appends for the event log.
         await db.execute('PRAGMA journal_mode=WAL;');
       },
       onCreate: _onCreate,
+      onUpgrade: _onUpgrade,
     );
+  }
+
+  /// Migrations for databases created by an older app version. Runs in order;
+  /// each step is idempotent-safe via CREATE TABLE IF NOT EXISTS so a partial
+  /// upgrade can be re-applied without error.
+  Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      await _createEventLog(db);
+    }
+  }
+
+  /// The append-only event log (Phase 1 grounding spine). Created for fresh
+  /// installs in [_onCreate] and back-filled for upgrades in [_onUpgrade].
+  Future<void> _createEventLog(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS event_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp_utc TEXT NOT NULL,
+        timestamp_millis INTEGER NOT NULL,
+        source TEXT NOT NULL,
+        type TEXT NOT NULL,
+        payload_json TEXT,
+        parent_events_json TEXT,
+        sensor_state_json TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        monotonic_ms INTEGER NOT NULL
+      )
+    ''');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_event_session ON event_log(session_id)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_event_millis ON event_log(timestamp_millis)');
   }
 
   Future<void> _onCreate(Database db, int version) async {
@@ -89,6 +124,8 @@ class SqliteEideticStore implements EideticStore {
     ''');
     await db.execute(
         'CREATE INDEX idx_facts_category ON semantic_facts(category)');
+
+    await _createEventLog(db);
   }
 
   @override
@@ -193,6 +230,28 @@ class SqliteEideticStore implements EideticStore {
   }
 
   @override
+  Future<int> appendEvent(AppEvent event) async {
+    return _database.insert('event_log', event.toRow());
+  }
+
+  @override
+  Future<List<AppEvent>> recentEvents({int limit = 100}) async {
+    final rows = await _database.query(
+      'event_log',
+      orderBy: 'id DESC',
+      limit: limit,
+    );
+    return rows.map(AppEvent.fromRow).toList();
+  }
+
+  @override
+  Future<int> eventCount() async {
+    final rows =
+        await _database.rawQuery('SELECT COUNT(*) AS c FROM event_log');
+    return (rows.first['c'] as num).toInt();
+  }
+
+  @override
   Future<void> updateFact(int id,
       {String? text, SemanticCategory? category, double? confidence}) async {
     final values = <String, Object?>{};
@@ -227,6 +286,7 @@ class SqliteEideticStore implements EideticStore {
   Future<void> clearAll() async {
     await _database.delete('episodic_log');
     await _database.delete('semantic_facts');
+    await _database.delete('event_log');
   }
 
   @override
