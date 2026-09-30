@@ -8,6 +8,7 @@ import 'package:path/path.dart' as p;
 import 'wakelock_service.dart';
 import 'chat_storage_service.dart';
 import 'log_service.dart';
+import 'pipeline_status_service.dart';
 
 /// Wraps llamadart's LlamaEngine for model loading, generation, and lifecycle.
 class LlmService extends GetxService {
@@ -55,6 +56,14 @@ class LlmService extends GetxService {
     }
   }
 
+  PipelineStatusService? get _status {
+    try {
+      return Get.find<PipelineStatusService>();
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Initialize the service.
   Future<LlmService> init() async {
     // Backend is created fresh per loadModel() call — no init needed here
@@ -80,6 +89,7 @@ class LlmService extends GetxService {
 
     final filename = p.basename(path);
     log?.info('Loading model: $filename', source: 'LLM');
+    _status?.begin(PipelinePhase.arming, 'arming engine for $filename…');
 
     _loadingCancelled = false;
     isLoadingModel.value = true;
@@ -109,11 +119,14 @@ class LlmService extends GetxService {
     // Wrapped in try-catch to handle SELinux crashes on Android where
     // ggml_backend_load_all() attempts to scan '/' which is denied.
     try {
+      _status?.mark('creating native backend + engine…');
       _backend = LlamaBackend();
       _engine = LlamaEngine(_backend!);
+      _status?.mark('native engine armed');
     } catch (e) {
       _backend = null;
       _engine = null;
+      _status?.fail('Engine init failed — device compatibility issue.');
       _resetLoadingState();
       log?.error('Engine init failed: $e', source: 'LLM');
       throw Exception(
@@ -131,6 +144,8 @@ class LlmService extends GetxService {
       final fileSize = await file.length();
       final sizeGb = (fileSize / (1024 * 1024 * 1024)).toStringAsFixed(1);
       loadingStatusMsg.value = 'Loading $sizeGb GB into memory...';
+      _status?.begin(PipelinePhase.loading, 'loading $sizeGb GB into memory…',
+          progress: loadingProgress.value);
 
       // Start a timer to animate progress while loading
       Timer? progressTimer;
@@ -146,6 +161,7 @@ class LlmService extends GetxService {
         if (current < 0.95) {
           loadingProgress.value = current + (0.95 - current) * 0.04;
         }
+        _status?.setProgress(loadingProgress.value);
       });
 
       if (_loadingCancelled) {
@@ -219,6 +235,7 @@ class LlmService extends GetxService {
       loadingStatusMsg.value = 'Ready!';
       isLoaded.value = true;
       loadedModelPath.value = path;
+      _status?.done('model ready · $filename');
       log?.info('Model loaded successfully: $filename', source: 'LLM');
 
       // Enable wake lock for inference on mobile (keeps app from being killed)
@@ -231,6 +248,11 @@ class LlmService extends GetxService {
       isLoaded.value = false;
       loadedModelPath.value = '';
       await _fullTeardown();
+      final low = e.toString().toLowerCase();
+      _status?.fail(
+          (Platform.isAndroid && (low.contains('memory') || low.contains('alloc')))
+              ? 'Not enough RAM — try a smaller model.'
+              : 'Model load failed.');
       log?.error('Model load failed: $e', source: 'LLM');
 
       // Provide a clearer error message for common Android failures

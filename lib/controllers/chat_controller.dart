@@ -6,6 +6,7 @@ import '../models/message_model.dart';
 import '../services/llm_service.dart';
 import '../services/chat_storage_service.dart';
 import '../services/log_service.dart';
+import '../services/pipeline_status_service.dart';
 import '../core/engine/inference_worker.dart';
 import '../core/memory/memory_service.dart';
 import '../core/params/parameters_service.dart';
@@ -33,6 +34,14 @@ class ChatController extends GetxController {
   ParametersService? get _params {
     try {
       return Get.find<ParametersService>();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  PipelineStatusService? get _status {
+    try {
+      return Get.find<PipelineStatusService>();
     } catch (_) {
       return null;
     }
@@ -125,6 +134,31 @@ class ChatController extends GetxController {
     _storage.saveChat(chat);
     chats.refresh();
 
+    _status?.clearError();
+
+    // ── ERROR MITIGATION: no model loaded ─────────────────────────
+    // Don't attempt generation — it would throw a raw "No model loaded"
+    // exception — and, critically, don't let that error become an assistant
+    // turn that gets remembered and consolidated into a bogus "fact" (which is
+    // exactly what used to happen). Surface a clear, actionable notice and stop.
+    if (!_llm.isLoaded.value) {
+      _status?.fail('No model loaded — open Models and load one to chat.');
+      _log?.warn('sendMessage: blocked — no model loaded', source: 'Chat');
+      final notice = MessageModel(
+        role: MessageRole.assistant,
+        content:
+            '⚠ No model is loaded. Open the **Models** tab, load a model, then send your message again.',
+      );
+      chat.messages.add(notice);
+      chat.updatedAt = DateTime.now();
+      _storage.saveChat(chat);
+      chats.refresh();
+      // Keep the user's message (it's real input); never remember the notice.
+      await _memory?.remember(
+          sessionId: chat.id, role: 'user', content: text.trim());
+      return;
+    }
+
     // Build message history for LLM
     final history = chat.messages
         .where((m) => !m.isSystem)
@@ -132,6 +166,7 @@ class ChatController extends GetxController {
         .toList();
 
     // ── MEMORY: remembering (recall) before generating ─────────
+    _status?.begin(PipelinePhase.recalling, 'searching memory…');
     final baseSystem =
         chat.systemPrompt.isNotEmpty ? chat.systemPrompt : systemPrompt.value;
     // A compact cue from the last few turns so recall tracks what the
@@ -140,6 +175,15 @@ class ChatController extends GetxController {
     final recalled = await _memory
             ?.remembering(text.trim(), recentContext: recentContext) ??
         '';
+    final lr = _memory?.lastRecall.value;
+    if (lr != null && !lr.isEmpty) {
+      final mm = lr.meaningMatches;
+      _status?.mark(
+          'recalled ${lr.injected.length}${mm > 0 ? ' · $mm meaning' : ''}'
+          '${lr.embeddingsActive ? ' · idx ${lr.embeddingIndexed}' : ''}');
+    } else {
+      _status?.mark('no memories matched yet');
+    }
     final effectiveSystem =
         recalled.isEmpty ? baseSystem : '$baseSystem\n\n$recalled';
 
@@ -153,6 +197,7 @@ class ChatController extends GetxController {
     // Start generation
     isGenerating.value = true;
     streamedResponse.value = '';
+    var hadError = false;
 
     final aiMsg = MessageModel(role: MessageRole.assistant, content: '');
     chat.messages.add(aiMsg);
@@ -166,6 +211,7 @@ class ChatController extends GetxController {
       // consolidation pass is holding the single engine, preempt it and wait
       // for the engine to free up, so this chat turn doesn't collide with a
       // "generation already in progress" error. Best-effort; no-op when idle.
+      _status?.begin(PipelinePhase.prompting, 'handing off to the model…');
       try {
         await Get.find<InferenceWorker>().yieldForForeground();
       } catch (_) {}
@@ -178,6 +224,9 @@ class ChatController extends GetxController {
       // its own end-of-turn.
       final maxTokens = _params?.getInt('gen.maxTokens');
 
+      _status?.begin(PipelinePhase.generating, 'generating…',
+          progress: (maxTokens != null && maxTokens > 0) ? 0.0 : null);
+
       final stream = _llm.generateChat(
         messages: history,
         systemPrompt: effectiveSystem,
@@ -185,18 +234,27 @@ class ChatController extends GetxController {
         maxTokens: maxTokens,
       );
 
+      var tok = 0;
       await for (final token in stream) {
         streamedResponse.value += token;
         aiMsg.content = streamedResponse.value;
+        tok++;
+        // Live readout: token count, rate, and budget progress — so the wait
+        // is visibly producing information instead of stalling.
+        _status?.setGeneration(
+            tokens: tok, tps: _llm.tokensPerSecond.value, budget: maxTokens);
         // Throttle UI refreshes
         chats.refresh();
       }
       _log?.info('sendMessage: stream complete · responseLen=${aiMsg.content.length}',
           source: 'Chat');
     } catch (e) {
+      hadError = true;
       _log?.error('sendMessage: stream error · $e', source: 'Chat');
+      final friendly = _friendlyError(e);
+      _status?.fail(friendly);
       if (aiMsg.content.isEmpty) {
-        aiMsg.content = '⚠ Error: ${e.toString()}';
+        aiMsg.content = '⚠ $friendly';
       }
     } finally {
       // Clean up any trailing stop tokens, hallucinated-turn markers, or stray
@@ -210,16 +268,45 @@ class ChatController extends GetxController {
       chats.refresh();
 
       // ── MEMORY: remember the assistant turn + opportunistic consolidate ──
+      // Never remember an error turn — it must not pollute episodic memory or
+      // get consolidated into a "fact". On success, clear the status.
       final mem = _memory;
-      if (mem != null && aiMsg.content.isNotEmpty) {
+      if (!hadError && mem != null && aiMsg.content.isNotEmpty) {
+        _status?.done('replied · ${aiMsg.content.length} chars');
         await mem.remember(
           sessionId: chat.id,
           role: 'assistant',
           content: aiMsg.content,
         );
         unawaited(mem.maybeConsolidate());
+      } else if (!hadError) {
+        _status?.done();
       }
+      // On error the status strip keeps the red failure message visible.
     }
+  }
+
+  /// Map a raw exception to a short, actionable message for the user — so a
+  /// failure reads as guidance, not a stack-trace fragment. The raw error still
+  /// goes to the log.
+  String _friendlyError(Object e) {
+    final s = e.toString().toLowerCase();
+    if (s.contains('no model')) {
+      return 'No model loaded — open Models and load one.';
+    }
+    if (s.contains('already in progress')) {
+      return 'The engine was busy — give it a moment and try again.';
+    }
+    if (s.contains('memory') ||
+        s.contains('alloc') ||
+        s.contains('oom') ||
+        s.contains('out of memory')) {
+      return 'Out of memory — try a smaller model or a lower context window in Settings.';
+    }
+    if (s.contains('cancel')) {
+      return 'Generation was stopped.';
+    }
+    return 'Generation failed: $e';
   }
 
   /// Build a compact recall cue from the last few turns (excluding [current],

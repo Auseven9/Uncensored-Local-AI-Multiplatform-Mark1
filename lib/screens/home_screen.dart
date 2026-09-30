@@ -11,6 +11,7 @@ import '../core/memory/recall_ranker.dart';
 import '../widgets/chat_sidebar.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/typing_indicator.dart';
+import '../widgets/pipeline_status_strip.dart';
 import 'model_library_screen.dart';
 import 'settings_screen.dart';
 
@@ -998,6 +999,7 @@ class _HomeScreenState extends State<HomeScreen> {
           }),
         ),
 
+        const PipelineStatusStrip(),
         _buildRecallStrip(),
         _buildInputArea(),
       ],

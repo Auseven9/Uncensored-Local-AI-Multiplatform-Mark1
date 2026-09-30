@@ -4,6 +4,7 @@ import 'package:get/get.dart';
 import 'package:llamadart/llamadart.dart';
 
 import 'log_service.dart';
+import 'pipeline_status_service.dart';
 
 /// Loads a small embedding GGUF as a SECOND, co-resident engine and turns text
 /// into vectors for meaning-based recall (Phase 2b).
@@ -46,6 +47,14 @@ class EmbeddingService extends GetxService {
     }
   }
 
+  PipelineStatusService? get _status {
+    try {
+      return Get.find<PipelineStatusService>();
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Load the embedding GGUF at [path]. Idempotent: a no-op if the same path is
   /// already loaded. Returns true on success, false on any failure (the service
   /// stays unloaded and recall keeps working without meaning-seeding).
@@ -54,8 +63,10 @@ class EmbeddingService extends GetxService {
     await unload();
     try {
       _log?.info('Loading embedding model: $path', source: 'Embed');
+      _status?.begin(PipelinePhase.arming, 'spinning up the embedder…');
       _backend = LlamaBackend();
       _engine = LlamaEngine(_backend!);
+      _status?.mark('loading embedding model…', progress: null);
       await _engine!.loadModel(
         path,
         // Embedding models are small; a modest context covers any claim/cue and
@@ -70,10 +81,12 @@ class EmbeddingService extends GetxService {
       isReady.value = true;
       loadedModelPath.value = path;
       lastError.value = null;
+      _status?.done('embedder ready');
       _log?.info('Embedding model ready', source: 'Embed');
       return true;
     } catch (e) {
       lastError.value = e.toString();
+      _status?.fail('Embedder failed to load.');
       _log?.error('Embedding model load failed: $e', source: 'Embed');
       await unload();
       return false;

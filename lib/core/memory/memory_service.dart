@@ -5,6 +5,7 @@ import 'package:get/get.dart';
 import '../../services/embedding_service.dart';
 import '../../services/llm_service.dart';
 import '../../services/log_service.dart';
+import '../../services/pipeline_status_service.dart';
 import '../params/parameters_service.dart';
 import 'eidetic_memory_engine.dart';
 import 'eidetic_store.dart' show tokenizeQuery;
@@ -81,6 +82,14 @@ class MemoryService extends GetxService {
   LlmService? get _llm {
     try {
       return Get.find<LlmService>();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  PipelineStatusService? get _status {
+    try {
+      return Get.find<PipelineStatusService>();
     } catch (_) {
       return null;
     }
@@ -428,10 +437,13 @@ class MemoryService extends GetxService {
   Future<void> _maybeConsolidate() async {
     try {
       if (!await _manager.hasPendingWork()) return;
+      _status?.begin(PipelinePhase.consolidating, 'curating memories…');
       final result = await _manager.consolidatePending();
       if (result.ran) {
         _record(MemoryCallType.consolidate,
             'reviewed ${result.considered} · +${result.promoted} stored · ${result.deduped} dup · ${result.relationsAdded} links');
+        _status?.mark(
+            'consolidated · +${result.promoted} facts · ${result.relationsAdded} links');
         if (_params?.getBool('events.enabled') ?? true) {
           try {
             final eventId = await _memory.appendEvent(
@@ -457,6 +469,7 @@ class MemoryService extends GetxService {
         // concurrently with generation — that crashes the second engine).
         if ((_embeddings?.isReady.value ?? false) && !_chatBusy) {
           try {
+            _status?.begin(PipelinePhase.embedding, 'indexing new facts…');
             await _embedAndStore(result.promotedFactIds);
             final perPass = _params?.getInt('embeddings.backfillPerPass') ?? 16;
             if (perPass > 0) {
@@ -465,11 +478,26 @@ class MemoryService extends GetxService {
               await _embedAndStore(
                   missing.map((f) => f.id).whereType<int>().toList());
             }
+            _status?.mark('meaning index updated');
           } catch (_) {}
         }
       }
+      _finishStatus();
     } catch (_) {
       // Consolidation is best-effort; never surface as a turn failure.
+      _finishStatus();
+    }
+  }
+
+  /// Clear the status back to idle, but only if this background pass still owns
+  /// it (phase is consolidating/embedding). A live chat turn that started
+  /// meanwhile has taken the status over — never clobber it.
+  void _finishStatus() {
+    final s = _status;
+    if (s == null) return;
+    if (s.phase.value == PipelinePhase.consolidating ||
+        s.phase.value == PipelinePhase.embedding) {
+      s.done();
     }
   }
 
