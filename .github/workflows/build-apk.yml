@@ -5,10 +5,12 @@ on:
   push:
     branches: [ main, spanish-translation, traduccion-al-espanol ]
 
+# Three independent jobs. `build` always uploads the shipping APK, so a flaky
+# emulator or a failing test never blocks getting an artifact. `test` and
+# `smoke` provide real red/green signals on top of that.
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -42,3 +44,107 @@ jobs:
           name: app-arm64-v8a-release-spanish
           path: build/app/outputs/flutter-apk/*.apk
           if-no-files-found: warn
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Java JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      # Informational for now: the codebase predates CI analysis, so this
+      # surfaces issues without gating. Tighten to a hard gate once clean.
+      - name: Analyze (informational)
+        continue-on-error: true
+        run: flutter analyze
+
+      - name: Unit tests
+        run: flutter test
+
+  smoke-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Java JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      # Debug x86_64 build so it installs on a fast (KVM) x86_64 emulator. This
+      # verifies the app boots far enough to open the storage layer — the class
+      # of failure the WAL PRAGMA crash belonged to, which only reproduces on a
+      # real Android SQLite (not FFI/desktop).
+      - name: Build debug APK (x86_64 for emulator)
+        run: flutter build apk --debug --target-platform android-x64
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: DB-init smoke test on Android emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-snapshot -no-window -gpu swiftshader_indirect -no-boot-anim -camera-back none
+          script: |
+            set -e
+            adb install -r build/app/outputs/flutter-apk/app-debug.apk
+            adb logcat -c
+            adb shell monkey -p com.portableai.portable_ai_flutter -c android.intent.category.LAUNCHER 1 || true
+
+            ok=0
+            for i in $(seq 1 45); do
+              log="$(adb logcat -d 2>/dev/null || true)"
+              if echo "$log" | grep -q "AETHER_SMOKE_DB_OK"; then ok=1; break; fi
+              if echo "$log" | grep -q "AETHER_SMOKE_FAIL"; then
+                echo "::error::App init failed on device:"
+                echo "$log" | grep "AETHER_SMOKE_FAIL"
+                exit 1
+              fi
+              if echo "$log" | grep -qi "journal_mode=WAL"; then
+                echo "::error::WAL DatabaseException regressed:"
+                echo "$log" | grep -i "journal_mode\|DatabaseException" | head -n 20
+                exit 1
+              fi
+              sleep 2
+            done
+
+            if [ "$ok" != "1" ]; then
+              echo "::error::Timed out waiting for AETHER_SMOKE_DB_OK. Logcat tail:"
+              adb logcat -d | tail -n 200
+              exit 1
+            fi
+            echo "Storage layer initialized cleanly (AETHER_SMOKE_DB_OK)."

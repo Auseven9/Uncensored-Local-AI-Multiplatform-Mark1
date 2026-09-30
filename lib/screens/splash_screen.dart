@@ -44,6 +44,10 @@ class _SplashScreenState extends State<SplashScreen> {
       setState(() => _status = 'Opening Eidetic memory...');
       log.info('Opening Eidetic memory...', source: 'Splash');
       await Get.find<EideticMemoryEngine>().init();
+      // CI smoke marker: the storage/DB layer (the part that crashed on Android
+      // when WAL was set via execute) opened cleanly. The emulator smoke test
+      // asserts this line appears and no DatabaseException does.
+      debugPrint('AETHER_SMOKE_DB_OK');
 
       setState(() => _status = 'Loading model catalog...');
       log.info('Loading model catalog...', source: 'Splash');
@@ -73,8 +77,10 @@ class _SplashScreenState extends State<SplashScreen> {
         await BackgroundOptimizerService.checkAndPrompt(context);
       }
 
+      debugPrint('AETHER_SMOKE_OK');
       Get.offAllNamed(AppRoutes.home);
     } catch (e) {
+      debugPrint('AETHER_SMOKE_FAIL: $e');
       setState(() => _status = 'Error: $e');
       try {
         Get.find<LogService>().error('Init failed: $e', source: 'Splash');

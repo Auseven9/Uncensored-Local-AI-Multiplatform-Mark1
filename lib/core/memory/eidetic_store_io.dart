@@ -18,6 +18,13 @@ EideticStore createEideticStore() => SqliteEideticStore();
 /// native platforms sqflite's default plugin factory is used. The database
 /// lives next to the app's documents directory as `eidetic_memory_dojo.db`.
 class SqliteEideticStore implements EideticStore {
+  /// [path] overrides the database location. Production leaves it null (the
+  /// path is derived from the app documents directory); tests pass an explicit
+  /// path — a temp file, or `inMemoryDatabasePath` — so the real SQLite open /
+  /// migrate / query path can be exercised without the path_provider plugin.
+  SqliteEideticStore({String? path}) : _pathOverride = path;
+
+  final String? _pathOverride;
   Database? _db;
 
   @override
@@ -42,8 +49,13 @@ class SqliteEideticStore implements EideticStore {
       databaseFactory = databaseFactoryFfi;
     }
 
-    final dir = await getApplicationDocumentsDirectory();
-    final path = p.join(dir.path, 'eidetic_memory_dojo.db');
+    final String path;
+    if (_pathOverride != null) {
+      path = _pathOverride!;
+    } else {
+      final dir = await getApplicationDocumentsDirectory();
+      path = p.join(dir.path, 'eidetic_memory_dojo.db');
+    }
 
     _db = await openDatabase(
       path,

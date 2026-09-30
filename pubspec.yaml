@@ -62,6 +62,9 @@ hooks:
           linux-x64: [vulkan]
           windows-x64: [vulkan]
           android-arm64: [cpu, vulkan, opencl]
+          # x86_64 is only used by the CI emulator smoke test (a portable CPU
+          # backend); shipping devices are arm64. Does not affect arm64 builds.
+          android-x64: [cpu]
 
 flutter:
   uses-material-design: true
