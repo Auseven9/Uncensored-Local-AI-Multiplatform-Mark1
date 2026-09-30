@@ -134,14 +134,18 @@ void main() {
         },
       ),
     );
-    // Pre-existing user data that must survive the migration.
-    await v1.insert(
-        'semantic_facts',
-        SemanticFact(
-          createdUtc: DateTime.now().toUtc(),
-          category: SemanticCategory.fact,
-          text: 'pre-existing fact',
-        ).toRow());
+    // Pre-existing user data that must survive the migration. Insert with the
+    // RAW v1 column set — SemanticFact.toRow() now emits the v3 claim columns
+    // (salience/status/supersedes) which this old table does not have yet.
+    await v1.insert('semantic_facts', {
+      'created_utc': DateTime.now().toUtc().toIso8601String(),
+      'category': 'fact',
+      'text': 'pre-existing fact',
+      'source_session_id': null,
+      'confidence': 0.5,
+      'dedupe_hash': stableContentHash('pre-existing fact'),
+      'embedding_json': null,
+    });
     await v1.close();
 
     // Reopen through the store (version 2) — onUpgrade must add event_log.
@@ -150,6 +154,10 @@ void main() {
 
     // Old data preserved…
     expect(await store.factCount(), 1);
+    // …with the new claim columns back-filled to their defaults.
+    final migrated = (await store.recentFacts(limit: 1)).first;
+    expect(migrated.salience, 0.5);
+    expect(migrated.status, ClaimStatus.active);
     // …and the newly-migrated event log is usable.
     await store.appendEvent(AppEvent(
         timestampUtc: DateTime.now().toUtc(),
