@@ -2,10 +2,9 @@ import 'dart:async';
 
 import 'package:get/get.dart';
 
-import '../../services/chat_storage_service.dart';
 import '../../services/embedding_service.dart';
+import '../../services/llm_service.dart';
 import '../../services/log_service.dart';
-import '../../services/model_manager.dart';
 import '../params/parameters_service.dart';
 import 'eidetic_memory_engine.dart';
 import 'eidetic_store.dart' show tokenizeQuery;
@@ -73,52 +72,25 @@ class MemoryService extends GetxService {
     }
   }
 
-  ChatStorageService? get _storage {
+  LlmService? get _llm {
     try {
-      return Get.find<ChatStorageService>();
+      return Get.find<LlmService>();
     } catch (_) {
       return null;
     }
   }
 
-  ModelManager? get _models {
-    try {
-      return Get.find<ModelManager>();
-    } catch (_) {
-      return null;
-    }
-  }
-
-  bool _embedLoading = false;
-
-  /// Load the embedding model from the stored selection when meaning-based
-  /// recall is enabled — lazily and best-effort, so the first recall after
-  /// enabling isn't blocked (it uses keyword+graph seeding until the embedder
-  /// is ready, then meaning-seeding kicks in on subsequent turns).
-  Future<void> _ensureEmbeddingLoaded() async {
-    if (_embedLoading) return;
-    final storage = _storage;
-    final emb = _embeddings;
-    final models = _models;
-    if (storage == null || emb == null || models == null) return;
-    if (!storage.embeddingsEnabled) return;
-    final fn = storage.embeddingModelFilename;
-    if (fn.isEmpty) return;
-    final path = models.getModelPathByFilename(fn);
-    if (emb.isReady.value && emb.loadedModelPath.value == path) return;
-    _embedLoading = true;
-    try {
-      await emb.load(path);
-    } finally {
-      _embedLoading = false;
-    }
-  }
+  /// True while the chat model is generating. Embedding runs on a *second*
+  /// native engine, and loading/running it concurrently with chat generation
+  /// crashes the process on-device — so every embedder call is gated on this.
+  bool get _chatBusy => _llm?.isGenerating.value ?? false;
 
   /// Embed [ids]' claim text and store the vectors (best-effort; skips any that
-  /// fail). Used for newly-promoted claims and the backfill queue.
+  /// fail, and never runs while the chat model is generating). Used for
+  /// newly-promoted claims and the backfill queue.
   Future<void> _embedAndStore(List<int> ids) async {
     final emb = _embeddings;
-    if (emb == null || !emb.isReady.value || ids.isEmpty) return;
+    if (emb == null || !emb.isReady.value || ids.isEmpty || _chatBusy) return;
     final facts = await _memory.factsByIds(ids);
     for (final f in facts) {
       final id = f.id;
@@ -190,13 +162,14 @@ class MemoryService extends GetxService {
     final wRec = _params?.getDouble('recall.wRecency') ?? 0.15;
     final halfLife = _params?.getDouble('recall.recencyHalfLifeHours') ?? 72.0;
 
-    // Meaning-based recall (Phase 2b): embed the cue when an embedding model is
-    // ready. Loading is kicked off best-effort and non-blocking — recall keeps
-    // running on keyword+graph seeding until the embedder is up, then meaning
-    // seeds are added on subsequent turns.
-    unawaited(_ensureEmbeddingLoaded());
+    // Meaning-based recall (Phase 2b): embed the cue only when an embedding
+    // model has been explicitly loaded (Settings > Meaning-based Memory) and
+    // the chat model is idle. The embedder is NEVER auto-loaded on the turn
+    // path — spinning up a second native engine mid-turn, concurrently with
+    // chat generation, crashes the process on-device. Recall stays on
+    // keyword+graph seeding unless a model was loaded from Settings.
     List<double>? cueVec;
-    if (_embeddings?.isReady.value ?? false) {
+    if ((_embeddings?.isReady.value ?? false) && !_chatBusy) {
       cueVec = await _embeddings!.embed(cue);
     }
     final embSeedK = _params?.getInt('embeddings.seedK') ?? 10;
@@ -397,8 +370,9 @@ class MemoryService extends GetxService {
         }
         // Meaning index (Phase 2b): embed the new claims, then chip away at the
         // backfill so recall's embedding seeds stay current. Best-effort; runs
-        // only when an embedder is loaded, off the chat path.
-        if (_embeddings?.isReady.value ?? false) {
+        // only when an embedder is loaded AND the chat model is idle (never
+        // concurrently with generation — that crashes the second engine).
+        if ((_embeddings?.isReady.value ?? false) && !_chatBusy) {
           try {
             await _embedAndStore(result.promotedFactIds);
             final perPass = _params?.getInt('embeddings.backfillPerPass') ?? 16;

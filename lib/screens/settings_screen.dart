@@ -11,6 +11,7 @@ import '../services/model_manager.dart';
 import '../services/background_optimizer_service.dart';
 import '../services/chat_storage_service.dart';
 import '../services/embedding_service.dart';
+import '../services/llm_service.dart';
 
 class SettingsScreen extends StatelessWidget {
   /// When true, no Scaffold — just the body content for embedding in tabs.
@@ -1348,6 +1349,19 @@ class _EmbeddingSettingsCardState extends State<_EmbeddingSettingsCard> {
   Future<void> _loadSelected() async {
     final fn = _selected;
     if (fn == null || fn.isEmpty) return;
+    // Never load the second (embedding) engine while the chat model is
+    // generating — two concurrent native engines crash the process.
+    try {
+      if (Get.find<LlmService>().isGenerating.value) {
+        Get.snackbar(
+          'Chat is busy',
+          'Wait for the current reply to finish before loading the embedding model.',
+          snackPosition: SnackPosition.BOTTOM,
+          duration: const Duration(seconds: 3),
+        );
+        return;
+      }
+    } catch (_) {}
     final path = _models.getModelPathByFilename(fn);
     final ok = await _emb.load(path);
     Get.snackbar(
@@ -1361,11 +1375,10 @@ class _EmbeddingSettingsCardState extends State<_EmbeddingSettingsCard> {
   Future<void> _onToggle(bool value) async {
     setState(() => _enabled = value);
     widget.storage.embeddingsEnabled = value;
-    if (value) {
-      await _loadSelected();
-    } else {
-      await _emb.unload();
-    }
+    // Enabling only allows recall to USE an embedder — it does NOT auto-load
+    // one. Loading spins up a second native engine, which must happen only by
+    // explicit action below (and only while chat is idle). Disabling unloads.
+    if (!value) await _emb.unload();
   }
 
   @override
@@ -1413,6 +1426,22 @@ class _EmbeddingSettingsCardState extends State<_EmbeddingSettingsCard> {
               'embedding model loaded alongside the chat model. Off = recall '
               'runs on keyword + graph only.',
               style: TextStyle(color: context.textM, fontSize: 12),
+            ),
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Colors.orangeAccent.withValues(alpha: 0.10),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(
+                'Experimental. Loads a second model into memory — on some '
+                'devices this can close the app. Load it only while not '
+                'chatting; if the app closes on load, leave this off — recall '
+                'still works fully on keyword + graph.',
+                style: TextStyle(
+                    color: context.textM, fontSize: 11, height: 1.35),
+              ),
             ),
             const SizedBox(height: 12),
             Text('Embedding model',
