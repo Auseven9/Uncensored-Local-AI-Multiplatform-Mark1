@@ -51,7 +51,7 @@ class SqliteEideticStore implements EideticStore {
 
     final String path;
     if (_pathOverride != null) {
-      path = _pathOverride!;
+      path = _pathOverride;
     } else {
       final dir = await getApplicationDocumentsDirectory();
       path = p.join(dir.path, 'eidetic_memory_dojo.db');

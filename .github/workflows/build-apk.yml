@@ -119,32 +119,6 @@ jobs:
           profile: pixel_6
           disable-animations: true
           emulator-options: -no-snapshot -no-window -gpu swiftshader_indirect -no-boot-anim -camera-back none
-          script: |
-            set -e
-            adb install -r build/app/outputs/flutter-apk/app-debug.apk
-            adb logcat -c
-            adb shell monkey -p com.portableai.portable_ai_flutter -c android.intent.category.LAUNCHER 1 || true
-
-            ok=0
-            for i in $(seq 1 45); do
-              log="$(adb logcat -d 2>/dev/null || true)"
-              if echo "$log" | grep -q "AETHER_SMOKE_DB_OK"; then ok=1; break; fi
-              if echo "$log" | grep -q "AETHER_SMOKE_FAIL"; then
-                echo "::error::App init failed on device:"
-                echo "$log" | grep "AETHER_SMOKE_FAIL"
-                exit 1
-              fi
-              if echo "$log" | grep -qi "journal_mode=WAL"; then
-                echo "::error::WAL DatabaseException regressed:"
-                echo "$log" | grep -i "journal_mode\|DatabaseException" | head -n 20
-                exit 1
-              fi
-              sleep 2
-            done
-
-            if [ "$ok" != "1" ]; then
-              echo "::error::Timed out waiting for AETHER_SMOKE_DB_OK. Logcat tail:"
-              adb logcat -d | tail -n 200
-              exit 1
-            fi
-            echo "Storage layer initialized cleanly (AETHER_SMOKE_DB_OK)."
+          # A standalone script — the runner executes an inline `script:` line by
+          # line, which breaks multi-line shell (see .github/scripts/smoke_check.sh).
+          script: bash .github/scripts/smoke_check.sh
