@@ -112,11 +112,16 @@ class ChatStorageService extends GetxService {
 
   /// Context window size in tokens. 0 = auto: use the model's own trained
   /// maximum (its ceiling), which llamadart resolves via
-  /// `llama_model_n_ctx_train`. Lower it to reduce RAM / KV-cache use on
-  /// constrained devices. Defaults to 0 so a capable model gets its full
-  /// context instead of an arbitrary cap.
+  /// `llama_model_n_ctx_train`.
+  ///
+  /// Defaults to 4096, NOT auto: on CPU inference the whole KV-cache lives in
+  /// RAM and scales linearly with context, so auto (tens of thousands of
+  /// tokens) can OOM the model at load on many devices. 4096 is a safe,
+  /// broadly-loadable default that is still a large jump over the old 1024
+  /// cap; users raise it (up to auto) in Settings once they know their device
+  /// handles it.
   int get contextSize =>
-      (_settingsBox.get('context_size', defaultValue: 0) as num).toInt();
+      (_settingsBox.get('context_size', defaultValue: 4096) as num).toInt();
 
   set contextSize(int value) => _settingsBox.put('context_size', value);
 }

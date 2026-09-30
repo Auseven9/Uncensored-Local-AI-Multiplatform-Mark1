@@ -1073,6 +1073,93 @@ class _HardwareSettingsCardState extends State<_HardwareSettingsCard> {
             ),
           ),
 
+          const SizedBox(height: 20),
+
+          // ── Context Window (always visible: it decides whether a model
+          //    even loads on this device) ──
+          Row(
+            children: [
+              Icon(Icons.memory_rounded, size: 18, color: AppColors.accent),
+              const SizedBox(width: 8),
+              Text(
+                'Context Window',
+                style: TextStyle(
+                    color: context.text,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600),
+              ),
+              const Spacer(),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                decoration: BoxDecoration(
+                  color: context.bgInput,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  _contextSize == 0 ? 'Auto (max)' : '$_contextSize tok',
+                  style:
+                      TextStyle(color: context.text, fontWeight: FontWeight.bold),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          // Quick presets — the fast way to find a value that loads.
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _buildContextPreset('2K', 2048),
+              _buildContextPreset('4K', 4096),
+              _buildContextPreset('8K', 8192),
+              _buildContextPreset('16K', 16384),
+              _buildContextPreset('32K', 32768),
+              _buildContextPreset('Auto', 0),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _ctxController,
+                  keyboardType: TextInputType.number,
+                  style: TextStyle(color: context.text, fontSize: 14),
+                  decoration: InputDecoration(
+                    hintText: 'Custom (tokens). 0 = Auto',
+                    hintStyle: TextStyle(color: context.textD, fontSize: 13),
+                    filled: true,
+                    fillColor: context.bgInput,
+                    contentPadding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide: BorderSide(color: context.border),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide: BorderSide(color: context.border),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide: BorderSide(color: AppColors.accent),
+                    ),
+                  ),
+                  onChanged: _saveContextSize,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Larger = more memory + longer history, but more RAM. On CPU the '
+            'whole context lives in RAM, so too high a value crashes the model '
+            'at load — raise it in steps and reload. 4K is a safe default; Auto '
+            'uses the model\'s full ceiling (largest, most likely to be killed '
+            'for memory). Reload the model after changing.',
+            style: TextStyle(color: context.textD, fontSize: 11, height: 1.4),
+          ),
+
           const SizedBox(height: 16),
 
           // ── Manual Override Toggle ──
@@ -1153,81 +1240,40 @@ class _HardwareSettingsCardState extends State<_HardwareSettingsCard> {
               'If the app crashes when loading a model, reduce GPU layers or switch to CPU. Reload the model after changing settings.',
               style: TextStyle(color: context.textD, fontSize: 11, height: 1.4),
             ),
-
-            const SizedBox(height: 20),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  'Context Window (tokens)',
-                  style: TextStyle(color: context.text, fontSize: 14),
-                ),
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: context.bgInput,
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Text(
-                    _contextSize == 0 ? 'Auto' : _contextSize.toString(),
-                    style: TextStyle(
-                        color: context.text, fontWeight: FontWeight.bold),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _ctxController,
-                    keyboardType: TextInputType.number,
-                    style: TextStyle(color: context.text, fontSize: 14),
-                    decoration: InputDecoration(
-                      hintText: '0 = Auto (model maximum)',
-                      hintStyle: TextStyle(color: context.textD, fontSize: 13),
-                      filled: true,
-                      fillColor: context.bgInput,
-                      contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 10),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(8),
-                        borderSide: BorderSide(color: context.border),
-                      ),
-                      enabledBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(8),
-                        borderSide: BorderSide(color: context.border),
-                      ),
-                      focusedBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(8),
-                        borderSide: BorderSide(color: AppColors.accent),
-                      ),
-                    ),
-                    onChanged: _saveContextSize,
-                  ),
-                ),
-                const SizedBox(width: 8),
-                TextButton(
-                  onPressed: () {
-                    _ctxController.clear();
-                    _saveContextSize('0');
-                  },
-                  child: const Text('Auto'),
-                ),
-              ],
-            ),
-            const SizedBox(height: 6),
-            Text(
-              'Auto (0) uses the model\'s full trained context — its ceiling. '
-              'A tiny window truncates replies and stalls memory consolidation, '
-              'so leave this on Auto unless the app is killed for memory, then '
-              'set a lower number. Reload the model after changing.',
-              style: TextStyle(color: context.textD, fontSize: 11, height: 1.4),
-            ),
           ],
         ],
+      ),
+    );
+  }
+
+  Widget _buildContextPreset(String label, int value) {
+    final selected = _contextSize == value;
+    return InkWell(
+      onTap: () {
+        setState(() {
+          _contextSize = value;
+          _ctxController.text = value == 0 ? '' : value.toString();
+        });
+        widget.storage.contextSize = value;
+      },
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          color: selected ? AppColors.accent : context.bgInput,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: selected ? AppColors.accent : context.border,
+          ),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: selected ? Colors.white : context.text,
+            fontSize: 12,
+            fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+          ),
+        ),
       ),
     );
   }
