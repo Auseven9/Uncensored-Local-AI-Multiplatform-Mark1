@@ -48,6 +48,12 @@ class MemoryService extends GetxService {
   final recentCalls = <MemoryCall>[].obs;
   static const _maxCalls = 60;
 
+  /// The most recent recall pass, for the chat UI's "recalled-memory chips" —
+  /// what was pulled into context, by source, before the model spoke. Null
+  /// until the first recall; carries an empty [RecallResult] when nothing was
+  /// recalled (so the UI can hide cleanly).
+  final lastRecall = Rxn<RecallResult>();
+
   LogService? get _log {
     try {
       return Get.find<LogService>();
@@ -144,6 +150,8 @@ class MemoryService extends GetxService {
     if (kk <= 0) {
       _record(
           MemoryCallType.recall, 'query="${_short(query)}" → disabled (k=0)');
+      lastRecall.value =
+          const RecallResult(injected: [], embeddingsActive: false);
       return emptyResult();
     }
 
@@ -175,6 +183,17 @@ class MemoryService extends GetxService {
     final embSeedK = _params?.getInt('embeddings.seedK') ?? 10;
     final embThreshold = _params?.getDouble('embeddings.threshold') ?? 0.3;
 
+    // Which claims were direct meaning matches (embedding nearest neighbours),
+    // so recalled chips can show whether embeddings actually contributed.
+    Set<int> embSeedIds = const {};
+    if (cueVec != null && cueVec.isNotEmpty) {
+      try {
+        embSeedIds = (await _memory.nearestClaimIds(cueVec,
+                k: embSeedK, threshold: embThreshold))
+            .toSet();
+      } catch (_) {}
+    }
+
     List<({SemanticFact fact, double score})> semantic;
     List<EpisodicEntry> episodic;
     try {
@@ -190,6 +209,8 @@ class MemoryService extends GetxService {
       episodic = await _memory.searchEpisodic(cue, limit: epiDepth);
     } catch (e) {
       _record(MemoryCallType.recall, 'query="${_short(query)}" → error: $e');
+      lastRecall.value =
+          const RecallResult(injected: [], embeddingsActive: false);
       return emptyResult();
     }
 
@@ -204,6 +225,7 @@ class MemoryService extends GetxService {
         salience: s.fact.salience,
         timestamp: s.fact.createdUtc,
         dedupeKey: normalizeForDedupe(s.fact.text),
+        viaEmbedding: s.fact.id != null && embSeedIds.contains(s.fact.id),
       ));
     }
     for (final e in episodic) {
@@ -228,8 +250,18 @@ class MemoryService extends GetxService {
       charBudget: charBudget,
     ).take(kk).toList();
 
+    // Publish for the recalled-memory chips (visible instantly, before the
+    // slow model generates).
+    final embOn = cueVec != null;
+    final embMatches = ranked.where((c) => c.viaEmbedding).length;
+    lastRecall.value = RecallResult(
+      injected: ranked,
+      embeddingsActive: embOn,
+      cue: _short(query),
+    );
+
     _record(MemoryCallType.recall,
-        'cue="${_short(query)}" → sem ${semantic.length}, epi ${episodic.length}, injected ${ranked.length}');
+        'cue="${_short(query)}" → sem ${semantic.length}, epi ${episodic.length}, injected ${ranked.length}${embOn ? ' · emb on ($embMatches meaning)' : ''}');
 
     if (ranked.isEmpty) return emptyResult();
 

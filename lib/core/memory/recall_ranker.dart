@@ -21,6 +21,11 @@ class RecallCandidate {
   /// Normalised text, used to dedupe the same content across tiers.
   final String dedupeKey;
 
+  /// True when this (semantic) claim was a direct meaning match — its id was in
+  /// the embedding nearest-neighbour seed set for the cue. Lets the UI show
+  /// whether embeddings actually contributed, vs keyword/graph seeding.
+  final bool viaEmbedding;
+
   /// Final blended score, filled in by [fuseAndRank].
   double score = 0.0;
 
@@ -31,7 +36,29 @@ class RecallCandidate {
     required this.salience,
     required this.timestamp,
     required this.dedupeKey,
+    this.viaEmbedding = false,
   });
+}
+
+/// The outcome of one recall pass, surfaced to the UI as "recalled-memory
+/// chips" so the memory is visible before the (slow) model speaks.
+class RecallResult {
+  /// The items actually injected into context, already ranked and budget-capped.
+  final List<RecallCandidate> injected;
+
+  /// Whether an embedding model contributed meaning-based seeds this turn.
+  final bool embeddingsActive;
+
+  /// The cue that drove this recall (short, for display/debug).
+  final String cue;
+
+  const RecallResult({
+    required this.injected,
+    required this.embeddingsActive,
+    this.cue = '',
+  });
+
+  bool get isEmpty => injected.isEmpty;
 }
 
 /// Normalise text into a dedupe key (lowercase, collapse whitespace).

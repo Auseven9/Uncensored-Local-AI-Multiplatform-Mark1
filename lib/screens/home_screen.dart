@@ -6,6 +6,8 @@ import '../controllers/chat_controller.dart';
 import '../controllers/model_controller.dart';
 import '../controllers/theme_controller.dart';
 import '../services/llm_service.dart';
+import '../core/memory/memory_service.dart';
+import '../core/memory/recall_ranker.dart';
 import '../widgets/chat_sidebar.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/typing_indicator.dart';
@@ -24,6 +26,14 @@ class _HomeScreenState extends State<HomeScreen> {
   final _modelCtrl = Get.find<ModelController>();
   final _llm = Get.find<LlmService>();
   final _themeCtrl = Get.find<ThemeController>();
+
+  MemoryService? get _memory {
+    try {
+      return Get.find<MemoryService>();
+    } catch (_) {
+      return null;
+    }
+  }
   final _msgController = TextEditingController();
   final _scrollController = ScrollController();
   bool _sidebarOpen = true;
@@ -988,8 +998,268 @@ class _HomeScreenState extends State<HomeScreen> {
           }),
         ),
 
+        _buildRecallStrip(),
         _buildInputArea(),
       ],
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // RECALLED-MEMORY CHIPS — surface what the memory pulled up, before
+  // the (slow) model speaks. Turns a 0.1 t/s wait into "watch it
+  // remember", and lets us SEE whether embeddings earn their place
+  // (meaning-seeded vs keyword/graph-seeded).
+  // ═══════════════════════════════════════════════════════════════
+  Widget _buildRecallStrip() {
+    final mem = _memory;
+    if (mem == null) return const SizedBox.shrink();
+
+    return Obx(() {
+      final result = mem.lastRecall.value;
+      // Hide when there's nothing recalled, or no active conversation.
+      final chat = _chatCtrl.activeChat;
+      if (result == null ||
+          result.isEmpty ||
+          chat == null ||
+          chat.messages.isEmpty) {
+        return const SizedBox.shrink();
+      }
+
+      final embOn = result.embeddingsActive;
+      return Container(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+        decoration: BoxDecoration(
+          color: context.bgPanel,
+          border: Border(top: BorderSide(color: context.border, width: 0.5)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.only(left: 2, bottom: 6),
+              child: Row(
+                children: [
+                  Icon(Icons.bubble_chart_outlined,
+                      size: 13, color: context.textM),
+                  const SizedBox(width: 5),
+                  Text(
+                    'Recalled ${result.injected.length}',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      color: context.textM,
+                      letterSpacing: 0.2,
+                    ),
+                  ),
+                  if (embOn) ...[
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 1),
+                      decoration: BoxDecoration(
+                        color: AppColors.accent.withValues(alpha: 0.14),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Text(
+                        'meaning on',
+                        style: TextStyle(
+                          fontSize: 9.5,
+                          fontWeight: FontWeight.w600,
+                          color: AppColors.accent,
+                          letterSpacing: 0.2,
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            SizedBox(
+              height: 30,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                itemCount: result.injected.length,
+                separatorBuilder: (_, __) => const SizedBox(width: 6),
+                itemBuilder: (context, i) => _recallChip(result.injected[i]),
+              ),
+            ),
+          ],
+        ),
+      );
+    });
+  }
+
+  /// Colour + label a recall chip by where it came from, so the source
+  /// is legible at a glance: meaning match (embedding) vs semantic fact
+  /// vs episodic recent turn.
+  Widget _recallChip(RecallCandidate c) {
+    final Color tint;
+    final String tag;
+    if (c.viaEmbedding) {
+      tint = AppColors.accent;
+      tag = 'meaning';
+    } else {
+      switch (c.source) {
+        case RecallSource.semantic:
+          tint = const Color(0xFFB47CFF); // purple — curated fact
+          tag = 'fact';
+          break;
+        case RecallSource.episodic:
+          tint = const Color(0xFF4FC3F7); // cyan — raw recent turn
+          tag = 'recent';
+          break;
+        case RecallSource.working:
+          tint = const Color(0xFF4FC3F7);
+          tag = 'live';
+          break;
+      }
+    }
+
+    final preview = c.text.replaceAll(RegExp(r'\s+'), ' ').trim();
+    final shown = preview.length > 42 ? '${preview.substring(0, 42)}…' : preview;
+
+    return GestureDetector(
+      onTap: () => _showRecallDetail(c),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+        decoration: BoxDecoration(
+          color: tint.withValues(alpha: 0.10),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: tint.withValues(alpha: 0.35), width: 0.7),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              tag,
+              style: TextStyle(
+                fontSize: 9,
+                fontWeight: FontWeight.w700,
+                color: tint,
+                letterSpacing: 0.3,
+              ),
+            ),
+            const SizedBox(width: 6),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 180),
+              child: Text(
+                shown,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 11,
+                  color: context.text,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Full detail of one recalled memory — source, whether meaning matched,
+  /// the blended score, and the full text.
+  void _showRecallDetail(RecallCandidate c) {
+    final String sourceLabel;
+    switch (c.source) {
+      case RecallSource.semantic:
+        sourceLabel = 'Semantic (curated fact)';
+        break;
+      case RecallSource.episodic:
+        sourceLabel = 'Episodic (raw turn)';
+        break;
+      case RecallSource.working:
+        sourceLabel = 'Working set (live)';
+        break;
+    }
+
+    Get.bottomSheet(
+      Container(
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 28),
+        decoration: BoxDecoration(
+          color: context.bgPanel,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(18)),
+          border: Border.all(color: context.border, width: 0.5),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(
+              child: Container(
+                width: 36,
+                height: 4,
+                margin: const EdgeInsets.only(bottom: 16),
+                decoration: BoxDecoration(
+                  color: context.border,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            Row(
+              children: [
+                Icon(Icons.psychology_outlined,
+                    size: 16, color: AppColors.accent),
+                const SizedBox(width: 6),
+                Text(
+                  'Recalled memory',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: context.text,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            _detailRow('Source', sourceLabel),
+            _detailRow('Meaning match', c.viaEmbedding ? 'yes' : 'no'),
+            _detailRow('Score', c.score.toStringAsFixed(3)),
+            _detailRow('Relevance', c.relevance.toStringAsFixed(3)),
+            _detailRow('Salience', c.salience.toStringAsFixed(3)),
+            const SizedBox(height: 12),
+            Text(
+              c.text.trim(),
+              style: TextStyle(
+                fontSize: 13,
+                height: 1.4,
+                color: context.text,
+              ),
+            ),
+          ],
+        ),
+      ),
+      isScrollControlled: true,
+    );
+  }
+
+  Widget _detailRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 5),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 108,
+            child: Text(
+              label,
+              style: TextStyle(fontSize: 11.5, color: context.textM),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              value,
+              style: TextStyle(
+                fontSize: 11.5,
+                fontWeight: FontWeight.w600,
+                color: context.text,
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
