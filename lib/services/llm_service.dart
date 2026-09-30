@@ -155,13 +155,17 @@ class LlmService extends GetxService {
         return;
       }
 
-      // Use smaller context on Android to prevent OOM kills.
-      // Desktop can handle 2048, but Android devices with limited RAM
-      // need 1024 to avoid the Low Memory Killer (LMK).
-      final contextSize = Platform.isAndroid ? 1024 : 2048;
-
       // Map the string backend to GpuBackend enum
       final storage = Get.find<ChatStorageService>();
+
+      // Context window (tokens). User-configurable; 0 = auto, which llamadart
+      // resolves to the model's own trained maximum (llama_model_n_ctx_train)
+      // — i.e. the model's ceiling. This is deliberately NOT capped to an
+      // arbitrary small value: a model that comfortably runs at tens of
+      // thousands of tokens should get that context (a tiny window truncates
+      // replies and overflows the consolidation prompt). Users lower it in
+      // Settings if they need to cut RAM/KV-cache use on a constrained device.
+      final contextSize = storage.contextSize;
       GpuBackend parsedBackend;
       switch (storage.backendType) {
         case 'vulkan':
@@ -186,11 +190,22 @@ class LlmService extends GetxService {
         numberOfThreadsBatch: Platform.numberOfProcessors > 4 ? 4 : 0,
       );
 
-      log?.info('Backend=$parsedBackend, GPU layers=$userGpuLayers, ctx=$contextSize, threads=${Platform.numberOfProcessors > 4 ? 4 : 0}', source: 'LLM');
+      log?.info('Backend=$parsedBackend, GPU layers=$userGpuLayers, ctx=${contextSize == 0 ? 'auto(model max)' : contextSize}, threads=${Platform.numberOfProcessors > 4 ? 4 : 0}', source: 'LLM');
 
       log?.info('invoking native engine.loadModel() …', source: 'LLM');
       await _engine!.loadModel(path, modelParams: params);
       log?.info('native engine.loadModel() returned OK', source: 'LLM');
+
+      // Report the context window actually in effect. When contextSize is 0
+      // (auto), llamadart resolves it to the model's trained maximum, so this
+      // is the honest number the session is running with — surfaced for the
+      // logs the user debugs from.
+      try {
+        final effectiveCtx = await _engine!.getContextSize();
+        log?.info(
+            'Context window in effect: $effectiveCtx tokens${contextSize == 0 ? ' (auto — model maximum)' : ''}',
+            source: 'LLM');
+      } catch (_) {}
       progressTimer.cancel();
 
       if (_loadingCancelled) {

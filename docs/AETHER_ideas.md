@@ -9,6 +9,44 @@ spec's roadmap (§5) or captured directions (§5b).
 
 ---
 
+## 2026-09-30 — Working principle: build from the pad, and make the memory itself adaptive
+
+Set by Dylon: *"we should be implementing from the idea pad on our way up the
+phases. It's okay to adapt. Actually adaptability should be built into the
+memory. Quality is the aim, invention is the driver and optimization is the
+thrust."*
+
+Two commitments, both now standing:
+
+1. **The pad feeds the phases directly.** It isn't a someday-list. Each phase
+   pulls the relevant friction points / strategies from it and adapts them to
+   what the device actually does. First proof, shipped today: the context
+   window is no longer hard-capped (it defaults to the model's full trained
+   ceiling, user-lowerable) and background consolidation now *yields the single
+   engine to a live user turn* instead of colliding with it. Both came straight
+   out of Friction #2 (interactive latency vs System 2) and Strategy #4 (defer
+   System 2 to idle) in the entry below — a ~1 tok/s model cannot let a minutes-
+   long background pass hold the one engine while the user is trying to talk.
+
+2. **Adaptability is a property of the memory, not a feature bolted on.** The
+   system should tune *itself* with use rather than relying on hand-set
+   constants forever:
+   - Salience that rises with reinforcement and falls with disuse (Ebbinghaus,
+     spec §5 Phase 3) — the flat `0.4` I assigned raw episodic turns, and the
+     hand-set recall weights (`wRelevance`/`wSalience`/`wRecency`), are
+     explicitly *placeholders* for values the engine should eventually learn
+     from which recalls actually got used.
+   - Consolidation that learns which relation types it gets right (feeds the
+     extraction-floor problem below), and prunes/dampens attractors so the same
+     few facts don't dominate the budget (Friction #3).
+   - The recall ranker exposing *why* each item surfaced (source + score),
+     so the system — and later the user — can see and correct its own choices.
+
+   The through-line: quality is the aim, invention drives, optimization is the
+   thrust. Build it so it moves *itself* toward better recall.
+
+---
+
 ## 2026-09-30 — External assessment: novelty, value, and the usability question
 
 > Source: an outside LLM review, pasted in by Dylon. Captured verbatim in

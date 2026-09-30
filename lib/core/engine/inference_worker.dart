@@ -132,6 +132,37 @@ class InferenceWorker extends GetxService {
     return task.future;
   }
 
+  /// Make the engine available to a foreground caller that streams straight
+  /// through [LlmService] (the chat screen), rather than through this queue.
+  ///
+  /// A live user turn must win over background introspection. If a *background*
+  /// task is currently generating, it is cancelled (its entries stay pending —
+  /// cancellation is a benign "try again later" for background callers). This
+  /// then waits until the engine has actually released, so the direct
+  /// [LlmService.generateChat] call that follows does not collide with a
+  /// "generation already in progress" error. A running user/debate task is left
+  /// alone (we don't interrupt one user action for another); the caller simply
+  /// waits out the [timeout]. Best-effort and safe to call when idle.
+  Future<void> yieldForForeground(
+      {Duration timeout = const Duration(seconds: 6)}) async {
+    final running = _running;
+    if (running != null &&
+        running.priority == TaskPriority.backgroundIntrospection) {
+      _log?.info(
+        'Yielding engine to foreground: cancelling background ${running.id}',
+        source: 'Inference',
+      );
+      running._cancelled = true;
+      await _llm.stopGeneration();
+    }
+    // Wait until the background task has fully unwound and the engine is free.
+    final deadline = DateTime.now().add(timeout);
+    while ((_running != null || _llm.isGenerating.value) &&
+        DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+    }
+  }
+
   /// Cancel a queued or running task by id. Safe to call for unknown ids.
   void cancel(String taskId) {
     if (_running?.id == taskId) {

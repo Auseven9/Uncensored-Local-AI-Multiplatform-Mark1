@@ -898,6 +898,8 @@ class _HardwareSettingsCard extends StatefulWidget {
 class _HardwareSettingsCardState extends State<_HardwareSettingsCard> {
   late String _backend;
   late double _gpuLayers;
+  late int _contextSize;
+  late final TextEditingController _ctxController;
   bool _showManual = false;
 
   // Auto-detect the best backend and GPU layers for this device
@@ -939,6 +941,22 @@ class _HardwareSettingsCardState extends State<_HardwareSettingsCard> {
     super.initState();
     _backend = widget.storage.backendType;
     _gpuLayers = widget.storage.gpuLayers.toDouble();
+    _contextSize = widget.storage.contextSize;
+    _ctxController = TextEditingController(
+        text: _contextSize == 0 ? '' : _contextSize.toString());
+  }
+
+  @override
+  void dispose() {
+    _ctxController.dispose();
+    super.dispose();
+  }
+
+  void _saveContextSize(String raw) {
+    final parsed = int.tryParse(raw.trim());
+    final val = (parsed == null || parsed < 0) ? 0 : parsed;
+    setState(() => _contextSize = val);
+    widget.storage.contextSize = val;
   }
 
   void _applyAutoConfig() {
@@ -1133,6 +1151,79 @@ class _HardwareSettingsCardState extends State<_HardwareSettingsCard> {
             ),
             Text(
               'If the app crashes when loading a model, reduce GPU layers or switch to CPU. Reload the model after changing settings.',
+              style: TextStyle(color: context.textD, fontSize: 11, height: 1.4),
+            ),
+
+            const SizedBox(height: 20),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  'Context Window (tokens)',
+                  style: TextStyle(color: context.text, fontSize: 14),
+                ),
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: context.bgInput,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    _contextSize == 0 ? 'Auto' : _contextSize.toString(),
+                    style: TextStyle(
+                        color: context.text, fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _ctxController,
+                    keyboardType: TextInputType.number,
+                    style: TextStyle(color: context.text, fontSize: 14),
+                    decoration: InputDecoration(
+                      hintText: '0 = Auto (model maximum)',
+                      hintStyle: TextStyle(color: context.textD, fontSize: 13),
+                      filled: true,
+                      fillColor: context.bgInput,
+                      contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 10),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        borderSide: BorderSide(color: context.border),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        borderSide: BorderSide(color: context.border),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        borderSide: BorderSide(color: AppColors.accent),
+                      ),
+                    ),
+                    onChanged: _saveContextSize,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                TextButton(
+                  onPressed: () {
+                    _ctxController.clear();
+                    _saveContextSize('0');
+                  },
+                  child: const Text('Auto'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'Auto (0) uses the model\'s full trained context — its ceiling. '
+              'A tiny window truncates replies and stalls memory consolidation, '
+              'so leave this on Auto unless the app is killed for memory, then '
+              'set a lower number. Reload the model after changing.',
               style: TextStyle(color: context.textD, fontSize: 11, height: 1.4),
             ),
           ],

@@ -109,4 +109,14 @@ class ChatStorageService extends GetxService {
       _settingsBox.get('backend_type', defaultValue: 'cpu') as String;
 
   set backendType(String value) => _settingsBox.put('backend_type', value);
+
+  /// Context window size in tokens. 0 = auto: use the model's own trained
+  /// maximum (its ceiling), which llamadart resolves via
+  /// `llama_model_n_ctx_train`. Lower it to reduce RAM / KV-cache use on
+  /// constrained devices. Defaults to 0 so a capable model gets its full
+  /// context instead of an arbitrary cap.
+  int get contextSize =>
+      (_settingsBox.get('context_size', defaultValue: 0) as num).toInt();
+
+  set contextSize(int value) => _settingsBox.put('context_size', value);
 }

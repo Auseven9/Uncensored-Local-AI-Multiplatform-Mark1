@@ -16,6 +16,9 @@ Flutter/Dart app, running inference **in-process** — no Python, no Termux, no
 - **Heavy cognition runs async/idle**, never in the chat path. Compute budget is real (~1 tok/s on a 4B–7B GGUF).
 - **Grounding beats coherence.** The self-model can never revise away sensor truth.
 - **Everything is adjustable.** Every tunable lives in `lib/core/params/param_spec.dart` and appears in the Parameters panel automatically.
+- **Adaptive by construction.** Memory is meant to tune *itself* with use — salience rising/falling with reinforcement and decay, recall weights learned from what actually got used, consolidation improving at the relations it extracts. Hand-set constants (recall weights, the flat episodic salience, the context default) are placeholders for values the system should eventually adapt. Quality is the aim, invention the driver, optimization the thrust.
+- **Full context by default.** The model gets its own trained context ceiling (llamadart `contextSize: 0` → `llama_model_n_ctx_train`); the user can lower it to save RAM. A tiny fixed window truncates replies and overflows the consolidation prompt — never cap capability arbitrarily.
+- **One engine, prioritised.** A single model in RAM serves everything, so a live user turn preempts background introspection (the `InferenceWorker` yields the engine); heavy System-2 work defers to idle.
 - **Honest frame:** a functional cognitive architecture, not an awakening. Hard mechanisms ship as labeled proxies first.
 
 ## 1. Runtime substrate mapping (whitepaper Python → our Dart)

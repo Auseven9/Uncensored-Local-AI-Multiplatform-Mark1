@@ -6,6 +6,7 @@ import '../models/message_model.dart';
 import '../services/llm_service.dart';
 import '../services/chat_storage_service.dart';
 import '../services/log_service.dart';
+import '../core/engine/inference_worker.dart';
 import '../core/memory/memory_service.dart';
 
 class ChatController extends GetxController {
@@ -152,6 +153,14 @@ class ChatController extends GetxController {
         source: 'Chat');
 
     try {
+      // A live user turn wins over background introspection. If a background
+      // consolidation pass is holding the single engine, preempt it and wait
+      // for the engine to free up, so this chat turn doesn't collide with a
+      // "generation already in progress" error. Best-effort; no-op when idle.
+      try {
+        await Get.find<InferenceWorker>().yieldForForeground();
+      } catch (_) {}
+
       // Use the model's own chat template (via llamadart's create()) so it stops
       // cleanly at its real end-of-turn instead of repeating the reply — the
       // hand-rolled template in _buildPrompt only fits Phi-style models.
