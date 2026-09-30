@@ -4,6 +4,7 @@ import 'package:get/get.dart';
 
 import '../../services/log_service.dart';
 import '../engine/inference_worker.dart';
+import '../params/parameters_service.dart';
 import '../tools/gbnf_tool_engine.dart';
 import 'eidetic_memory_engine.dart';
 import 'memory_records.dart';
@@ -76,22 +77,36 @@ class MemoryManager {
     }
   }
 
+  ParametersService? get _params {
+    try {
+      return Get.find<ParametersService>();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  int get _minEntries =>
+      _params?.getInt('consolidate.minEntries') ?? minEntriesToConsolidate;
+  int get _maxEntries =>
+      _params?.getInt('consolidate.maxEntriesPerPass') ?? maxEntriesPerPass;
+  double get _temp => _params?.getDouble('consolidate.temperature') ?? 0.2;
+
   /// Cheap, inference-free check used by schedulers to decide whether it is
   /// even worth waking the model.
   Future<bool> hasPendingWork() async =>
-      (await memory.pendingCount()) >= minEntriesToConsolidate;
+      (await memory.pendingCount()) >= _minEntries;
 
   /// Run one gated consolidation pass. See the class doc for the contract.
   Future<ConsolidationResult> consolidatePending({bool force = false}) async {
     final pending = await memory.pendingCount();
-    if (!force && pending < minEntriesToConsolidate) {
+    if (!force && pending < _minEntries) {
       return ConsolidationResult(
         ran: false,
-        note: 'below threshold ($pending/$minEntriesToConsolidate)',
+        note: 'below threshold ($pending/$_minEntries)',
       );
     }
 
-    final entries = await memory.pendingEpisodic(limit: maxEntriesPerPass);
+    final entries = await memory.pendingEpisodic(limit: _maxEntries);
     if (entries.isEmpty) {
       return const ConsolidationResult(ran: false, note: 'nothing pending');
     }
@@ -104,7 +119,7 @@ class MemoryManager {
         messages: [
           {'role': 'user', 'content': _buildCurationPrompt(entries)},
         ],
-        temperature: 0.2,
+        temperature: _temp,
         priority: TaskPriority.backgroundIntrospection,
         // Sampler-enforced structure: the curator can only emit a JSON object,
         // so parsing below cannot misfire on a grammar-capable backend.
@@ -196,17 +211,21 @@ class MemoryManager {
     final rawFacts = decoded['facts'];
     if (rawFacts is! List) return const [];
 
+    final maxFacts = _params?.getInt('consolidate.maxFactsPerPass') ?? maxFactsPerPass;
+    final minLen = _params?.getInt('consolidate.minFactLen') ?? 8;
+    final maxLen = _params?.getInt('consolidate.maxFactLen') ?? 500;
+
     final now = DateTime.now().toUtc();
     final seen = <String>{};
     final out = <SemanticFact>[];
 
     for (final item in rawFacts) {
-      if (out.length >= maxFactsPerPass) break;
+      if (out.length >= maxFacts) break;
       if (item is! Map) continue;
 
       final text = (item['text'] as Object?)?.toString().trim() ?? '';
       // Hard curation filters: reject noise and over-long dumps.
-      if (text.length < 8 || text.length > 500) continue;
+      if (text.length < minLen || text.length > maxLen) continue;
 
       final hash = stableContentHash(text);
       if (!seen.add(hash)) continue; // in-batch dedupe

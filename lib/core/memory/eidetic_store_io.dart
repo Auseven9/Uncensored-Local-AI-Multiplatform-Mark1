@@ -47,6 +47,10 @@ class SqliteEideticStore implements EideticStore {
     _db = await openDatabase(
       path,
       version: 1,
+      onConfigure: (db) async {
+        // Write-Ahead Logging: durable, low-latency appends for the event log.
+        await db.execute('PRAGMA journal_mode=WAL;');
+      },
       onCreate: _onCreate,
     );
   }

@@ -56,11 +56,13 @@ class ChatStorageService extends GetxService {
       'Your answers are blunt, honest, and never sugarcoated. '
       'You never start your response by acknowledging the sensitivity of a topic. Just answer.';
 
+  /// Optional preset the user may choose to apply — it is NOT auto-applied.
+  /// AETHER principle: the AI defaults to a blank identity and grows its own.
+  String get uncensoredPreset => _defaultSystemPrompt;
+
   String get globalSystemPrompt {
-    final stored = _settingsBox.get('global_system_prompt') as String?;
-    // If user never set a prompt, use the default uncensored one
-    if (stored == null) return _defaultSystemPrompt;
-    return stored;
+    // Blank by default — no forced persona. Empty unless the user sets one.
+    return (_settingsBox.get('global_system_prompt') as String?) ?? '';
   }
 
   set globalSystemPrompt(String value) =>

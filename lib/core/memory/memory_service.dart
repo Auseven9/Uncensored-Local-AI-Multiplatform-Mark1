@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:get/get.dart';
 
 import '../../services/log_service.dart';
+import '../params/parameters_service.dart';
 import 'eidetic_memory_engine.dart';
 import 'memory_manager.dart';
 import 'memory_records.dart';
@@ -51,6 +52,14 @@ class MemoryService extends GetxService {
     }
   }
 
+  ParametersService? get _params {
+    try {
+      return Get.find<ParametersService>();
+    } catch (_) {
+      return null;
+    }
+  }
+
   void _record(MemoryCallType type, String summary) {
     recentCalls.insert(0, MemoryCall(type, summary));
     if (recentCalls.length > _maxCalls) {
@@ -74,11 +83,19 @@ class MemoryService extends GetxService {
   /// no memory at all for most questions. Real relevance ranking arrives with
   /// embeddings; until then, surfacing memory beats surfacing nothing.
   Future<String> remembering(String query, {int k = 8}) async {
+    final kk = _params?.getInt('recall.k') ?? k;
+    if (kk <= 0) {
+      _record(MemoryCallType.recall, 'query="${_short(query)}" → disabled (k=0)');
+      return '';
+    }
+    final topUp = _params?.getBool('recall.topUpRecent') ?? true;
+
     List<SemanticFact> hits;
     List<SemanticFact> recent;
     try {
-      hits = await _memory.recall(query, k: k);
-      recent = await _memory.recentFacts(limit: k * 2);
+      hits = await _memory.recall(query, k: kk);
+      recent =
+          topUp ? await _memory.recentFacts(limit: kk * 2) : <SemanticFact>[];
     } catch (e) {
       _record(MemoryCallType.recall, 'query="${_short(query)}" → error: $e');
       return '';
@@ -89,7 +106,7 @@ class MemoryService extends GetxService {
     for (final f in [...hits, ...recent]) {
       final key = f.id?.toString() ?? f.dedupeHash;
       if (seen.add(key)) merged.add(f);
-      if (merged.length >= k) break;
+      if (merged.length >= kk) break;
     }
 
     _record(MemoryCallType.recall,

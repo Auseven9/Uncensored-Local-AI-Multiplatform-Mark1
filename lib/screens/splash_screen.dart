@@ -12,6 +12,7 @@ import '../services/log_service.dart';
 import '../services/background_optimizer_service.dart';
 import '../core/memory/eidetic_memory_engine.dart';
 import '../services/system_health_monitor.dart';
+import '../core/params/parameters_service.dart';
 import '../routes/app_routes.dart';
 
 class SplashScreen extends StatefulWidget {
@@ -38,6 +39,7 @@ class _SplashScreenState extends State<SplashScreen> {
       setState(() => _status = 'Setting up storage...');
       log.info('Initializing storage...', source: 'Splash');
       await Get.find<ChatStorageService>().init();
+      Get.find<ParametersService>().init();
 
       setState(() => _status = 'Opening Eidetic memory...');
       log.info('Opening Eidetic memory...', source: 'Splash');
