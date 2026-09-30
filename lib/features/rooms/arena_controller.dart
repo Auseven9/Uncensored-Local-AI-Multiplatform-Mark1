@@ -4,6 +4,9 @@ import '../../core/engine/inference_worker.dart';
 import '../../core/memory/eidetic_memory_engine.dart';
 import '../../core/memory/memory_manager.dart';
 import '../../core/memory/memory_records.dart';
+import '../../core/memory/memory_service.dart';
+import '../../core/params/parameters_service.dart';
+import '../../services/llm_service.dart';
 
 /// One completed turn in a debate.
 class ArenaTurn {
@@ -29,6 +32,26 @@ class ArenaController extends GetxController {
   final InferenceWorker _worker;
   final EideticMemoryEngine _memory;
   final MemoryManager _manager;
+
+  /// The full memory orchestrator — used so a debate agent recalls the same
+  /// memory a chat turn would for the topic. Best-effort: a debate still runs
+  /// when it isn't registered.
+  MemoryService? get _memoryService {
+    try {
+      return Get.find<MemoryService>();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// User-tunable parameters (shared with the chat), read for the output budget.
+  ParametersService? get _params {
+    try {
+      return Get.find<ParametersService>();
+    } catch (_) {
+      return null;
+    }
+  }
 
   final transcript = <ArenaTurn>[].obs;
   final isRunning = false.obs;
@@ -73,6 +96,7 @@ class ArenaController extends GetxController {
           taskId: 'arena-$sessionId-$round-A',
           agent: 'Agent A',
           persona: _proponentPersona,
+          topic: topic,
           context:
               '$context\n\nProvide Agent A\'s argument for round $round:',
         );
@@ -85,6 +109,7 @@ class ArenaController extends GetxController {
           taskId: 'arena-$sessionId-$round-B',
           agent: 'Agent B',
           persona: _opponentPersona,
+          topic: topic,
           context: context,
         );
         if (_cancelled) break;
@@ -114,6 +139,7 @@ class ArenaController extends GetxController {
     required String taskId,
     required String agent,
     required String persona,
+    required String topic,
     required String context,
   }) async {
     currentAgent.value = agent;
@@ -121,16 +147,45 @@ class ArenaController extends GetxController {
     _activeTaskId = taskId;
 
     try {
-      final text = await _worker.run(
+      // ── Parity with the main chat ──────────────────────────────────────
+      // The debate agent is the SAME model with the SAME capabilities as the
+      // chat: it recalls relevant memory for the subject, honours the output
+      // budget, generates through the model's own chat template (via the
+      // worker), and its reply is scrubbed identically. There is no
+      // second-class path for agents.
+
+      // Recall the same memory a chat turn would for this subject, and inject
+      // it into the agent's system prompt. Best-effort and null-safe.
+      var systemPrompt = persona;
+      try {
+        final recalled = await _memoryService
+                ?.remembering(topic, recentContext: context) ??
+            '';
+        if (recalled.isNotEmpty) {
+          systemPrompt = '$persona\n\n$recalled';
+        }
+      } catch (_) {
+        // Recall must never break a debate — fall back to the bare persona.
+      }
+
+      // Same adjustable output budget (gen.maxTokens) the chat screen applies.
+      final maxTokens = _params?.getInt('gen.maxTokens');
+
+      final raw = await _worker.run(
         id: taskId,
-        systemPrompt: persona,
+        systemPrompt: systemPrompt,
         messages: [
           {'role': 'user', 'content': context},
         ],
         temperature: 0.8,
         priority: TaskPriority.debateRoom,
+        maxTokens: maxTokens,
         onToken: (t) => liveText.value += t,
       );
+
+      // Identical cleanup to the chat's finally block — no stray template
+      // tokens or structural HTML in a recorded turn.
+      final text = LlmService.scrubReply(raw);
 
       transcript.add(ArenaTurn(round: currentRound.value, agent: agent, text: text));
       await _memory.record(

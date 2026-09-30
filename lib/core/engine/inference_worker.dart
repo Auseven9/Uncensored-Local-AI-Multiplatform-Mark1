@@ -31,8 +31,17 @@ class InferenceTask {
   final TaskPriority priority;
 
   /// Optional GBNF grammar. When set, the task is generated with
-  /// sampler-enforced grammar constraints via [LlmService.generateWithGrammar].
+  /// sampler-enforced grammar constraints via [LlmService.generateWithGrammar]
+  /// (raw structured output). When null, the task generates through the model's
+  /// OWN chat template via [LlmService.generateChat] — the exact path the main
+  /// chat uses, so a debate turn is templated and stopped identically to a chat
+  /// turn (no second-class hand-rolled prompt for off-chat generation).
   final String? grammar;
+
+  /// Optional output budget (max reply tokens) — the same `gen.maxTokens`
+  /// ceiling the chat screen applies. Ignored for grammar tasks. Null falls
+  /// back to llamadart's own default.
+  final int? maxTokens;
 
   /// Optional live-token callback, invoked on the main isolate for each
   /// cleaned chunk as it is produced (used by the Arena to stream turns).
@@ -49,6 +58,7 @@ class InferenceTask {
     this.temperature = 0.7,
     this.priority = TaskPriority.userInteraction,
     this.grammar,
+    this.maxTokens,
     this.onToken,
   });
 
@@ -91,6 +101,21 @@ class InferenceWorker extends GetxService {
   int _seqCounter = 0;
   bool _pumping = false;
 
+  /// After a generation is cancelled, the native context needs a moment to
+  /// actually tear the decode down. Dispatching the next task the instant
+  /// [LlmService.isGenerating] flips false (it flips synchronously on
+  /// [LlmService.stopGeneration]) can beat the native release and trip
+  /// "generation already in progress". So every cancel arms a short settle
+  /// window that [_pump] waits out before starting the next task.
+  static const _settleAfterCancel = Duration(milliseconds: 250);
+  DateTime _settleUntil = DateTime.fromMillisecondsSinceEpoch(0);
+
+  /// Arm the post-cancel settle window (called from every place that cancels a
+  /// running generation).
+  void _armSettle() {
+    _settleUntil = DateTime.now().add(_settleAfterCancel);
+  }
+
   /// Id of the task currently generating, or null when idle.
   final activeTaskId = RxnString();
 
@@ -107,6 +132,7 @@ class InferenceWorker extends GetxService {
     double temperature = 0.7,
     TaskPriority priority = TaskPriority.userInteraction,
     String? grammar,
+    int? maxTokens,
     void Function(String token)? onToken,
   }) {
     return submit(InferenceTask(
@@ -116,6 +142,7 @@ class InferenceWorker extends GetxService {
       temperature: temperature,
       priority: priority,
       grammar: grammar,
+      maxTokens: maxTokens,
       onToken: onToken,
     ));
   }
@@ -135,31 +162,39 @@ class InferenceWorker extends GetxService {
   /// Make the engine available to a foreground caller that streams straight
   /// through [LlmService] (the chat screen), rather than through this queue.
   ///
-  /// A live user turn must win over background introspection. If a *background*
-  /// task is currently generating, it is cancelled (its entries stay pending —
-  /// cancellation is a benign "try again later" for background callers). This
-  /// then waits until the engine has actually released, so the direct
-  /// [LlmService.generateChat] call that follows does not collide with a
-  /// "generation already in progress" error. A running user/debate task is left
-  /// alone (we don't interrupt one user action for another); the caller simply
-  /// waits out the [timeout]. Best-effort and safe to call when idle.
+  /// A live user turn is the top of the priority order, so it wins over
+  /// anything the worker is running — a background consolidation OR a debate
+  /// turn. Whatever is generating is cancelled (a background task's entries
+  /// stay pending; a debate turn returns empty and the debate moves on), then
+  /// this waits until the engine has actually released and the post-cancel
+  /// settle window has elapsed, so the direct [LlmService.generateChat] call
+  /// that follows cannot collide with a "generation already in progress" error.
+  /// Best-effort and safe to call when idle.
   Future<void> yieldForForeground(
       {Duration timeout = const Duration(seconds: 6)}) async {
     final running = _running;
     if (running != null &&
-        running.priority == TaskPriority.backgroundIntrospection) {
+        running.priority != TaskPriority.userInteraction) {
       _log?.info(
-        'Yielding engine to foreground: cancelling background ${running.id}',
+        'Yielding engine to foreground: cancelling ${running.priority.name} '
+        '${running.id}',
         source: 'Inference',
       );
       running._cancelled = true;
       await _llm.stopGeneration();
+      _armSettle();
     }
     // Wait until the background task has fully unwound and the engine is free.
     final deadline = DateTime.now().add(timeout);
     while ((_running != null || _llm.isGenerating.value) &&
         DateTime.now().isBefore(deadline)) {
       await Future<void>.delayed(const Duration(milliseconds: 40));
+    }
+    // Let the native decode finish releasing before the caller starts its own
+    // direct generation, so it doesn't collide with a still-unwinding cancel.
+    final settleLeft = _settleUntil.difference(DateTime.now());
+    if (settleLeft > Duration.zero) {
+      await Future<void>.delayed(settleLeft);
     }
   }
 
@@ -168,6 +203,7 @@ class InferenceWorker extends GetxService {
     if (_running?.id == taskId) {
       _running!._cancelled = true;
       unawaited(_llm.stopGeneration());
+      _armSettle();
     }
     for (final t in _queue) {
       if (t.id == taskId) t._cancelled = true;
@@ -195,6 +231,7 @@ class InferenceWorker extends GetxService {
       );
       running._cancelled = true;
       unawaited(_llm.stopGeneration());
+      _armSettle();
     }
   }
 
@@ -203,9 +240,12 @@ class InferenceWorker extends GetxService {
     _pumping = true;
     try {
       while (_queue.isNotEmpty) {
-        // Respect any generation started directly on [LlmService] (chat UI).
-        if (_llm.isGenerating.value) {
-          await Future<void>.delayed(const Duration(milliseconds: 120));
+        // Respect any generation started directly on [LlmService] (chat UI),
+        // and wait out any post-cancel settle window so a freshly cancelled
+        // native decode has fully released before the next task starts (else it
+        // trips "generation already in progress").
+        if (_llm.isGenerating.value || DateTime.now().isBefore(_settleUntil)) {
+          await Future<void>.delayed(const Duration(milliseconds: 60));
           continue;
         }
 
@@ -231,11 +271,17 @@ class InferenceWorker extends GetxService {
 
           final buffer = StringBuffer();
           final grammar = task.grammar;
+          // Non-grammar tasks (debate turns, plain generations) go through the
+          // model's OWN chat template — the identical path the chat screen uses
+          // — so off-chat generation is never a second-class hand-rolled prompt.
+          // Grammar tasks (consolidation) stay on the raw grammar-constrained
+          // path so their structured JSON is preserved verbatim.
           final stream = grammar == null
-              ? _llm.generate(
+              ? _llm.generateChat(
                   messages: task.messages,
                   systemPrompt: task.systemPrompt,
                   temperature: task.temperature,
+                  maxTokens: task.maxTokens,
                 )
               : _llm.generateWithGrammar(
                   messages: task.messages,
@@ -247,6 +293,7 @@ class InferenceWorker extends GetxService {
           await for (final chunk in stream) {
             if (task._cancelled) {
               await _llm.stopGeneration();
+              _armSettle();
               break;
             }
             buffer.write(chunk);

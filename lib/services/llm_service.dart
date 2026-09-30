@@ -282,6 +282,46 @@ class LlmService extends GetxService {
     r'<\|user\|>|<\|im_start\|>\s*user|<start_of_turn>\s*user|\[INST\]',
   );
 
+  /// Synchronously claim the single native engine for exactly one generation.
+  ///
+  /// Because a Dart isolate is single-threaded, the check-and-set here is
+  /// atomic: no `await` sits between reading [isGenerating] and setting it, so
+  /// two callers can never both pass this guard. This is the invariant the
+  /// public generation methods depend on. It must run *synchronously at call
+  /// time*, not lazily inside an `async*` body — an `async*` body does not run
+  /// until its stream is listened to, which opened a race where two lazily
+  /// started streams each saw `isGenerating == false` before either set it
+  /// true. That race is exactly the "generation already in progress" crash seen
+  /// when a debate turn (worker) and a chat turn (direct) — or a debate turn and
+  /// a background consolidation handoff — reached the engine at once. So the
+  /// public methods are thin *synchronous* wrappers that call this first and
+  /// then return the streaming body.
+  void _beginGeneration() {
+    if (_engine == null || !isLoaded.value) {
+      throw StateError('No model loaded. Call loadModel() first.');
+    }
+    if (isGenerating.value) {
+      throw StateError('Another generation is already in progress.');
+    }
+    isGenerating.value = true;
+  }
+
+  /// Strip control/stop tokens and stray structural HTML tags a chat template
+  /// may bleed into a reply. Shared by every consumer of a generated turn (the
+  /// chat screen and the debate room) so cleanup is identical everywhere —
+  /// there is no "worse" path for text produced off the main chat.
+  static String scrubReply(String s) => s
+      .replaceAll(_stopPatterns, '')
+      // Stray structural HTML some chat templates bleed into the reply (e.g. a
+      // lone </blockquote>). The chat view renders markdown, not HTML, so these
+      // are template artifacts, never intended output.
+      .replaceAll(
+        RegExp(r'</?(?:blockquote|p|div|span|br|hr)\s*/?>',
+            caseSensitive: false),
+        '',
+      )
+      .trim();
+
   /// Generate a streaming response.
   /// [messages] is a list of {role, content} maps.
   /// [systemPrompt] is prepended as a system message.
@@ -290,15 +330,20 @@ class LlmService extends GetxService {
     required List<Map<String, String>> messages,
     String? systemPrompt,
     double temperature = 0.7,
-  }) async* {
-    if (_engine == null || !isLoaded.value) {
-      throw StateError('No model loaded. Call loadModel() first.');
-    }
-    if (isGenerating.value) {
-      throw StateError('Another generation is already in progress.');
-    }
+  }) {
+    _beginGeneration();
+    return _generateBody(
+      messages: messages,
+      systemPrompt: systemPrompt,
+      temperature: temperature,
+    );
+  }
 
-    isGenerating.value = true;
+  Stream<String> _generateBody({
+    required List<Map<String, String>> messages,
+    String? systemPrompt,
+    double temperature = 0.7,
+  }) async* {
     tokensPerSecond.value = 0.0;
     final stopwatch = Stopwatch()..start();
     int tokenCount = 0;
@@ -397,15 +442,15 @@ class LlmService extends GetxService {
   Stream<String> generateChatCompletion({
     required List<LlamaChatMessage> messages,
     GenerationParams params = const GenerationParams(),
-  }) async* {
-    if (_engine == null || !isLoaded.value) {
-      throw StateError('No model loaded. Call loadModel() first.');
-    }
-    if (isGenerating.value) {
-      throw StateError('Another generation is already in progress.');
-    }
+  }) {
+    _beginGeneration();
+    return _generateChatCompletionBody(messages: messages, params: params);
+  }
 
-    isGenerating.value = true;
+  Stream<String> _generateChatCompletionBody({
+    required List<LlamaChatMessage> messages,
+    GenerationParams params = const GenerationParams(),
+  }) async* {
     tokensPerSecond.value = 0.0;
     final stopwatch = Stopwatch()..start();
     int tokenCount = 0;
@@ -484,15 +529,24 @@ class LlmService extends GetxService {
     String? systemPrompt,
     double temperature = 0.7,
     String grammarRoot = 'root',
-  }) async* {
-    if (_engine == null || !isLoaded.value) {
-      throw StateError('No model loaded. Call loadModel() first.');
-    }
-    if (isGenerating.value) {
-      throw StateError('Another generation is already in progress.');
-    }
+  }) {
+    _beginGeneration();
+    return _generateWithGrammarBody(
+      messages: messages,
+      grammar: grammar,
+      systemPrompt: systemPrompt,
+      temperature: temperature,
+      grammarRoot: grammarRoot,
+    );
+  }
 
-    isGenerating.value = true;
+  Stream<String> _generateWithGrammarBody({
+    required List<Map<String, String>> messages,
+    required String grammar,
+    String? systemPrompt,
+    double temperature = 0.7,
+    String grammarRoot = 'root',
+  }) async* {
     tokensPerSecond.value = 0.0;
     final stopwatch = Stopwatch()..start();
     int tokenCount = 0;

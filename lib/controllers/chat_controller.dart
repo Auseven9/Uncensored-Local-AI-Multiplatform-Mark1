@@ -199,22 +199,10 @@ class ChatController extends GetxController {
         aiMsg.content = '⚠ Error: ${e.toString()}';
       }
     } finally {
-      // Clean up any trailing stop tokens or whitespace
-      aiMsg.content = aiMsg.content
-          .replaceAll(RegExp(
-            r'<\|end\|>|<\|eot_id\|>|<\|endoftext\|>|<\|im_end\|>|<\|im_start\|>'
-            r'|<end_of_turn>|<start_of_turn>|<\|assistant\|>|<\|user\|>|<\|system\|>'
-            r'|<\|pad\|>|</s>|<s>|\[INST\]|\[/INST\]|\[end\]'
-          ), '')
-          // Strip stray HTML structural tags some chat templates bleed into the
-          // reply (e.g. a lone </blockquote>). The chat view renders markdown,
-          // not HTML, so these are template artifacts, never intended output.
-          .replaceAll(
-            RegExp(r'</?(?:blockquote|p|div|span|br|hr)\s*/?>',
-                caseSensitive: false),
-            '',
-          )
-          .trim();
+      // Clean up any trailing stop tokens, hallucinated-turn markers, or stray
+      // structural HTML — the single shared scrub used by every consumer of a
+      // generated turn (chat and debate alike), so cleanup is identical.
+      aiMsg.content = LlmService.scrubReply(aiMsg.content);
       isGenerating.value = false;
       streamedResponse.value = '';
       chat.updatedAt = DateTime.now();
