@@ -51,7 +51,16 @@ class SqliteEideticStore implements EideticStore {
       version: 2,
       onConfigure: (db) async {
         // Write-Ahead Logging: durable, low-latency appends for the event log.
-        await db.execute('PRAGMA journal_mode=WAL;');
+        //
+        // `PRAGMA journal_mode=WAL` RETURNS a row (the resulting mode), so it
+        // must go through rawQuery — on Android db.execute() maps to execSQL(),
+        // which throws "Queries can be performed using ... query or rawQuery
+        // methods only." on any result-returning statement. Best-effort: if WAL
+        // can't be set we fall back to the default journal mode rather than
+        // failing app startup.
+        try {
+          await db.rawQuery('PRAGMA journal_mode=WAL;');
+        } catch (_) {}
       },
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
