@@ -53,6 +53,18 @@ abstract class EideticStore {
   /// Fetch the claims (facts) with the given ids, in arbitrary order.
   Future<List<SemanticFact>> factsByIds(List<int> ids);
 
+  // ── Embeddings (Phase 2b — meaning-based recall) ────────────
+  /// Store (or replace) the embedding [vector] for a claim. [model] records
+  /// which embedder produced it, so vectors can be invalidated if it changes.
+  Future<void> upsertEmbedding(int factId, List<double> vector, {String? model});
+
+  /// Load every stored claim embedding (id → vector) for brute-force
+  /// nearest-neighbour recall. Cheap at this app's scale.
+  Future<Map<int, List<double>>> allEmbeddings();
+
+  /// Remove a claim's embedding (kept in step with the claim's own deletion).
+  Future<void> deleteEmbedding(int factId);
+
   // ── Editing (memory panel) ──────────────────────────────────
   /// Update a fact's fields; recomputes the dedupe hash when [text] changes.
   Future<void> updateFact(int id,
@@ -88,6 +100,7 @@ class InMemoryEideticStore implements EideticStore {
   final List<AppEvent> _events = [];
   final List<RelationEdge> _edges = [];
   final List<({int factId, int eventId})> _provenance = [];
+  final Map<int, List<double>> _embeddings = {};
   int _autoId = 0;
 
   @override
@@ -263,6 +276,21 @@ class InMemoryEideticStore implements EideticStore {
   }
 
   @override
+  Future<void> upsertEmbedding(int factId, List<double> vector,
+      {String? model}) async {
+    _embeddings[factId] = List<double>.from(vector);
+  }
+
+  @override
+  Future<Map<int, List<double>>> allEmbeddings() async =>
+      {for (final e in _embeddings.entries) e.key: List<double>.from(e.value)};
+
+  @override
+  Future<void> deleteEmbedding(int factId) async {
+    _embeddings.remove(factId);
+  }
+
+  @override
   Future<void> updateFact(int id,
       {String? text, SemanticCategory? category, double? confidence}) async {
     final i = _facts.indexWhere((f) => f.id == id);
@@ -272,8 +300,10 @@ class InMemoryEideticStore implements EideticStore {
   }
 
   @override
-  Future<void> deleteFact(int id) async =>
-      _facts.removeWhere((f) => f.id == id);
+  Future<void> deleteFact(int id) async {
+    _facts.removeWhere((f) => f.id == id);
+    _embeddings.remove(id);
+  }
 
   @override
   Future<void> updateEpisodicContent(int id, String content) async {
@@ -304,6 +334,7 @@ class InMemoryEideticStore implements EideticStore {
     _events.clear();
     _edges.clear();
     _provenance.clear();
+    _embeddings.clear();
   }
 
   @override

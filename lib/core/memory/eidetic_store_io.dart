@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -7,6 +9,7 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'eidetic_store.dart';
 import 'event_records.dart';
 import 'memory_records.dart';
+import 'vector_search.dart';
 
 /// Native (dart:io) factory: a SQLite-backed store. Selected via conditional
 /// import from `eidetic_store.dart`.
@@ -59,8 +62,9 @@ class SqliteEideticStore implements EideticStore {
 
     _db = await openDatabase(
       path,
-      // v2: event_log (Phase 1). v3: epistemic-graph columns + tables (Phase 2).
-      version: 3,
+      // v2: event_log (Phase 1). v3: epistemic-graph columns + tables (Phase 2a).
+      // v4: claim_embeddings for meaning-based recall (Phase 2b).
+      version: 4,
       onConfigure: (db) async {
         // Write-Ahead Logging: durable, low-latency appends for the event log.
         //
@@ -98,6 +102,26 @@ class SqliteEideticStore implements EideticStore {
           "ALTER TABLE semantic_facts ADD COLUMN supersedes INTEGER");
       await _createGraphTables(db);
     }
+    if (oldVersion < 4) {
+      // Meaning-based recall: one embedding vector per claim.
+      await _createEmbeddingsTable(db);
+    }
+  }
+
+  /// Per-claim embedding vectors (Phase 2b), stored as compact little-endian
+  /// Float32 BLOBs. Created for fresh installs in [_onCreate] and back-filled
+  /// in [_onUpgrade]. Empty on upgrade — vectors are (re)built as claims are
+  /// embedded, so no data is lost by adding it late.
+  Future<void> _createEmbeddingsTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS claim_embeddings (
+        fact_id INTEGER PRIMARY KEY,
+        dim INTEGER NOT NULL,
+        model TEXT,
+        vec BLOB NOT NULL,
+        created_utc TEXT NOT NULL
+      )
+    ''');
   }
 
   /// The append-only event log (Phase 1 grounding spine). Created for fresh
@@ -193,6 +217,7 @@ class SqliteEideticStore implements EideticStore {
 
     await _createEventLog(db);
     await _createGraphTables(db);
+    await _createEmbeddingsTable(db);
   }
 
   @override
@@ -387,6 +412,47 @@ class SqliteEideticStore implements EideticStore {
   @override
   Future<void> deleteFact(int id) async {
     await _database.delete('semantic_facts', where: 'id = ?', whereArgs: [id]);
+    await _database
+        .delete('claim_embeddings', where: 'fact_id = ?', whereArgs: [id]);
+  }
+
+  @override
+  Future<void> upsertEmbedding(int factId, List<double> vector,
+      {String? model}) async {
+    await _database.insert(
+      'claim_embeddings',
+      {
+        'fact_id': factId,
+        'dim': vector.length,
+        'model': model,
+        'vec': encodeVectorF32(vector),
+        'created_utc': DateTime.now().toUtc().toIso8601String(),
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  @override
+  Future<Map<int, List<double>>> allEmbeddings() async {
+    final rows = await _database.query('claim_embeddings',
+        columns: ['fact_id', 'vec']);
+    final out = <int, List<double>>{};
+    for (final r in rows) {
+      final id = r['fact_id'] as int;
+      final blob = r['vec'];
+      if (blob is Uint8List) {
+        out[id] = decodeVectorF32(blob);
+      } else if (blob is List<int>) {
+        out[id] = decodeVectorF32(Uint8List.fromList(blob));
+      }
+    }
+    return out;
+  }
+
+  @override
+  Future<void> deleteEmbedding(int factId) async {
+    await _database
+        .delete('claim_embeddings', where: 'fact_id = ?', whereArgs: [factId]);
   }
 
   @override
@@ -407,6 +473,7 @@ class SqliteEideticStore implements EideticStore {
     await _database.delete('event_log');
     await _database.delete('relation_edges');
     await _database.delete('provenance');
+    await _database.delete('claim_embeddings');
   }
 
   @override

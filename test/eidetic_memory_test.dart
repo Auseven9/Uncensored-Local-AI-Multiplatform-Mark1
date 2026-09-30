@@ -136,6 +136,29 @@ void main() {
       expect(hits.length, 1);
       expect(hits.first.text, contains('Flutter'));
     });
+
+    test('nearestClaimIds seeds by embedding similarity', () async {
+      final now = DateTime.now().toUtc();
+      final dog = await engine.rememberFact(SemanticFact(
+          createdUtc: now, category: SemanticCategory.fact, text: 'has a dog'));
+      final cat = await engine.rememberFact(SemanticFact(
+          createdUtc: now, category: SemanticCategory.fact, text: 'has a cat'));
+      final car = await engine.rememberFact(SemanticFact(
+          createdUtc: now, category: SemanticCategory.fact, text: 'drives a car'));
+
+      // Toy 2-D vectors: pets cluster together, the car is off on its own.
+      await engine.storeEmbedding(dog!, [1.0, 0.0]);
+      await engine.storeEmbedding(cat!, [0.9, 0.1]);
+      await engine.storeEmbedding(car!, [0.0, 1.0]);
+      expect(await engine.embeddingCount(), 3);
+
+      // A "pet"-like query vector should surface the two pets first.
+      final ids = await engine.nearestClaimIds([0.95, 0.05], k: 2);
+      expect(ids.toSet(), {dog, cat});
+
+      // Empty query or empty corpus degrades to no seeds (recall falls back).
+      expect(await engine.nearestClaimIds(const [], k: 2), isEmpty);
+    });
   });
 
   group('MemoryManager gate', () {

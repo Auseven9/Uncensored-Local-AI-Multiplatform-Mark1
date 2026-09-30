@@ -215,4 +215,143 @@ void main() {
     expect(fetched.first.salience, 0.5);
     await store.close();
   });
+
+  test('embeddings: upsert / allEmbeddings / cascade-delete on a fresh v4 db',
+      () async {
+    final store = SqliteEideticStore(path: p.join(tempDir.path, 'emb.db'));
+    await store.initialize();
+
+    final a = (await store.insertFact(SemanticFact(
+        createdUtc: DateTime.now().toUtc(),
+        category: SemanticCategory.fact,
+        text: 'claim A')))!;
+    final b = (await store.insertFact(SemanticFact(
+        createdUtc: DateTime.now().toUtc(),
+        category: SemanticCategory.fact,
+        text: 'claim B')))!;
+
+    await store.upsertEmbedding(a, [1.0, 0.0, 0.0], model: 'test');
+    await store.upsertEmbedding(b, [0.0, 1.0, 0.0]);
+
+    final all = await store.allEmbeddings();
+    expect(all.keys.toSet(), {a, b});
+    expect(all[a]!.length, 3);
+    expect(all[a]![0], closeTo(1.0, 1e-6));
+
+    // Upsert replaces in place — still one row per claim.
+    await store.upsertEmbedding(a, [0.5, 0.5, 0.0]);
+    final all2 = await store.allEmbeddings();
+    expect(all2.length, 2);
+    expect(all2[a]![0], closeTo(0.5, 1e-6));
+
+    // Deleting the claim cascades its embedding.
+    await store.deleteFact(a);
+    expect((await store.allEmbeddings()).keys.toSet(), {b});
+
+    // clearAll wipes embeddings too.
+    await store.clearAll();
+    expect(await store.allEmbeddings(), isEmpty);
+    await store.close();
+  });
+
+  test('v3 database upgrades to v4: claim_embeddings added, old data kept',
+      () async {
+    final dbPath = p.join(tempDir.path, 'v3.db');
+
+    // Simulate a v3 install: full v3 schema, but no claim_embeddings table.
+    final v3 = await databaseFactory.openDatabase(
+      dbPath,
+      options: OpenDatabaseOptions(
+        version: 3,
+        onCreate: (db, version) async {
+          await db.execute('''
+            CREATE TABLE episodic_log (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              session_id TEXT NOT NULL,
+              timestamp_utc TEXT NOT NULL,
+              timestamp_millis INTEGER NOT NULL,
+              sequence INTEGER NOT NULL,
+              kind TEXT NOT NULL,
+              role TEXT NOT NULL,
+              content TEXT NOT NULL,
+              metadata_json TEXT,
+              consolidated INTEGER NOT NULL DEFAULT 0
+            )
+          ''');
+          await db.execute('''
+            CREATE TABLE semantic_facts (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              created_utc TEXT NOT NULL,
+              category TEXT NOT NULL,
+              text TEXT NOT NULL,
+              source_session_id TEXT,
+              confidence REAL NOT NULL DEFAULT 0.5,
+              dedupe_hash TEXT NOT NULL UNIQUE,
+              embedding_json TEXT,
+              salience REAL NOT NULL DEFAULT 0.5,
+              status TEXT NOT NULL DEFAULT 'active',
+              supersedes INTEGER
+            )
+          ''');
+          await db.execute('''
+            CREATE TABLE event_log (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              timestamp_utc TEXT NOT NULL,
+              timestamp_millis INTEGER NOT NULL,
+              source TEXT NOT NULL,
+              type TEXT NOT NULL,
+              payload_json TEXT,
+              parent_events_json TEXT,
+              sensor_state_json TEXT NOT NULL,
+              session_id TEXT NOT NULL,
+              monotonic_ms INTEGER NOT NULL
+            )
+          ''');
+          await db.execute('''
+            CREATE TABLE relation_edges (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              from_fact INTEGER NOT NULL,
+              to_fact INTEGER NOT NULL,
+              type TEXT NOT NULL,
+              weight REAL NOT NULL DEFAULT 1.0,
+              created_utc TEXT NOT NULL
+            )
+          ''');
+          await db.execute('''
+            CREATE TABLE provenance (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              fact_id INTEGER NOT NULL,
+              event_id INTEGER NOT NULL,
+              created_utc TEXT NOT NULL
+            )
+          ''');
+        },
+      ),
+    );
+    await v3.insert('semantic_facts', {
+      'created_utc': DateTime.now().toUtc().toIso8601String(),
+      'category': 'fact',
+      'text': 'pre-existing v3 claim',
+      'dedupe_hash': stableContentHash('pre-existing v3 claim'),
+      'salience': 0.5,
+      'status': 'active',
+    });
+    await v3.close();
+
+    // Reopen through the store (version 4) — onUpgrade must add claim_embeddings.
+    final store = SqliteEideticStore(path: dbPath);
+    await store.initialize();
+
+    // Old data preserved.
+    expect(await store.factCount(), 1);
+    final id = (await store.recentFacts(limit: 1)).first.id!;
+
+    // The newly-migrated embeddings table is usable (would throw if missing).
+    expect(await store.allEmbeddings(), isEmpty);
+    await store.upsertEmbedding(id, [0.1, 0.2, 0.3]);
+    final all = await store.allEmbeddings();
+    expect(all.keys, [id]);
+    expect(all[id]!.length, 3);
+    await store.close();
+  });
 }

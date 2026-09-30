@@ -7,6 +7,7 @@ import 'eidetic_store.dart';
 import 'event_records.dart';
 import 'memory_records.dart';
 import 'spreading_activation.dart';
+import 'vector_search.dart';
 
 /// A random, per-launch session id. Groups events produced by one app run so
 /// gaps *between* runs are visible in the log.
@@ -231,6 +232,42 @@ class EideticMemoryEngine extends GetxService {
         maxHops: maxHops,
         seedK: seedK);
     return scored.map((e) => e.fact).toList();
+  }
+
+  // ── Embeddings (Phase 2b — meaning-based recall) ────────────
+
+  /// Store (or replace) a claim's embedding vector.
+  Future<void> storeEmbedding(int factId, List<double> vector,
+      {String? model}) async {
+    await _ensureInit();
+    await _store.upsertEmbedding(factId, vector, model: model);
+  }
+
+  /// The [k] claim ids whose stored embeddings are most similar to
+  /// [queryVector] by cosine — the meaning-based seeds for recall. Returns
+  /// empty when the query is empty or nothing is embedded yet, so callers fall
+  /// back cleanly to keyword seeding.
+  Future<List<int>> nearestClaimIds(
+    List<double> queryVector, {
+    int k = 10,
+    double threshold = 0.0,
+  }) async {
+    await _ensureInit();
+    if (queryVector.isEmpty) return const [];
+    final corpus = await _store.allEmbeddings();
+    if (corpus.isEmpty) return const [];
+    return nearestByCosine(
+      query: queryVector,
+      corpus: corpus,
+      k: k,
+      threshold: threshold,
+    ).map((e) => e.id).toList();
+  }
+
+  /// How many claims currently have an embedding (for diagnostics / backfill).
+  Future<int> embeddingCount() async {
+    await _ensureInit();
+    return (await _store.allEmbeddings()).length;
   }
 
   Future<void> _ensureInit() async {
