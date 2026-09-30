@@ -287,6 +287,13 @@ class _SettingsBody extends StatelessWidget {
 
               const SizedBox(height: 28),
 
+              // ── Performance / Speed ─────────────────────────────
+              _sectionHeader(context, 'Performance / Speed'),
+              const SizedBox(height: 8),
+              _PerformanceSettingsCard(storage: storage),
+
+              const SizedBox(height: 28),
+
               // ── Meaning-based Memory (Embeddings) ───────────────
               _sectionHeader(context, 'Meaning-based Memory'),
               const SizedBox(height: 8),
@@ -1323,6 +1330,192 @@ class _HardwareSettingsCardState extends State<_HardwareSettingsCard> {
 /// Selects and loads the embedding model that powers meaning-based recall
 /// (Phase 2b). Opt-in: recall works on keyword + graph seeding until a model
 /// is loaded here.
+/// Speed-tuning knobs backed by llamadart 0.8.24 ModelParams / GenerationParams.
+/// All safe: defaults preserve current behaviour, and each change applies on
+/// the next model load. The chat's live t/s readout is the measurement tool.
+class _PerformanceSettingsCard extends StatefulWidget {
+  final ChatStorageService storage;
+
+  const _PerformanceSettingsCard({required this.storage});
+
+  @override
+  State<_PerformanceSettingsCard> createState() =>
+      _PerformanceSettingsCardState();
+}
+
+class _PerformanceSettingsCardState extends State<_PerformanceSettingsCard> {
+  ChatStorageService get _s => widget.storage;
+
+  Widget _label(String text, String help) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(text,
+            style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: context.text)),
+        const SizedBox(height: 2),
+        Text(help, style: TextStyle(fontSize: 11, color: context.textM)),
+      ],
+    );
+  }
+
+  Widget _seg<T>(List<(T, String)> options, T current, ValueChanged<T> onPick) {
+    return Wrap(
+      spacing: 6,
+      runSpacing: 6,
+      children: [
+        for (final (value, text) in options)
+          GestureDetector(
+            onTap: () => onPick(value),
+            child: Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+              decoration: BoxDecoration(
+                color: value == current
+                    ? AppColors.accent.withValues(alpha: 0.16)
+                    : context.bgInput,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: value == current
+                      ? AppColors.accent
+                      : context.border,
+                  width: value == current ? 1.2 : 0.7,
+                ),
+              ),
+              child: Text(
+                text,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight:
+                      value == current ? FontWeight.w700 : FontWeight.w500,
+                  color: value == current ? AppColors.accent : context.textM,
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _row(String title, String help, Widget control) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _label(title, help),
+          const SizedBox(height: 8),
+          control,
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+      decoration: BoxDecoration(
+        color: context.bgPanel,
+        border: Border.all(color: context.border),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.speed_rounded, size: 16, color: AppColors.accent),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  'Reload the model after changing these. Compare with the live '
+                  't/s readout in chat.',
+                  style: TextStyle(fontSize: 11, color: context.textM),
+                ),
+              ),
+            ],
+          ),
+          const Divider(height: 22),
+
+          // CPU threads (0 = auto → big-core estimate).
+          _row(
+            'CPU threads',
+            'Pin decode to the fast cores. 6 suits an 8-core flagship; Auto lets '
+                'the engine choose.',
+            _seg<int>(
+              const [(0, 'Auto'), (4, '4'), (6, '6'), (8, '8')],
+              _s.cpuThreads,
+              (v) => setState(() => _s.cpuThreads = v),
+            ),
+          ),
+
+          // Flash attention.
+          _row(
+            'Flash attention',
+            'Tiled attention → faster first token. Auto lets llamadart decide.',
+            _seg<String>(
+              const [('auto', 'Auto'), ('on', 'On'), ('off', 'Off')],
+              _s.flashAttention,
+              (v) => setState(() => _s.flashAttention = v),
+            ),
+          ),
+
+          // KV cache quantization.
+          _row(
+            'KV cache precision',
+            'q8_0 ≈ half the KV memory bandwidth (faster decode); q4_0 ≈ a '
+                'quarter. Non-f16 turns flash attention on automatically.',
+            _seg<String>(
+              const [('f16', 'f16'), ('q8_0', 'q8_0'), ('q4_0', 'q4_0')],
+              _s.kvCacheType,
+              (v) => setState(() => _s.kvCacheType = v),
+            ),
+          ),
+
+          // Batch alignment (sets n_batch + n_ubatch together).
+          _row(
+            'Batch size',
+            'Auto uses llama.cpp defaults. 512 aligns matmuls to the Snapdragon '
+                '8 Gen 3 cache.',
+            _seg<int>(
+              const [(0, 'Auto'), (512, '512')],
+              _s.batchSize == 512 ? 512 : 0,
+              (v) => setState(() {
+                _s.batchSize = v;
+                _s.microBatchSize = v == 0 ? 0 : 512;
+              }),
+            ),
+          ),
+
+          const Divider(height: 22),
+
+          // N-gram speculative decoding (per-generation).
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            dense: true,
+            value: _s.speculativeNgram,
+            activeColor: AppColors.accent,
+            onChanged: (v) => setState(() => _s.speculativeNgram = v),
+            title: Text('N-gram speculative decoding',
+                style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: context.text)),
+            subtitle: Text(
+              'Drafts tokens from history for a speedup on repetitive/structured '
+              'replies. No extra model or RAM. Applies to the next reply.',
+              style: TextStyle(fontSize: 11, color: context.textM),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _EmbeddingSettingsCard extends StatefulWidget {
   final ChatStorageService storage;
 

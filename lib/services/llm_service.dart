@@ -64,6 +64,17 @@ class LlmService extends GetxService {
     }
   }
 
+  /// Default decode thread count when the user hasn't set one: pin to the
+  /// big-core cluster and leave the OS + efficiency cores free. 6 on an 8-core
+  /// SoC (Snapdragon 8 Gen 3 = 1 Prime + 5 Performance + 2 Efficiency; using 6
+  /// skips the two slow efficiency cores), 4 on a 6-core, auto below that.
+  int get _autoThreads {
+    final n = Platform.numberOfProcessors;
+    if (n >= 8) return 6;
+    if (n > 4) return 4;
+    return 0;
+  }
+
   /// Initialize the service.
   Future<LlmService> init() async {
     // Backend is created fresh per loadModel() call — no init needed here
@@ -184,6 +195,9 @@ class LlmService extends GetxService {
       final contextSize = storage.contextSize;
       GpuBackend parsedBackend;
       switch (storage.backendType) {
+        case 'auto':
+          parsedBackend = GpuBackend.auto;
+          break;
         case 'vulkan':
           parsedBackend = GpuBackend.vulkan;
           break;
@@ -197,16 +211,63 @@ class LlmService extends GetxService {
       // Read gpu layers
       final userGpuLayers = storage.gpuLayers;
 
-      // Optimize threads: 4 for both generation and batch processing to keep memory stable.
+      // ── Performance tuning (llamadart 0.8.24 ModelParams) ──────────────
+      // Threads: pin decode to the big-core cluster (Prime + Performance),
+      // skipping the slow efficiency cores. User value wins; else a big-core
+      // estimate (6 on an 8-core SoC, leaving 2 for the OS).
+      final threads =
+          storage.cpuThreads > 0 ? storage.cpuThreads : _autoThreads;
+
+      // Flash attention (tiles attention → fewer RAM round-trips → faster TTFT).
+      FlashAttention parsedFlash;
+      switch (storage.flashAttention) {
+        case 'on':
+          parsedFlash = FlashAttention.enabled;
+          break;
+        case 'off':
+          parsedFlash = FlashAttention.disabled;
+          break;
+        default:
+          parsedFlash = FlashAttention.auto;
+      }
+
+      // KV-cache quantization (q8_0 ≈ ½ KV RAM bandwidth; q4_0 ≈ ¼).
+      KvCacheType parsedKv;
+      switch (storage.kvCacheType) {
+        case 'q8_0':
+          parsedKv = KvCacheType.q8_0;
+          break;
+        case 'q4_0':
+          parsedKv = KvCacheType.q4_0;
+          break;
+        default:
+          parsedKv = KvCacheType.f16;
+      }
+      // Safety: a quantized KV cache requires flash attention. If the user
+      // quantized KV but forced flash off, promote to auto rather than letting
+      // llamadart throw on load.
+      if (parsedKv != KvCacheType.f16 &&
+          parsedFlash == FlashAttention.disabled) {
+        parsedFlash = FlashAttention.auto;
+      }
+
       final params = ModelParams(
         contextSize: contextSize,
-        gpuLayers: userGpuLayers, 
+        gpuLayers: userGpuLayers,
         preferredBackend: parsedBackend,
-        numberOfThreads: Platform.numberOfProcessors > 4 ? 4 : 0, 
-        numberOfThreadsBatch: Platform.numberOfProcessors > 4 ? 4 : 0,
+        numberOfThreads: threads,
+        numberOfThreadsBatch: threads,
+        flashAttention: parsedFlash,
+        cacheTypeK: parsedKv,
+        cacheTypeV: parsedKv,
+        // 0 (or negative) → llamadart's automatic batch sizing.
+        batchSize: storage.batchSize,
+        microBatchSize: storage.microBatchSize,
       );
 
-      log?.info('Backend=$parsedBackend, GPU layers=$userGpuLayers, ctx=${contextSize == 0 ? 'auto(model max)' : contextSize}, threads=${Platform.numberOfProcessors > 4 ? 4 : 0}', source: 'LLM');
+      log?.info(
+          'Backend=$parsedBackend, GPU layers=$userGpuLayers, ctx=${contextSize == 0 ? 'auto(model max)' : contextSize}, threads=$threads, flashAttn=${parsedFlash.name}, kv=${parsedKv.name}, batch=${storage.batchSize == 0 ? 'auto' : storage.batchSize}/${storage.microBatchSize == 0 ? 'auto' : storage.microBatchSize}',
+          source: 'LLM');
 
       log?.info('invoking native engine.loadModel() …', source: 'LLM');
       await _engine!.loadModel(path, modelParams: params);
@@ -527,14 +588,27 @@ class LlmService extends GetxService {
           content: m['content'] ?? '',
         ),
     ];
+    // Opt-in n-gram self-speculative decoding: drafts candidate tokens from the
+    // prompt/history (no draft model, no extra RAM) for a speedup on repetitive
+    // or structured output. Off unless enabled in Settings.
+    SpeculativeDecodingConfig? spec;
+    try {
+      if (Get.find<ChatStorageService>().speculativeNgram) {
+        spec = const SpeculativeDecodingConfig.ngramSimple();
+      }
+    } catch (_) {}
+
     // maxTokens is the user's adjustable output budget (gen.maxTokens). It caps
     // reply length; the model still stops early at its own end-of-turn. Null
     // falls back to llamadart's own default.
+    final budget = (maxTokens != null && maxTokens > 0) ? maxTokens : 4096;
     return generateChatCompletion(
       messages: chat,
-      params: (maxTokens != null && maxTokens > 0)
-          ? GenerationParams(temp: temperature, maxTokens: maxTokens)
-          : GenerationParams(temp: temperature),
+      params: GenerationParams(
+        temp: temperature,
+        maxTokens: budget,
+        speculativeDecodingConfig: spec,
+      ),
     );
   }
 
