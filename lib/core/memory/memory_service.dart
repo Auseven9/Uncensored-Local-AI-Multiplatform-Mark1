@@ -5,8 +5,10 @@ import 'package:get/get.dart';
 import '../../services/log_service.dart';
 import '../params/parameters_service.dart';
 import 'eidetic_memory_engine.dart';
+import 'eidetic_store.dart' show tokenizeQuery;
 import 'memory_manager.dart';
 import 'memory_records.dart';
+import 'recall_ranker.dart';
 
 /// Kind of memory operation, for the visible call log.
 enum MemoryCallType { recall, remember, consolidate }
@@ -73,66 +75,130 @@ class MemoryService extends GetxService {
     _log?.info('$tag · $summary', source: 'Memory');
   }
 
-  /// RECALL: build a context block of remembered facts to inject before the
-  /// model answers. Always logged as a call.
+  static const _memoryHeader =
+      'Your memory (things you actually know from past conversations — treat as '
+      'true; if something is not here, say you do not recall it rather than '
+      'guess):';
+  static const _memoryEmptyNote =
+      'You have a persistent memory across conversations; nothing specific is '
+      'recorded for this yet.';
+
+  /// RECALL — the associative recall engine. Builds a compact, budget-capped
+  /// block of remembered context to inject before the model answers.
   ///
-  /// Keyword hits for [query] come first, then the block is topped up with the
-  /// most recent facts. This is deliberate: keyword search cannot bridge
-  /// phrasing (a third-person fact "Alesis runs on llama.cpp" never lexically
-  /// matches "what do you remember?"), so without a top-up the model would get
-  /// no memory at all for most questions. Real relevance ranking arrives with
-  /// embeddings; until then, surfacing memory beats surfacing nothing.
-  Future<String> remembering(String query, {int k = 8}) async {
+  /// It fuses candidates from every tier — the semantic claim graph (spreading
+  /// activation, scored) and the raw episodic log (keyword search, cross-
+  /// session) — deduplicates them, ranks by a blend of relevance × salience ×
+  /// recency, and admits the top items until a character budget is spent (the
+  /// context window is tiny). [recentContext] enriches the cue so recall tracks
+  /// what the conversation is *about*, not just the last sentence. When
+  /// `recall.memoryAwareness` is on, a one-line capability note is included so
+  /// the model relies on memory instead of confabulating. Embedding-based
+  /// (meaning) seeding plugs into this same pipeline in the next phase.
+  Future<String> remembering(String query,
+      {int k = 8, String recentContext = ''}) async {
     final kk = _params?.getInt('recall.k') ?? k;
+    final awareness = _params?.getBool('recall.memoryAwareness') ?? true;
+    String emptyResult() => awareness ? _memoryEmptyNote : '';
+
     if (kk <= 0) {
-      _record(MemoryCallType.recall, 'query="${_short(query)}" → disabled (k=0)');
-      return '';
+      _record(
+          MemoryCallType.recall, 'query="${_short(query)}" → disabled (k=0)');
+      return emptyResult();
     }
-    final topUp = _params?.getBool('recall.topUpRecent') ?? true;
+
+    // Cue: current message enriched with a little recent context.
+    final cue =
+        recentContext.trim().isEmpty ? query : '$query\n${recentContext.trim()}';
+
     final alpha = _params?.getDouble('spreading.alpha') ?? 0.85;
     final threshold = _params?.getDouble('spreading.threshold') ?? 0.15;
     final maxHops = _params?.getInt('spreading.maxHops') ?? 2;
     final seedK = _params?.getInt('spreading.seedK') ?? 10;
+    final epiDepth = _params?.getInt('recall.episodicDepth') ?? 12;
+    final charBudget = _params?.getInt('recall.charBudget') ?? 600;
+    final wRel = _params?.getDouble('recall.wRelevance') ?? 0.6;
+    final wSal = _params?.getDouble('recall.wSalience') ?? 0.25;
+    final wRec = _params?.getDouble('recall.wRecency') ?? 0.15;
+    final halfLife = _params?.getDouble('recall.recencyHalfLifeHours') ?? 72.0;
 
-    List<SemanticFact> hits;
-    List<SemanticFact> recent;
+    List<({SemanticFact fact, double score})> semantic;
+    List<EpisodicEntry> episodic;
     try {
-      // Graph-aware recall: keyword hits seed spreading activation, so related
-      // claims surface too. Degrades to plain keyword recall when no edges yet.
-      hits = await _memory.recallByActivation(
-        query,
-        k: kk,
-        alpha: alpha,
-        threshold: threshold,
-        maxHops: maxHops,
-        seedK: seedK,
-      );
-      recent =
-          topUp ? await _memory.recentFacts(limit: kk * 2) : <SemanticFact>[];
+      semantic = await _memory.recallSemanticScored(cue,
+          k: kk,
+          alpha: alpha,
+          threshold: threshold,
+          maxHops: maxHops,
+          seedK: seedK);
+      episodic = await _memory.searchEpisodic(cue, limit: epiDepth);
     } catch (e) {
       _record(MemoryCallType.recall, 'query="${_short(query)}" → error: $e');
-      return '';
+      return emptyResult();
     }
 
-    final seen = <String>{};
-    final merged = <SemanticFact>[];
-    for (final f in [...hits, ...recent]) {
-      final key = f.id?.toString() ?? f.dedupeHash;
-      if (seen.add(key)) merged.add(f);
-      if (merged.length >= kk) break;
+    final now = DateTime.now();
+    final cueTokens = tokenizeQuery(cue).toSet();
+    final candidates = <RecallCandidate>[];
+    for (final s in semantic) {
+      candidates.add(RecallCandidate(
+        source: RecallSource.semantic,
+        text: s.fact.text,
+        relevance: s.score.clamp(0.0, 1.0).toDouble(),
+        salience: s.fact.salience,
+        timestamp: s.fact.createdUtc,
+        dedupeKey: normalizeForDedupe(s.fact.text),
+      ));
     }
+    for (final e in episodic) {
+      final text = _clip(e.content, 220);
+      candidates.add(RecallCandidate(
+        source: RecallSource.episodic,
+        text: text,
+        relevance: _overlap(cueTokens, e.content),
+        salience: 0.4, // raw turns: useful but uncurated
+        timestamp: e.timestampUtc,
+        dedupeKey: normalizeForDedupe(text),
+      ));
+    }
+
+    final ranked = fuseAndRank(
+      candidates,
+      now: now,
+      wRelevance: wRel,
+      wSalience: wSal,
+      wRecency: wRec,
+      recencyHalfLifeHours: halfLife,
+      charBudget: charBudget,
+    ).take(kk).toList();
 
     _record(MemoryCallType.recall,
-        'query="${_short(query)}" → activation ${hits.length}, injected ${merged.length}');
+        'cue="${_short(query)}" → sem ${semantic.length}, epi ${episodic.length}, injected ${ranked.length}');
 
-    if (merged.isEmpty) return '';
-    final buf = StringBuffer(
-        'Things you remember (your long-term memory — treat as true):\n');
-    for (final f in merged) {
-      buf.writeln('- ${f.text}');
+    if (ranked.isEmpty) return emptyResult();
+
+    final buf = StringBuffer()
+      ..writeln(awareness ? _memoryHeader : 'Relevant memory:');
+    for (final c in ranked) {
+      buf.writeln('- ${c.text}');
     }
     return buf.toString().trim();
   }
+
+  /// Fraction of cue tokens present in [content] (0..1) — episodic relevance.
+  double _overlap(Set<String> cueTokens, String content) {
+    if (cueTokens.isEmpty) return 0.0;
+    final ct = tokenizeQuery(content).toSet();
+    if (ct.isEmpty) return 0.0;
+    var hit = 0;
+    for (final t in cueTokens) {
+      if (ct.contains(t)) hit++;
+    }
+    return (hit / cueTokens.length).clamp(0.0, 1.0).toDouble();
+  }
+
+  String _clip(String s, int max) =>
+      s.length <= max ? s : '${s.substring(0, max)}…';
 
   /// REMEMBER a single entry to episodic memory. Logged as a call.
   Future<int?> remember({

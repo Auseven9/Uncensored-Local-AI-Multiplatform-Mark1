@@ -162,11 +162,19 @@ class EideticMemoryEngine extends GetxService {
     await _store.addProvenance(factId, eventId);
   }
 
-  /// Graph-aware recall: keyword hits seed a spreading-activation pass over the
+  /// Keyword search over the raw episodic log (all sessions), for the hybrid
+  /// recall engine's episodic tier.
+  Future<List<EpisodicEntry>> searchEpisodic(String query,
+      {int limit = 20}) async {
+    await _ensureInit();
+    return _store.searchEpisodic(query, limit: limit);
+  }
+
+  /// Graph-aware recall that keeps each claim's activation score, for the hybrid
+  /// recall ranker: keyword hits seed a spreading-activation pass over the
   /// relation edges, so related claims surface even when they don't lexically
-  /// match [query]. Falls back to just the keyword seeds when there are no
-  /// edges yet (early on), so it never does worse than plain keyword recall.
-  Future<List<SemanticFact>> recallByActivation(
+  /// match [query]. Returns empty when there are no seeds.
+  Future<List<({SemanticFact fact, double score})>> recallSemanticScored(
     String query, {
     int k = 8,
     double alpha = 0.85,
@@ -183,26 +191,46 @@ class EideticMemoryEngine extends GetxService {
     if (seedMap.isEmpty) return const [];
 
     final edges = await _store.allEdges();
-    final ranked = spreadActivation(
+    final result = spreadActivation(
       seeds: seedMap,
       edges: edges,
       alpha: alpha,
       threshold: threshold,
       maxHops: maxHops,
-    ).ranked();
+    );
+    final ranked = result.ranked();
     if (ranked.isEmpty) return const [];
 
     final topIds = ranked.take(k).toList();
     final facts = await _store.factsByIds(topIds);
     final byId = {for (final f in facts) f.id: f};
-    // Re-apply activation order (factsByIds returns arbitrary order) and drop
-    // superseded claims from what the model sees.
-    final ordered = <SemanticFact>[];
+    // Re-apply activation order and drop superseded claims.
+    final out = <({SemanticFact fact, double score})>[];
     for (final id in topIds) {
       final f = byId[id];
-      if (f != null && f.status != ClaimStatus.superseded) ordered.add(f);
+      if (f != null && f.status != ClaimStatus.superseded) {
+        out.add((fact: f, score: result.scores[id] ?? 0.0));
+      }
     }
-    return ordered;
+    return out;
+  }
+
+  /// Fact-only spreading-activation recall (kept for existing callers/tests).
+  Future<List<SemanticFact>> recallByActivation(
+    String query, {
+    int k = 8,
+    double alpha = 0.85,
+    double threshold = 0.15,
+    int maxHops = 2,
+    int seedK = 10,
+  }) async {
+    final scored = await recallSemanticScored(query,
+        k: k,
+        alpha: alpha,
+        threshold: threshold,
+        maxHops: maxHops,
+        seedK: seedK);
+    return scored.map((e) => e.fact).toList();
   }
 
   Future<void> _ensureInit() async {

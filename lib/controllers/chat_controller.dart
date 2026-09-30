@@ -124,7 +124,12 @@ class ChatController extends GetxController {
     // ── MEMORY: remembering (recall) before generating ─────────
     final baseSystem =
         chat.systemPrompt.isNotEmpty ? chat.systemPrompt : systemPrompt.value;
-    final recalled = await _memory?.remembering(text.trim()) ?? '';
+    // A compact cue from the last few turns so recall tracks what the
+    // conversation is *about*, not just the latest sentence.
+    final recentContext = _recentContextCue(chat, current: userMsg);
+    final recalled = await _memory
+            ?.remembering(text.trim(), recentContext: recentContext) ??
+        '';
     final effectiveSystem =
         recalled.isEmpty ? baseSystem : '$baseSystem\n\n$recalled';
 
@@ -177,6 +182,14 @@ class ChatController extends GetxController {
             r'|<end_of_turn>|<start_of_turn>|<\|assistant\|>|<\|user\|>|<\|system\|>'
             r'|<\|pad\|>|</s>|<s>|\[INST\]|\[/INST\]|\[end\]'
           ), '')
+          // Strip stray HTML structural tags some chat templates bleed into the
+          // reply (e.g. a lone </blockquote>). The chat view renders markdown,
+          // not HTML, so these are template artifacts, never intended output.
+          .replaceAll(
+            RegExp(r'</?(?:blockquote|p|div|span|br|hr)\s*/?>',
+                caseSensitive: false),
+            '',
+          )
           .trim();
       isGenerating.value = false;
       streamedResponse.value = '';
@@ -195,6 +208,30 @@ class ChatController extends GetxController {
         unawaited(mem.maybeConsolidate());
       }
     }
+  }
+
+  /// Build a compact recall cue from the last few turns (excluding [current],
+  /// the message being answered). Keeps the most recent content within a small
+  /// character budget so recall reflects the thread's topic, not just the last
+  /// sentence — without bloating the tiny context window.
+  String _recentContextCue(
+    ChatModel chat, {
+    required MessageModel current,
+    int maxTurns = 4,
+    int maxChars = 400,
+  }) {
+    final prior = chat.messages
+        .where((m) => !m.isSystem && !identical(m, current))
+        .map((m) => m.content.trim())
+        .where((s) => s.isNotEmpty)
+        .toList();
+    if (prior.isEmpty) return '';
+    final recent =
+        prior.length <= maxTurns ? prior : prior.sublist(prior.length - maxTurns);
+    final joined = recent.join('\n');
+    return joined.length <= maxChars
+        ? joined
+        : joined.substring(joined.length - maxChars);
   }
 
   /// Stop current generation.

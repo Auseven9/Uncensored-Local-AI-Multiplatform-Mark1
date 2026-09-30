@@ -23,6 +23,9 @@ abstract class EideticStore {
   Future<int> nextSequence(String sessionId);
   Future<int> insertEpisodic(EpisodicEntry entry);
   Future<List<EpisodicEntry>> recentEpisodic({String? sessionId, int limit = 50});
+  /// Keyword search across the raw episodic log (all sessions), newest first.
+  /// Empty/too-short query falls back to the most recent entries.
+  Future<List<EpisodicEntry>> searchEpisodic(String query, {int limit = 20});
   Future<List<EpisodicEntry>> pendingEpisodic({int limit = 200});
   Future<int> pendingCount();
   Future<void> markConsolidated(List<int> ids);
@@ -127,6 +130,19 @@ class InMemoryEideticStore implements EideticStore {
         .toList()
       ..sort((a, b) => b.id!.compareTo(a.id!));
     return rows.take(limit).toList();
+  }
+
+  @override
+  Future<List<EpisodicEntry>> searchEpisodic(String query,
+      {int limit = 20}) async {
+    final tokens = tokenizeQuery(query);
+    final rows = [..._episodic]..sort((a, b) => b.id!.compareTo(a.id!));
+    if (tokens.isEmpty) return rows.take(limit).toList();
+    final matches = rows.where((e) {
+      final t = e.content.toLowerCase();
+      return tokens.any((tok) => t.contains(tok));
+    }).toList();
+    return matches.take(limit).toList();
   }
 
   @override

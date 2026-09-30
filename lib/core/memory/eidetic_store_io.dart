@@ -224,6 +224,23 @@ class SqliteEideticStore implements EideticStore {
   }
 
   @override
+  Future<List<EpisodicEntry>> searchEpisodic(String query,
+      {int limit = 20}) async {
+    final tokens = tokenizeQuery(query);
+    if (tokens.isEmpty) return recentEpisodic(limit: limit);
+    final clause = tokens.map((_) => 'LOWER(content) LIKE ?').join(' OR ');
+    final args = tokens.map((t) => '%$t%').toList();
+    final rows = await _database.query(
+      'episodic_log',
+      where: clause,
+      whereArgs: args,
+      orderBy: 'id DESC',
+      limit: limit,
+    );
+    return rows.map(EpisodicEntry.fromRow).toList();
+  }
+
+  @override
   Future<List<EpisodicEntry>> pendingEpisodic({int limit = 200}) async {
     final rows = await _database.query(
       'episodic_log',

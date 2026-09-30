@@ -38,9 +38,15 @@ const List<ParamSpec> aetherParamRegistry = [
   ParamSpec(key: 'gen.repeatPenalty', label: 'Repeat penalty', group: 'Generation', type: ParamType.doubleType, def: 1.1, min: 0.5, max: 2.0),
   ParamSpec(key: 'gen.maxTokens', label: 'Max tokens', group: 'Generation', type: ParamType.intType, def: 4096, min: 64, max: 8192),
 
-  // ── Recall (remembering) ────────────────────────────────────
-  ParamSpec(key: 'recall.k', label: 'Facts injected (k)', group: 'Recall', type: ParamType.intType, def: 8, min: 0, max: 30, help: 'How many memories to inject before answering.'),
-  ParamSpec(key: 'recall.topUpRecent', label: 'Top up with recent facts', group: 'Recall', type: ParamType.boolType, def: true, help: 'When keyword/semantic hits are few, add recent facts.'),
+  // ── Recall (associative recall engine) ──────────────────────
+  ParamSpec(key: 'recall.k', label: 'Max memories injected (k)', group: 'Recall', type: ParamType.intType, def: 8, min: 0, max: 30, help: 'Upper bound on memories injected per turn (0 disables recall).'),
+  ParamSpec(key: 'recall.memoryAwareness', label: 'Tell model it has memory', group: 'Recall', type: ParamType.boolType, def: true, help: 'Inject a one-line note so the model relies on memory instead of guessing. Off = pure blank slate.'),
+  ParamSpec(key: 'recall.charBudget', label: 'Injection budget (chars)', group: 'Recall', type: ParamType.intType, def: 600, min: 0, max: 4000, help: 'Character cap on injected memory (protects the small context window).'),
+  ParamSpec(key: 'recall.episodicDepth', label: 'Episodic search depth', group: 'Recall', type: ParamType.intType, def: 12, min: 0, max: 100, help: 'How many raw episodic turns to consider as recall candidates.'),
+  ParamSpec(key: 'recall.wRelevance', label: 'Weight: relevance', group: 'Recall', type: ParamType.doubleType, def: 0.6, min: 0.0, max: 1.0),
+  ParamSpec(key: 'recall.wSalience', label: 'Weight: salience', group: 'Recall', type: ParamType.doubleType, def: 0.25, min: 0.0, max: 1.0),
+  ParamSpec(key: 'recall.wRecency', label: 'Weight: recency', group: 'Recall', type: ParamType.doubleType, def: 0.15, min: 0.0, max: 1.0),
+  ParamSpec(key: 'recall.recencyHalfLifeHours', label: 'Recency half-life (h)', group: 'Recall', type: ParamType.doubleType, def: 72.0, min: 1.0, max: 8760.0),
   ParamSpec(key: 'recall.minTokenLen', label: 'Min keyword length', group: 'Recall', type: ParamType.intType, def: 3, min: 1, max: 8),
 
   // ── Consolidation gate (episodic → semantic) ────────────────
