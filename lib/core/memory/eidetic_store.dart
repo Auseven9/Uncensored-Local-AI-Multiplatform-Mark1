@@ -1,4 +1,5 @@
 import 'event_records.dart';
+import 'memory_dynamics.dart';
 import 'memory_records.dart';
 
 // Platform-specific factory. On native (dart:io present) this resolves to the
@@ -64,6 +65,25 @@ abstract class EideticStore {
 
   /// Remove a claim's embedding (kept in step with the claim's own deletion).
   Future<void> deleteEmbedding(int factId);
+
+  // ── Adaptive dynamics (Phase 3 — decay + reinforcement) ─────
+  /// Reinforce the given claims after a recall actually used them: bump each
+  /// claim's salience (retrieval strength) toward 1.0 and accrue a little
+  /// confidence (storage strength), both scaled by [alpha] (`decay.alpha`).
+  /// Returns how many claims were updated. A no-op when [ids] is empty or
+  /// [alpha] <= 0. See `memory_dynamics.dart` for the exact curves.
+  Future<int> reinforceClaims(List<int> ids, {required double alpha});
+
+  /// Apply one Ebbinghaus forgetting step to every non-superseded claim's
+  /// salience, relaxing each toward a per-claim permanence floor derived from
+  /// its confidence and [beta] (`decay.beta`). [cyclesElapsed] and [tau]
+  /// (`decay.tauBaseCycles`) set the rate. Returns how many claims actually
+  /// changed. A no-op when [cyclesElapsed] or [tau] is non-positive.
+  Future<int> decayAllSalience({
+    required double cyclesElapsed,
+    required double tau,
+    required double beta,
+  });
 
   // ── Editing (memory panel) ──────────────────────────────────
   /// Update a fact's fields; recomputes the dedupe hash when [text] changes.
@@ -288,6 +308,45 @@ class InMemoryEideticStore implements EideticStore {
   @override
   Future<void> deleteEmbedding(int factId) async {
     _embeddings.remove(factId);
+  }
+
+  @override
+  Future<int> reinforceClaims(List<int> ids, {required double alpha}) async {
+    if (ids.isEmpty || alpha <= 0.0) return 0;
+    final set = ids.toSet();
+    var n = 0;
+    for (var i = 0; i < _facts.length; i++) {
+      final f = _facts[i];
+      if (f.id == null || !set.contains(f.id)) continue;
+      _facts[i] = f.copyWith(
+        salience: reinforcedSalience(f.salience, alpha),
+        confidence: reinforcedConfidence(f.confidence, alpha),
+      );
+      n++;
+    }
+    return n;
+  }
+
+  @override
+  Future<int> decayAllSalience({
+    required double cyclesElapsed,
+    required double tau,
+    required double beta,
+  }) async {
+    if (cyclesElapsed <= 0.0 || tau <= 0.0) return 0;
+    var n = 0;
+    for (var i = 0; i < _facts.length; i++) {
+      final f = _facts[i];
+      if (f.status == ClaimStatus.superseded) continue;
+      final floor = permanenceFloor(f.confidence, beta);
+      final ns = decayedSalience(f.salience,
+          cyclesElapsed: cyclesElapsed, tau: tau, floor: floor);
+      if (ns != f.salience) {
+        _facts[i] = f.copyWith(salience: ns);
+        n++;
+      }
+    }
+    return n;
   }
 
   @override

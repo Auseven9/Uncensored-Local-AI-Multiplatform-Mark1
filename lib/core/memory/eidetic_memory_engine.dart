@@ -426,6 +426,30 @@ class EideticMemoryEngine extends GetxService {
     return _store.factCount();
   }
 
+  // ── Adaptive dynamics (Phase 3 — decay + reinforcement) ─────
+
+  /// Reinforce claims that a recall actually surfaced — strengthens their
+  /// salience and slowly accrues confidence (see `memory_dynamics.dart`).
+  /// Best-effort and fast (a local batch update, no model); returns how many
+  /// claims changed.
+  Future<int> reinforceClaims(List<int> ids, {double alpha = 2.0}) async {
+    await _ensureInit();
+    return _store.reinforceClaims(ids, alpha: alpha);
+  }
+
+  /// Apply one forgetting step across all claims — un-reinforced memories fade
+  /// toward their permanence floor, so recall order tracks what's actually used
+  /// over time. Returns how many claims changed.
+  Future<int> decayAllSalience({
+    required double cyclesElapsed,
+    required double tau,
+    required double beta,
+  }) async {
+    await _ensureInit();
+    return _store.decayAllSalience(
+        cyclesElapsed: cyclesElapsed, tau: tau, beta: beta);
+  }
+
   // ── Editing (memory panel) ──────────────────────────────────
 
   Future<void> updateFact(int id,

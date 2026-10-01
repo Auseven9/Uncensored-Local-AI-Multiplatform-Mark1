@@ -26,6 +26,11 @@ class RecallCandidate {
   /// whether embeddings actually contributed, vs keyword/graph seeding.
   final bool viaEmbedding;
 
+  /// The backing semantic claim's id, when this candidate came from the
+  /// semantic tier. Null for episodic/working candidates. Lets the recall path
+  /// reinforce exactly the claims it actually injected (Phase 3).
+  final int? factId;
+
   /// Final blended score, filled in by [fuseAndRank].
   double score = 0.0;
 
@@ -37,6 +42,7 @@ class RecallCandidate {
     required this.timestamp,
     required this.dedupeKey,
     this.viaEmbedding = false,
+    this.factId,
   });
 }
 

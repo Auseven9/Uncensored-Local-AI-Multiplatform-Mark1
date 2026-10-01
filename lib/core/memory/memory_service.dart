@@ -49,6 +49,13 @@ class MemoryService extends GetxService {
   final recentCalls = <MemoryCall>[].obs;
   static const _maxCalls = 60;
 
+  /// Turns since the last adaptive-decay sweep (Phase 3). Decay is batched
+  /// every `decay.applyEveryCycles` turns rather than run each turn — cheaper,
+  /// and it's what the "Recompute every N cycles" knob means. Counted in-memory
+  /// within a run; it resets on relaunch, so decay is slightly under-applied
+  /// right after a cold start (an accepted Phase 3a simplification).
+  int _turnsSinceDecay = 0;
+
   /// The most recent recall pass, for the chat UI's "recalled-memory chips" —
   /// what was pulled into context, by source, before the model spoke. Null
   /// until the first recall; carries an empty [RecallResult] when nothing was
@@ -276,6 +283,7 @@ class MemoryService extends GetxService {
         timestamp: s.fact.createdUtc,
         dedupeKey: normalizeForDedupe(s.fact.text),
         viaEmbedding: s.fact.id != null && embSeedIds.contains(s.fact.id),
+        factId: s.fact.id,
       ));
     }
     for (final e in episodic) {
@@ -311,6 +319,12 @@ class MemoryService extends GetxService {
       embeddingTop: embTop,
       cue: _short(query),
     );
+
+    // Phase 3 — reinforcement: injecting a claim IS a retrieval event, and
+    // retrieval strengthens memory (the testing effect). Fire-and-forget so it
+    // never sits on the turn's critical path; it only touches the claims we
+    // actually surfaced this turn.
+    _reinforceRecalled(ranked);
 
     // Diagnostics make "0 meaning" explainable at a glance:
     //   idx N  — claims that actually have an embedding (0 ⇒ nothing indexed yet)
@@ -429,6 +443,8 @@ class MemoryService extends GetxService {
     await _appendMessageEvent('assistant', aiText,
         parents: userEv == null ? const [] : [userEv]);
     unawaited(_maybeConsolidate());
+    // Adaptive decay (Phase 3): advance the cadence; sweeps every N turns.
+    _maybeDecay();
   }
 
   /// Public opportunistic-consolidation trigger (gated; no-op when idle).
@@ -487,6 +503,57 @@ class MemoryService extends GetxService {
       // Consolidation is best-effort; never surface as a turn failure.
       _finishStatus();
     }
+  }
+
+  // ── Adaptive dynamics (Phase 3 — decay + reinforcement) ─────
+
+  /// Reinforce the claims this recall actually injected. Best-effort and
+  /// fire-and-forget (a fast local batch update, no model). Gated by
+  /// `decay.enabled`; `decay.alpha` sets the strength (0 ⇒ no reinforcement).
+  void _reinforceRecalled(List<RecallCandidate> injected) {
+    if (!(_params?.getBool('decay.enabled') ?? true)) return;
+    final alpha = _params?.getDouble('decay.alpha') ?? 2.0;
+    if (alpha <= 0) return;
+    final ids = injected
+        .where((c) => c.source == RecallSource.semantic && c.factId != null)
+        .map((c) => c.factId!)
+        .toList();
+    if (ids.isEmpty) return;
+    unawaited(() async {
+      try {
+        final n = await _memory.reinforceClaims(ids, alpha: alpha);
+        if (n > 0) {
+          _record(MemoryCallType.recall,
+              'reinforced $n recalled ${n == 1 ? 'memory' : 'memories'}');
+        }
+      } catch (_) {}
+    }());
+  }
+
+  /// Advance the decay cadence by one turn and, once `decay.applyEveryCycles`
+  /// turns have elapsed, fire one forgetting sweep across memory so recall
+  /// order tracks what's actually used over time. Fire-and-forget: a fast local
+  /// batch update that never blocks the turn.
+  void _maybeDecay() {
+    if (!(_params?.getBool('decay.enabled') ?? true)) return;
+    final everyN = _params?.getInt('decay.applyEveryCycles') ?? 60;
+    if (everyN <= 0) return;
+    _turnsSinceDecay++;
+    if (_turnsSinceDecay < everyN) return;
+    final elapsed = _turnsSinceDecay;
+    _turnsSinceDecay = 0;
+    final tau = (_params?.getInt('decay.tauBaseCycles') ?? 3600).toDouble();
+    final beta = _params?.getDouble('decay.beta') ?? 1.0;
+    unawaited(() async {
+      try {
+        final n = await _memory.decayAllSalience(
+            cyclesElapsed: elapsed.toDouble(), tau: tau, beta: beta);
+        if (n > 0) {
+          _record(MemoryCallType.consolidate,
+              'decay sweep · faded $n ${n == 1 ? 'memory' : 'memories'} (every $everyN turns, τ=${tau.toStringAsFixed(0)})');
+        }
+      } catch (_) {}
+    }());
   }
 
   /// Clear the status back to idle, but only if this background pass still owns

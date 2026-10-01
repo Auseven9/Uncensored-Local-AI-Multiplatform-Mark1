@@ -8,6 +8,7 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'eidetic_store.dart';
 import 'event_records.dart';
+import 'memory_dynamics.dart';
 import 'memory_records.dart';
 import 'vector_search.dart';
 
@@ -392,6 +393,72 @@ class SqliteEideticStore implements EideticStore {
       whereArgs: ids,
     );
     return rows.map(SemanticFact.fromRow).toList();
+  }
+
+  @override
+  Future<int> reinforceClaims(List<int> ids, {required double alpha}) async {
+    if (ids.isEmpty || alpha <= 0.0) return 0;
+    final placeholders = List.filled(ids.length, '?').join(', ');
+    final rows = await _database.query(
+      'semantic_facts',
+      columns: ['id', 'salience', 'confidence'],
+      where: 'id IN ($placeholders)',
+      whereArgs: ids,
+    );
+    if (rows.isEmpty) return 0;
+    final batch = _database.batch();
+    for (final r in rows) {
+      final id = (r['id'] as num).toInt();
+      final sal = (r['salience'] as num?)?.toDouble() ?? 0.5;
+      final conf = (r['confidence'] as num?)?.toDouble() ?? 0.5;
+      batch.update(
+        'semantic_facts',
+        {
+          'salience': reinforcedSalience(sal, alpha),
+          'confidence': reinforcedConfidence(conf, alpha),
+        },
+        where: 'id = ?',
+        whereArgs: [id],
+      );
+    }
+    await batch.commit(noResult: true);
+    return rows.length;
+  }
+
+  @override
+  Future<int> decayAllSalience({
+    required double cyclesElapsed,
+    required double tau,
+    required double beta,
+  }) async {
+    if (cyclesElapsed <= 0.0 || tau <= 0.0) return 0;
+    // SQLite has no exp(); read the small claim set and apply the pure curve in
+    // Dart, then write back only the rows that actually changed. At on-device
+    // scale (hundreds–low thousands of claims) this is a few milliseconds, and
+    // it runs off the turn path (unawaited) every N turns.
+    final rows = await _database.query(
+      'semantic_facts',
+      columns: ['id', 'salience', 'confidence'],
+      where: "status != 'superseded'",
+    );
+    if (rows.isEmpty) return 0;
+    final batch = _database.batch();
+    var n = 0;
+    for (final r in rows) {
+      final id = (r['id'] as num).toInt();
+      final sal = (r['salience'] as num?)?.toDouble() ?? 0.5;
+      final conf = (r['confidence'] as num?)?.toDouble() ?? 0.5;
+      final floor = permanenceFloor(conf, beta);
+      final ns = decayedSalience(sal,
+          cyclesElapsed: cyclesElapsed, tau: tau, floor: floor);
+      if ((ns - sal).abs() > 1e-9) {
+        batch.update('semantic_facts', {'salience': ns},
+            where: 'id = ?', whereArgs: [id]);
+        n++;
+      }
+    }
+    if (n > 0) await batch.commit(noResult: true);
+    return n;
   }
 
   @override
