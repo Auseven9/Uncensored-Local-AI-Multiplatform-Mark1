@@ -18,13 +18,13 @@ void main() {
     });
 
     test('is the weight-normalized blend of the components', () {
-      // Default weights: 0.25/0.20/0.15/0.15/0.25, sum = 0.85.
-      // Only prediction = 1 → 0.25 / 0.85.
+      // Default weights: 0.25/0.20/0.15/0.15/0.25, sum = 1.00.
+      // Only prediction = 1 → 0.25 / 1.00.
       final u = computeUScore(
         const UScoreInputs(prediction: 1.0),
         const UScoreWeights(),
       );
-      expect(u, closeTo(0.25 / 0.85, 1e-9));
+      expect(u, closeTo(0.25 / 1.0, 1e-9));
     });
 
     test('normalization makes weights that do not sum to 1 still valid', () {
@@ -59,7 +59,7 @@ void main() {
         const UScoreInputs(prediction: 5.0), // out of range
         const UScoreWeights(),
       );
-      expect(u, closeTo(0.25 / 0.85, 1e-9)); // treated as 1.0, not 5.0
+      expect(u, closeTo(0.25 / 1.0, 1e-9)); // treated as 1.0, not 5.0
     });
   });
 
