@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
 import '../theme/app_colors.dart';
+import 'autopilot_screen.dart';
 import '../controllers/chat_controller.dart';
 import '../controllers/theme_controller.dart';
 import '../controllers/model_controller.dart';
@@ -671,12 +672,17 @@ class _SettingsBody extends StatelessWidget {
               Center(
                 child: Column(
                   children: [
-                    Text(
-                      'Uncensored Local AI v2.0.0',
-                      style: TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w500,
-                        color: context.textM,
+                    // Long-press the version to open the Autopilot self-test
+                    // harness (a hidden dev tool).
+                    GestureDetector(
+                      onLongPress: () => Get.to(() => const AutopilotScreen()),
+                      child: Text(
+                        'Uncensored Local AI v2.0.0',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w500,
+                          color: context.textM,
+                        ),
                       ),
                     ),
                     const SizedBox(height: 4),
