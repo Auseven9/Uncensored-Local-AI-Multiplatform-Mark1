@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:get/get.dart';
 
+import '../controllers/model_controller.dart';
 import '../models/autopilot_scenario.dart';
 import '../services/autopilot/autopilot_runner.dart';
 
@@ -17,7 +20,8 @@ class AutopilotScreen extends StatefulWidget {
 class _AutopilotScreenState extends State<AutopilotScreen> {
   final AutopilotRunner _runner = AutopilotRunner();
   final List<AutopilotScenario> _scenarios = builtInScenarios();
-  final List<String> _log = [];
+  final List<String> _log = []; // capped, for the on-screen ListView
+  final List<String> _transcript = []; // full, uncapped — what "Copy log" copies
   final ScrollController _logScroll = ScrollController();
 
   bool _running = false;
@@ -31,6 +35,7 @@ class _AutopilotScreenState extends State<AutopilotScreen> {
   }
 
   void _appendLog(String line) {
+    _transcript.add(line); // full record, never truncated
     setState(() {
       _log.add(line);
       if (_log.length > 300) _log.removeRange(0, _log.length - 300);
@@ -47,18 +52,72 @@ class _AutopilotScreenState extends State<AutopilotScreen> {
     setState(() {
       _running = true;
       _log.clear();
+      _transcript.clear();
       _reports.clear();
     });
+    // Self-identifying header: exactly which app version, model, embedder and
+    // GPU/CPU backend produced these results — so a pasted log is unambiguous.
+    await _emitSystemsHeader();
     for (final s in scenarios) {
       setState(() => _currentName = s.name);
       _appendLog('════ ${s.name} ════');
       final report = await _runner.run(s, onLog: _appendLog);
       setState(() => _reports.add(report));
     }
+    _appendLog('════ done · ${_reports.where((r) => r.allPassed).length}/'
+        '${_reports.length} scenarios green ════');
     setState(() {
       _running = false;
       _currentName = '';
     });
+  }
+
+  Future<void> _emitSystemsHeader() async {
+    try {
+      final report = await Get.find<ModelController>().systemsReport();
+      for (final l in report.split('\n')) {
+        _appendLog(l);
+      }
+    } catch (e) {
+      _appendLog('systems check unavailable: $e');
+    }
+  }
+
+  /// One-tap health snapshot: appends it to the log AND copies it to the
+  /// clipboard, so you can paste "exactly what I'm running" without a full run.
+  Future<void> _systemsCheck() async {
+    String report;
+    try {
+      report = await Get.find<ModelController>().systemsReport();
+    } catch (e) {
+      report = 'systems check failed: $e';
+    }
+    setState(() {
+      _log.clear();
+      _transcript.clear();
+    });
+    for (final l in report.split('\n')) {
+      _appendLog(l);
+    }
+    await Clipboard.setData(ClipboardData(text: report));
+    _toast('Systems check copied');
+  }
+
+  void _copyLog() {
+    final text = _transcript.join('\n');
+    if (text.isEmpty) {
+      _toast('Nothing to copy yet — run a scenario first');
+      return;
+    }
+    Clipboard.setData(ClipboardData(text: text));
+    _toast('Log copied (${_transcript.length} lines)');
+  }
+
+  void _toast(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
+    );
   }
 
   @override
@@ -105,6 +164,26 @@ class _AutopilotScreenState extends State<AutopilotScreen> {
             label: Text(_running
                 ? 'Running: $_currentName'
                 : 'Run all (${_scenarios.length})'),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _running ? null : _systemsCheck,
+                  icon: const Icon(Icons.monitor_heart_outlined, size: 18),
+                  label: const Text('Systems check'),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _copyLog,
+                  icon: const Icon(Icons.copy_all_rounded, size: 18),
+                  label: const Text('Copy log'),
+                ),
+              ),
+            ],
           ),
           const SizedBox(height: 16),
 

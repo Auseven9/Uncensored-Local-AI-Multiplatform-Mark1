@@ -2,6 +2,7 @@ import 'package:get/get.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
+import '../../core/app_version.dart';
 import '../../core/engine/inference_worker.dart';
 import '../../core/memory/eidetic_memory_engine.dart';
 import '../../core/memory/eidetic_store_io.dart';
@@ -137,7 +138,8 @@ class AutopilotRunner {
 
     // Fresh slate in the ISOLATED test DB (never your real memory).
     await engine.clearAll();
-    log('Reset isolated test memory. Model: ${_llm.loadedModelFilename}');
+    log('Reset isolated test memory · AETHER v$kAppVersion');
+    log('chat model: ${_llm.loadedModelFilename}');
 
     const sessionId = 'autopilot';
     final history = <Map<String, String>>[];

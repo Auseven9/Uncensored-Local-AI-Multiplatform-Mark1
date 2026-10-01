@@ -1315,6 +1315,43 @@ class _HomeScreenState extends State<HomeScreen> {
                 textAlign: TextAlign.center,
               ),
             ),
+            // One-tap re-arm of the last session's engines (chat + embedder).
+            // Manual only — never on launch, where arming could crash.
+            Obx(() {
+              if (_llm.isLoaded.value) return const SizedBox.shrink();
+              final f = _modelCtrl.lastUsedFilename;
+              if (f == null) return const SizedBox.shrink();
+              final loading = _modelCtrl.isLoadingModel.value;
+              return Padding(
+                padding: const EdgeInsets.only(top: 20),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    ElevatedButton.icon(
+                      onPressed:
+                          loading ? null : () => _modelCtrl.rearmLastModel(),
+                      icon: loading
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child:
+                                  CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.bolt_rounded, size: 18),
+                      label: Text(loading ? 'Loading…' : 'Load last model'),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      f,
+                      style: TextStyle(fontSize: 11, color: context.textD),
+                      textAlign: TextAlign.center,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
+              );
+            }),
           ],
         ),
       ),

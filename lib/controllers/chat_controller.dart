@@ -3,6 +3,7 @@ import 'package:get/get.dart';
 
 import '../models/chat_model.dart';
 import '../models/message_model.dart';
+import 'model_controller.dart';
 import '../services/llm_service.dart';
 import '../services/chat_storage_service.dart';
 import '../services/log_service.dart';
@@ -272,6 +273,23 @@ class ChatController extends GetxController {
       _status?.fail(friendly);
       if (aiMsg.content.isEmpty) {
         aiMsg.content = '⚠ $friendly';
+      }
+      // Engine rejected mid-use (busy/bad-state/no-model) → offer one-tap
+      // recovery so the user never has to dig through menus to re-arm.
+      final es = e.toString().toLowerCase();
+      if (es.contains('already in progress') ||
+          es.contains('no model') ||
+          es.contains('bad state') ||
+          es.contains('llama')) {
+        try {
+          Get.snackbar(
+            'Engine stalled',
+            '$friendly  —  tap here to reload models.',
+            snackPosition: SnackPosition.BOTTOM,
+            duration: const Duration(seconds: 6),
+            onTap: (_) => Get.find<ModelController>().reloadModels(),
+          );
+        } catch (_) {}
       }
     } finally {
       // Clean up any trailing stop tokens, hallucinated-turn markers, or stray

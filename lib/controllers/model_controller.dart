@@ -4,17 +4,42 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:file_picker/file_picker.dart';
 
+import '../core/app_version.dart';
 import '../models/ai_model_info.dart';
 import '../models/download_state.dart';
 import '../services/model_manager.dart';
 import '../services/llm_service.dart';
+import '../services/embedding_service.dart';
 import '../services/chat_storage_service.dart';
 import '../services/log_service.dart';
+
+/// A GGUF that is a multimodal *projector* (vision encoder → LLM projection),
+/// not a loadable language model. Loading one as the chat model fails hard
+/// (no transformer weights), so the UI must never offer it and `loadModel`
+/// refuses it up front.
+bool isProjectorFile(String filename) =>
+    filename.toLowerCase().contains('mmproj');
 
 class ModelController extends GetxController {
   final ModelManager _manager = Get.find<ModelManager>();
   final LlmService _llm = Get.find<LlmService>();
   final ChatStorageService _storage = Get.find<ChatStorageService>();
+
+  EmbeddingService? get _embed {
+    try {
+      return Get.find<EmbeddingService>();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  LogService? get _logSvc {
+    try {
+      return Get.find<LogService>();
+    } catch (_) {
+      return null;
+    }
+  }
 
   // ── Observable State ──────────────────────────────────────────
   final selectedModelFilename = RxnString();
@@ -110,6 +135,19 @@ class ModelController extends GetxController {
 
   /// Load a model into the LLM engine.
   Future<void> loadModel(String filename) async {
+    // Guard: a vision projector (mmproj) is not a loadable model — refuse it up
+    // front with a plain-English reason instead of letting the native load crash.
+    if (isProjectorFile(filename)) {
+      loadError.value =
+          'That file is a vision projector (mmproj), not a chat model. '
+          'Pick the main model GGUF (the larger file without "mmproj").';
+      _logSvc?.warn('Refused to load projector file: $filename',
+          source: 'Model');
+      Get.snackbar('Not a loadable model', loadError.value,
+          snackPosition: SnackPosition.BOTTOM,
+          duration: const Duration(seconds: 5));
+      return;
+    }
     // If already loading something, cancel it first
     if (isLoadingModel.value) {
       cancelLoadModel();
@@ -188,6 +226,88 @@ class ModelController extends GetxController {
   Future<void> unloadModel() async {
     await _llm.unloadModel();
     selectedModelFilename.value = null;
+  }
+
+  // ── One-tap convenience (v2.1.0) ─────────────────────────────
+
+  /// The filename to re-arm: the model selected this launch (seeded from the
+  /// last session on startup but deliberately NOT auto-loaded, so arming an
+  /// engine during app launch can't crash), falling back to the persisted last
+  /// model id. Null when nothing has ever been loaded.
+  String? get lastUsedFilename {
+    final sel = selectedModelFilename.value;
+    if (sel != null && sel.isNotEmpty) return sel;
+    final last = _storage.lastModelId;
+    return last.isNotEmpty ? last : null;
+  }
+
+  /// Button-triggered re-arm of the last session's engines — the CHAT model and,
+  /// for convenience, the embedder too. Never runs on launch (that could crash);
+  /// only when the user taps "Load last model". The embedder load is strictly
+  /// best-effort and happens only after the chat model is resident and idle, so a
+  /// missing/failing embedder never blocks or crashes the chat arm.
+  Future<void> rearmLastModel() async {
+    final f = lastUsedFilename;
+    if (f == null) {
+      Get.snackbar('No recent model',
+          'Open the Model Library and load one first.',
+          snackPosition: SnackPosition.BOTTOM);
+      return;
+    }
+    await loadModel(f);
+
+    final ef = _storage.embeddingModelFilename;
+    final embAlreadyUp = _embed?.isReady.value ?? false;
+    if (ef.isNotEmpty && _llm.isLoaded.value && !embAlreadyUp) {
+      try {
+        _logSvc?.info('Re-arming embedder: $ef', source: 'Model');
+        await _embed?.load(_manager.getModelPathByFilename(ef));
+      } catch (e) {
+        // Co-resident embedder is optional; recall degrades to keyword+graph.
+        _logSvc?.warn('Embedder re-arm skipped: $e', source: 'Model');
+      }
+    }
+  }
+
+  /// Recovery when the engine rejects mid-use (a crash-loop, a bad native state):
+  /// tear the chat engine down and re-arm from scratch. Surfaced as a "Reload
+  /// models" action so the user never has to dig through menus to recover.
+  Future<void> reloadModels() async {
+    _logSvc?.info('Reloading models (manual recovery)', source: 'Model');
+    try {
+      await _llm.unloadModel();
+    } catch (_) {}
+    await rearmLastModel();
+  }
+
+  /// A copyable, self-identifying health snapshot — app version, which chat model
+  /// and embedder are actually resident, last tokens/sec, and a GPU/CPU backend
+  /// probe. The whole point is that pasting this tells Claude exactly what you're
+  /// running, so a bug report is never ambiguous about the model or the hardware.
+  Future<String> systemsReport() async {
+    final b = StringBuffer()
+      ..writeln('── AETHER systems check · v$kAppVersion ──')
+      ..writeln('time: ${DateTime.now().toIso8601String()}')
+      ..writeln(_llm.isLoaded.value
+          ? 'chat model: ${_llm.loadedModelFilename}  (LOADED)'
+          : 'chat model: ${selectedModelFilename.value ?? '(none)'}  (NOT loaded)')
+      ..writeln('last tokens/sec: ${_llm.tokensPerSecond.value.toStringAsFixed(2)}');
+
+    final ef = _storage.embeddingModelFilename;
+    final embUp = _embed?.isReady.value ?? false;
+    b.writeln(ef.isEmpty
+        ? 'embedder: (none selected)'
+        : 'embedder: $ef  (${embUp ? 'LOADED' : 'not loaded'})');
+
+    try {
+      final gpu = await _llm.probeGpuDeviceLines();
+      b.writeln(gpu.isEmpty
+          ? 'backend: CPU only (no GPU offload) — expect ~1 tok/s'
+          : 'backend: ${gpu.join(' | ')}');
+    } catch (e) {
+      b.writeln('backend: GPU probe failed ($e)');
+    }
+    return b.toString().trim();
   }
 
   /// Clear the temporary file cache used by FilePicker.

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
 import '../theme/app_colors.dart';
+import '../core/app_version.dart';
 import 'autopilot_screen.dart';
 import '../controllers/chat_controller.dart';
 import '../controllers/theme_controller.dart';
@@ -677,7 +678,7 @@ class _SettingsBody extends StatelessWidget {
                     GestureDetector(
                       onLongPress: () => Get.to(() => const AutopilotScreen()),
                       child: Text(
-                        'Uncensored Local AI v2.0.3',
+                        'Uncensored Local AI v$kAppVersion',
                         style: TextStyle(
                           fontSize: 13,
                           fontWeight: FontWeight.w500,
