@@ -228,7 +228,13 @@ class MemoryManager {
       'activity and extract only the durable knowledge worth remembering long '
       'term: stable facts, user preferences, and standing rules. You aggressively '
       'discard transient chatter, one-off details, and anything already obvious. '
-      'You never invent information that is not supported by the log.';
+      'You never invent information that is not supported by the log. '
+      'POINT OF VIEW IS CRITICAL. The log is a conversation between "user" (the '
+      'human) and "assistant" (the AI). When the user says "I", "me" or "my", '
+      'they mean THEMSELVES — the user, never the AI. When the user says "you" '
+      'or "your", they mean the AI. Write every fact in the third person (e.g. '
+      '"The user has a girlfriend named Jayden"), never in the second person, '
+      'and tag who each fact is about.';
 
   String _buildCurationPrompt(List<EpisodicEntry> entries) {
     final buffer = StringBuffer()
@@ -244,11 +250,19 @@ class MemoryManager {
       ..writeln('Extract the durable knowledge worth storing long term.')
       ..writeln('Respond with ONLY a JSON object of this exact shape:')
       ..writeln(
-          '{"facts": [{"category": "fact|preference|rule|summary", "text": "<concise statement>", "confidence": 0.0}], "relations": [{"from": 0, "to": 1, "type": "supports|contradicts|causes|part_of|related"}]}')
+          '{"facts": [{"category": "fact|preference|rule|summary", "subject": "<who/what it is about>", "subjectType": "user|self|person|place|thing", "holder": "user|assistant", "text": "<concise third-person statement>", "confidence": 0.0}], "relations": [{"from": 0, "to": 1, "type": "supports|contradicts|causes|part_of|related"}]}')
       ..writeln(
           'Output raw JSON only. No markdown fences, no commentary before or after.')
       ..writeln('Rules:')
       ..writeln('- Keep at most $maxFactsPerPass items; fewer is better.')
+      ..writeln(
+          '- "subjectType": "user" for facts about the human; "self" ONLY for facts about the AI assistant itself; "person"/"place"/"thing" for others the user mentioned (e.g. a partner, a city).')
+      ..writeln(
+          '- "holder": "user" when the user stated it (almost always); "assistant" only for the AI\'s own reflection about itself.')
+      ..writeln(
+          '- "subject": a short label for who/what the fact is about ("the user", "Jayden", "myself").')
+      ..writeln(
+          '- Write "text" in the third person. Example: user says "my girlfriend is Jayden" -> {"subject":"the user","subjectType":"user","holder":"user","text":"The user has a girlfriend named Jayden"}.')
       ..writeln(
           '- "relations" links facts by their 0-based index in "facts" — use it to connect facts that support, contradict, cause, or are part of one another. Use [] if none.')
       ..writeln('- Omit anything transient, redundant, or uncertain.')
@@ -313,6 +327,13 @@ class MemoryManager {
       if (rawConf is num) confidence = rawConf.toDouble();
       confidence = confidence.clamp(0.0, 1.0).toDouble();
 
+      // Identity/attribution (Phase 5): who the fact is about, and whose view.
+      final subject = (item['subject'] as Object?)?.toString().trim() ?? '';
+      final subjectType =
+          _subjectTypeLoose((item['subjectType'] as Object?)?.toString());
+      final holder =
+          _claimHolderLoose((item['holder'] as Object?)?.toString());
+
       origToOut[origIdx] = out.length;
       out.add(SemanticFact(
         createdUtc: now,
@@ -321,6 +342,9 @@ class MemoryManager {
         sourceSessionId: sourceSessionId,
         confidence: confidence,
         dedupeHash: hash,
+        subject: subject,
+        subjectType: subjectType,
+        holder: holder,
       ));
     }
 
@@ -360,6 +384,53 @@ class MemoryManager {
         return RelationType.partOf;
       default:
         return RelationType.related;
+    }
+  }
+
+  /// Tolerant parse of the curator's "subjectType" token onto [SubjectType].
+  /// The model may say "self"/"ai"/"assistant" for the agent, "human" for the
+  /// user, "people" for a person, etc. Defaults to [SubjectType.user] — the
+  /// safe presumption that a fact is about the user, not the AI.
+  static SubjectType _subjectTypeLoose(String? s) {
+    switch ((s ?? '').toLowerCase().replaceAll(RegExp(r'[^a-z]'), '')) {
+      case 'self':
+      case 'selfai':
+      case 'ai':
+      case 'assistant':
+      case 'me':
+      case 'myself':
+        return SubjectType.selfAI;
+      case 'user':
+      case 'human':
+      case 'you': // the curator addressing the user
+        return SubjectType.user;
+      case 'person':
+      case 'people':
+      case 'someone':
+        return SubjectType.person;
+      case 'place':
+      case 'location':
+        return SubjectType.place;
+      case 'thing':
+      case 'object':
+      case 'item':
+        return SubjectType.thing;
+      default:
+        return SubjectType.user;
+    }
+  }
+
+  /// Tolerant parse of the curator's "holder" token onto [ClaimHolder].
+  /// Defaults to [ClaimHolder.user] (the user asserted it).
+  static ClaimHolder _claimHolderLoose(String? s) {
+    switch ((s ?? '').toLowerCase().replaceAll(RegExp(r'[^a-z]'), '')) {
+      case 'assistant':
+      case 'ai':
+      case 'self':
+      case 'me':
+        return ClaimHolder.assistant;
+      default:
+        return ClaimHolder.user;
     }
   }
 

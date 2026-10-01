@@ -6,6 +6,7 @@ import '../../services/embedding_service.dart';
 import '../../services/llm_service.dart';
 import '../../services/log_service.dart';
 import '../../services/pipeline_status_service.dart';
+import '../cognition/attribution.dart';
 import '../cognition/uncertainty.dart';
 import '../params/parameters_service.dart';
 import 'eidetic_memory_engine.dart';
@@ -173,10 +174,6 @@ class MemoryService extends GetxService {
     _log?.info('$tag · $summary', source: 'Memory');
   }
 
-  static const _memoryHeader =
-      'Your memory (things you actually know from past conversations — treat as '
-      'true; if something is not here, say you do not recall it rather than '
-      'guess):';
   static const _memoryEmptyNote =
       'You have a persistent memory across conversations; nothing specific is '
       'recorded for this yet.';
@@ -292,6 +289,8 @@ class MemoryService extends GetxService {
         dedupeKey: normalizeForDedupe(s.fact.text),
         viaEmbedding: s.fact.id != null && embSeedIds.contains(s.fact.id),
         factId: s.fact.id,
+        subjectType: s.fact.subjectType,
+        holder: s.fact.holder,
       ));
     }
     for (final e in episodic) {
@@ -303,6 +302,9 @@ class MemoryService extends GetxService {
         salience: 0.4, // raw turns: useful but uncurated
         timestamp: e.timestampUtc,
         dedupeKey: normalizeForDedupe(text),
+        // Raw snippets carry no resolved subject — render as neutral context,
+        // never as an identity claim about anyone.
+        subjectType: SubjectType.unknown,
       ));
     }
 
@@ -352,12 +354,15 @@ class MemoryService extends GetxService {
 
     if (ranked.isEmpty) return emptyResult();
 
-    final buf = StringBuffer()
-      ..writeln(awareness ? _memoryHeader : 'Relevant memory:');
-    for (final c in ranked) {
-      buf.writeln('- ${c.text}');
-    }
-    return buf.toString().trim();
+    // Identity-safe rendering (Phase 5): bucket by subject/holder so a fact
+    // about the user can never be read as a fact about the AI itself.
+    return renderMemoryBlock(
+      [
+        for (final c in ranked)
+          MemoryLine(c.text, subjectType: c.subjectType, holder: c.holder),
+      ],
+      awareness: awareness,
+    );
   }
 
   /// Fraction of cue tokens present in [content] (0..1) — episodic relevance.

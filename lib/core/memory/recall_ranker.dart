@@ -1,5 +1,7 @@
 import 'dart:math' as math;
 
+import 'memory_records.dart' show SubjectType, ClaimHolder;
+
 /// Which memory tier a recall candidate came from.
 enum RecallSource { working, episodic, semantic }
 
@@ -31,6 +33,12 @@ class RecallCandidate {
   /// reinforce exactly the claims it actually injected (Phase 3).
   final int? factId;
 
+  /// Who/what this candidate is about, and whose view it is (Phase 5) — drives
+  /// identity-safe rendering so a user-fact can't re-bind to the AI. Semantic
+  /// candidates carry the claim's values; raw episodic snippets stay [unknown].
+  final SubjectType subjectType;
+  final ClaimHolder holder;
+
   /// Final blended score, filled in by [fuseAndRank].
   double score = 0.0;
 
@@ -43,6 +51,8 @@ class RecallCandidate {
     required this.dedupeKey,
     this.viaEmbedding = false,
     this.factId,
+    this.subjectType = SubjectType.user,
+    this.holder = ClaimHolder.user,
   });
 }
 

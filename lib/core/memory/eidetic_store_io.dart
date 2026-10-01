@@ -65,7 +65,8 @@ class SqliteEideticStore implements EideticStore {
       path,
       // v2: event_log (Phase 1). v3: epistemic-graph columns + tables (Phase 2a).
       // v4: claim_embeddings for meaning-based recall (Phase 2b).
-      version: 4,
+      // v5: identity/attribution columns on semantic_facts (Phase 5).
+      version: 5,
       onConfigure: (db) async {
         // Write-Ahead Logging: durable, low-latency appends for the event log.
         //
@@ -106,6 +107,18 @@ class SqliteEideticStore implements EideticStore {
     if (oldVersion < 4) {
       // Meaning-based recall: one embedding vector per claim.
       await _createEmbeddingsTable(db);
+    }
+    if (oldVersion < 5) {
+      // Identity/attribution: who a claim is about and whose view it is, so a
+      // user's fact can never be adopted as the agent's own. ADD COLUMN with a
+      // DEFAULT back-fills every existing row (presumed about the user, which
+      // also reframes legacy second-person facts safely) — no data lost.
+      await db.execute(
+          "ALTER TABLE semantic_facts ADD COLUMN subject TEXT NOT NULL DEFAULT ''");
+      await db.execute(
+          "ALTER TABLE semantic_facts ADD COLUMN subject_type TEXT NOT NULL DEFAULT 'user'");
+      await db.execute(
+          "ALTER TABLE semantic_facts ADD COLUMN holder TEXT NOT NULL DEFAULT 'user'");
     }
   }
 
@@ -210,7 +223,10 @@ class SqliteEideticStore implements EideticStore {
         embedding_json TEXT,
         salience REAL NOT NULL DEFAULT 0.5,
         status TEXT NOT NULL DEFAULT 'active',
-        supersedes INTEGER
+        supersedes INTEGER,
+        subject TEXT NOT NULL DEFAULT '',
+        subject_type TEXT NOT NULL DEFAULT 'user',
+        holder TEXT NOT NULL DEFAULT 'user'
       )
     ''');
     await db.execute(

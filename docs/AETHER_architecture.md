@@ -1,6 +1,6 @@
 # AETHER — Cognitive Runtime (Flutter port) — Canonical Build Spec
 
-Status: Phase 2a landed (graph + spreading activation); Associative Recall Engine landed (hybrid episodic+semantic fusion — §4a); Phase 2b landed (embedding helper model + cosine-seeded recall, opt-in — §5); Phase 3 adaptive dynamics landed (Ebbinghaus decay + recall reinforcement, §4b); Phase 4a uncertainty gating landed (U-score + single-pass System 1/2, §4c). Next: Phase 4b (multi-round convergence loop) + Dempster–Shafer contradiction resolution. This is the single reference we execute from.
+Status: Phase 2a landed (graph + spreading activation); Associative Recall Engine landed (hybrid episodic+semantic fusion — §4a); Phase 2b landed (embedding helper model + cosine-seeded recall, opt-in — §5); Phase 3 adaptive dynamics landed (Ebbinghaus decay + recall reinforcement, §4b); Phase 4a uncertainty gating landed (U-score + single-pass System 1/2, §4c); Phase 5a identity/attribution landed (subject·holder claims + identity-safe injection, §4d). Next: Phase 5b (contradiction resolution + open-questions + self-reflection) and an on-device Autopilot self-test harness. This is the single reference we execute from.
 
 AETHER is **not a new model**. It is a runtime layer wrapping an off-the-shelf
 local GGUF model (via `llamadart`, in-process) that adds persistent memory, a
@@ -111,6 +111,22 @@ The blend and gate are pure and unit-tested (`cognition/uncertainty.dart`). The 
 
 **Deferred (Phase 4b and the resolution engine):** the **multi-round convergence loop** (`conv.maxIterations`, `conv.targetU` — re-reason until U drops, needs repeated generation); the **Dempster–Shafer contradiction resolution** (`ds.*`) that will populate the contradiction signal and set `ClaimStatus.ambiguous`/supersede; **competence/axioms** (`comp.*`, `axiom.*`); and a model-internal uncertainty signal (token logprobs/entropy) to replace the coarse ambiguity/risk proxies if llamadart exposes them.
 
+## 4d. Identity & attribution — who a memory is about (Phase 5a — LANDED)
+
+The failure that forced this: the agent stored a user's statement ("my girlfriend is Jayden") as a bare second-person sentence ("you have a girlfriend named Jayden") under a single *"Your memory"* header — so the "you" re-bound to the reader (the AI) and the agent believed *it* had a girlfriend. A sentence carries a point of view in its pronouns; store the bare sentence and the pronoun re-binds to whoever reads it. The memory never knew whose life it held.
+
+The fix is to make every claim carry its identity, as structure:
+
+- **`subjectType`** — `selfAI | user | person | place | thing | unknown`. The self-vs-user split is the one that kills the bug. Defaults to `user` (the safe presumption, and it reframes legacy rows).
+- **`holder`** — `user | assistant`. Whose *view* the claim is. This is the dual self-model: about the AI, what the **user** asserts ("you're blunt") is kept apart from what the AI itself has **come to think** ("I seem to explain better than I summarize"). The self starts empty and is *formulated* from evidence — a self earned, not a persona forced (§0).
+- **`subject`** — a short label ("the user", "Jayden", "myself"), for display/dedupe.
+
+Stored on `semantic_facts` (SQLite v4→v5, additive ALTER — no data lost). The curator now resolves perspective with a near-deterministic **deixis rule** baked into its prompt — *the human's "I/my" means the user; the human's "you" means the AI* — and emits `subject`/`subjectType`/`holder` plus **third-person** canonical text; a tolerant loose-parser maps model variants ("self"/"ai"/"human") onto the enums and defaults to `user` on anything unclear.
+
+Injection is then **identity-safe by construction** (`cognition/attribution.dart`, pure + unit-tested): recalled claims render into labeled buckets — *About you (you = the person you're talking with) · People and things you've mentioned · What you've told me about myself · What I've come to think about myself · Other details* — with a header that **pins "you" to the user**, so a user-fact can never land under an "about myself" heading no matter how it was phrased. The unit test encodes exactly the Jayden case as the regression guard. Raw episodic snippets carry no resolved subject and render as neutral context, never as identity claims.
+
+**Deferred (Phase 5b):** populating the structured slot enables the rest — **contradiction detection** (two values for one subject·attribute, e.g. the live Jayden-vs-Jordan split) surfaced as first-class **open-question** memories the agent can voice ("Jayden or Jordan?"), **correction/supersession** closing them (reusing `ClaimStatus.superseded`), **provenance as truth-check** (a claim with no real source utterance is a hallucination to delete, not a contradiction to resolve), and the agent **actively formulating `holder=assistant` self-view claims** during introspection (grounded, low-confidence, humble).
+
 ## 5. Phased roadmap (each = shippable APK)
 - **Phase 0 — Baseline (DONE):** reverted forced persona; blank chats; SQLite WAL; **data-driven Parameters registry + panel** (`recall.*` and `consolidate.*` wired live); this spec.
 - **Phase 1 — Grounding + Event Log (DONE):** append-only `event_log` table (SQLite v2 migration, WAL) written through `EideticMemoryEngine.appendEvent`; every episodic write (the live chat path) and each app launch and consolidation is mirrored to it. Each event carries a `SensorAnchor`. **As-built:** the anchor is built from two independent, dependency-free clocks — wall clock + monotonic process uptime — plus a per-launch `sessionId`; their divergence (`clockSkewMs`) is the ground-truth signal that detects sleep/suspend/clock-jumps and gaps between launches. `batteryPercent`/`latitude`/`longitude` are reserved nullable fields, captured only once `ground.sensorsEnabled` is on and a sensor plugin is added — never faked. Causal `parentEventIds` are threaded in the paired `rememberTurn` path; the two-call chat path leaves them empty (events stay time/session-ordered). Visible in the Memory panel's **Events** tab; tunable via the **Event log** parameter group.
@@ -120,7 +136,10 @@ The blend and gate are pure and unit-tested (`cognition/uncertainty.dart`). The 
 - **Phase 3 — Ebbinghaus decay + reinforcement (LANDED, §4b):** two-strength adaptive memory (salience/confidence) on the existing columns — recalled claims strengthen, unused ones fade toward a confidence-derived permanence floor; pure curves unit-tested; all off the turn path, gated by `decay.*`. (Self-Schema + competence modeling remain for a later pass.)
 - **Phase 4a — U-score + System 1/2 gating (LANDED, §4c):** per-turn uncertainty from the recall pass (no extra inference); clears `u.threshold` ⇒ single-pass "careful mode". Pure U-score unit-tested; gated by `u.enabled`; live readout in the status strip.
 - **Phase 4b — multi-round convergence + Dempster–Shafer contradiction resolution + mutation validator.** The iterative System-2 loop (`conv.*`), belief combination over conflicting claims (`ds.*`, sets `ClaimStatus.ambiguous`/supersede, feeds the U-score contradiction signal), and competence/axioms (`comp.*`, `axiom.*`).
-- **Phase 5 — Behavior Verifier + falsifiability + idle autonomous loop** (charging + idle only).
+- **Phase 5a — Identity & attribution (LANDED, §4d):** `subject`/`subjectType`/`holder` on every claim (SQLite v5), deixis-aware curation, identity-safe bucketed injection. Kills the self/other collapse; lays the dual self-model.
+- **Phase 5b — Contradiction resolution + open-questions + self-reflection.** Detect two-values-for-one-slot, surface as open-question memories the agent voices, close via correction/supersession, provenance truth-check, and agent-formulated self-view claims.
+- **Autopilot — on-device self-test harness.** A Settings-side menu of scripted scenarios that drive the real controllers (navigate, set, load model, chat, assert on real state) with a live pass/fail + log readout — proving each version on the real phone/GPU that CI can't touch. Each release ships scenario definitions; a memory-attribution scenario is the standing regression guard for §4d.
+- **Phase 6 — Behavior Verifier + falsifiability + idle autonomous loop** (charging + idle only).
 
 ## 5b. Captured design directions (not yet built)
 Recorded so they aren't lost; each lands in a later phase behind its own parameters.

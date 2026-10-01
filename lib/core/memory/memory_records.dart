@@ -27,6 +27,30 @@ ClaimStatus claimStatusFromName(String name) => ClaimStatus.values.firstWhere(
       orElse: () => ClaimStatus.active,
     );
 
+/// What a claim is *about* — its subject. The crucial distinction is
+/// [selfAI] vs [user]: it's what stops the agent from adopting the user's life
+/// as its own ("you have a girlfriend named Jayden" → the *user* does, not the
+/// AI). [person]/[place]/[thing] are third parties the user mentioned (Jayden,
+/// a city, a car); [unknown] is the honest fallback when it can't be resolved.
+enum SubjectType { selfAI, user, person, place, thing, unknown }
+
+SubjectType subjectTypeFromName(String name) => SubjectType.values.firstWhere(
+      (e) => e.name == name,
+      orElse: () => SubjectType.user,
+    );
+
+/// Whose *view* a claim represents. The same subject can be held from two
+/// perspectives — e.g. about the AI: what the [user] asserts about it ("you're
+/// blunt") vs. what the AI itself has come to think ([assistant], "I seem to
+/// explain better than I summarize"). Lets the agent hold a user-view and a
+/// formulated self-view without the two colliding.
+enum ClaimHolder { user, assistant }
+
+ClaimHolder claimHolderFromName(String name) => ClaimHolder.values.firstWhere(
+      (e) => e.name == name,
+      orElse: () => ClaimHolder.user,
+    );
+
 /// The kind of relation a [RelationEdge] asserts between two claims.
 enum RelationType { supports, contradicts, causes, partOf, related }
 
@@ -117,6 +141,21 @@ class SemanticFact {
   /// If this claim supersedes an older one, that claim's id.
   final int? supersedes;
 
+  // ── Identity / attribution (Phase 5) ──────────────────────────
+  /// Who/what this claim is about, as a short canonical label ("the user",
+  /// "Jayden", "myself"). Display/dedupe aid; [subjectType] carries the role.
+  final String subject;
+
+  /// The subject's role — the self-vs-other distinction that keeps the agent
+  /// from adopting the user's facts as its own. Defaults to [SubjectType.user]
+  /// because the overwhelming majority of stored facts are about the user, and
+  /// that default also reframes legacy rows safely.
+  final SubjectType subjectType;
+
+  /// Whose view this claim is: the user's assertion, or the AI's own formulated
+  /// view. Defaults to [ClaimHolder.user] (the user told us).
+  final ClaimHolder holder;
+
   SemanticFact({
     this.id,
     required this.createdUtc,
@@ -129,6 +168,9 @@ class SemanticFact {
     this.salience = 0.5,
     this.status = ClaimStatus.active,
     this.supersedes,
+    this.subject = '',
+    this.subjectType = SubjectType.user,
+    this.holder = ClaimHolder.user,
   }) : dedupeHash = dedupeHash ?? stableContentHash(text);
 
   Map<String, Object?> toRow() => {
@@ -142,6 +184,9 @@ class SemanticFact {
         'salience': salience,
         'status': status.name,
         'supersedes': supersedes,
+        'subject': subject,
+        'subject_type': subjectType.name,
+        'holder': holder.name,
       };
 
   static SemanticFact fromRow(Map<String, Object?> row) {
@@ -162,6 +207,9 @@ class SemanticFact {
       salience: (row['salience'] as num?)?.toDouble() ?? 0.5,
       status: claimStatusFromName((row['status'] as String?) ?? 'active'),
       supersedes: (row['supersedes'] as num?)?.toInt(),
+      subject: (row['subject'] as String?) ?? '',
+      subjectType: subjectTypeFromName((row['subject_type'] as String?) ?? 'user'),
+      holder: claimHolderFromName((row['holder'] as String?) ?? 'user'),
     );
   }
 
@@ -176,6 +224,9 @@ class SemanticFact {
     ClaimStatus? status,
     int? supersedes,
     List<double>? embedding,
+    String? subject,
+    SubjectType? subjectType,
+    ClaimHolder? holder,
   }) {
     final newText = text ?? this.text;
     return SemanticFact(
@@ -190,6 +241,9 @@ class SemanticFact {
       salience: salience ?? this.salience,
       status: status ?? this.status,
       supersedes: supersedes ?? this.supersedes,
+      subject: subject ?? this.subject,
+      subjectType: subjectType ?? this.subjectType,
+      holder: holder ?? this.holder,
     );
   }
 }
