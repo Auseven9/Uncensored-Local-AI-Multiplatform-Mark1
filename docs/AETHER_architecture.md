@@ -1,6 +1,6 @@
 # AETHER — Cognitive Runtime (Flutter port) — Canonical Build Spec
 
-Status: Phase 2a landed (graph + spreading activation); Associative Recall Engine landed (hybrid episodic+semantic fusion — §4a); Phase 2b landed (embedding helper model + cosine-seeded recall, opt-in — §5); Phase 3 adaptive dynamics landed (Ebbinghaus decay + recall reinforcement, §4b). Next: Phase 4 (U-score + System 1/2 gating). This is the single reference we execute from.
+Status: Phase 2a landed (graph + spreading activation); Associative Recall Engine landed (hybrid episodic+semantic fusion — §4a); Phase 2b landed (embedding helper model + cosine-seeded recall, opt-in — §5); Phase 3 adaptive dynamics landed (Ebbinghaus decay + recall reinforcement, §4b); Phase 4a uncertainty gating landed (U-score + single-pass System 1/2, §4c). Next: Phase 4b (multi-round convergence loop) + Dempster–Shafer contradiction resolution. This is the single reference we execute from.
 
 AETHER is **not a new model**. It is a runtime layer wrapping an off-the-shelf
 local GGUF model (via `llamadart`, in-process) that adds persistent memory, a
@@ -92,6 +92,25 @@ The math lives in one pure, unit-tested file (`memory_dynamics.dart`) — every 
 
 **Deferred to a later pass:** wall-clock decay (vs turn-cycle), a persisted sweep marker, and feeding reinforcement signal into the recall *weights* themselves (learned `recall.*`, per §0's "adaptive by construction").
 
+## 4c. Uncertainty gating — System 1 / System 2 (Phase 4a — LANDED)
+
+Not every turn deserves the same effort. A **U-score** (0..1) scores how uncertain the system is about a turn; when it clears `u.threshold` the turn is gated from System 1 (fast, direct) to System 2 (careful, deliberate). The score is a weight-normalized blend of five components (the `u.w*` knobs):
+
+```
+U = Σ wᵢ·componentᵢ / Σ wᵢ      gate: U ≥ u.threshold ⇒ System 2
+```
+
+The blend and gate are pure and unit-tested (`cognition/uncertainty.dart`). The five component *signals* are computed from the recall pass that already runs every turn — so uncertainty costs **no extra inference**:
+- **prediction error** = `1 − topRelevance` — recall found nothing that strongly matches ⇒ the input wasn't anticipated. (well-grounded)
+- **novelty** = `1/(1+semanticCount)` — little in memory is about this topic. (well-grounded)
+- **ambiguity** = terser/underspecified queries score higher. (coarse first pass)
+- **contradiction** = fraction of recalled claims in an unresolved contradiction — ~0 until the DS resolution engine marks claims ambiguous; the signal is wired and ready. (pending resolution)
+- **risk** = a small high-stakes keyword scan (explicitly *not* a safety guarantee — it only nudges toward care). (coarse first pass)
+
+**System 2, this increment = a single-pass posture change.** When a turn gates to System 2, `MemoryService` publishes the score (`lastUncertainty`) and `ChatController` prepends one directive to the turn's system prompt — "think step by step, rely strictly on remembered facts, say so if you don't know" — then generates once as normal. No extra passes, no second engine: it respects the ~1 tok/s, one-model-in-RAM reality. This is *not* a persona (it adds no identity, only a reasoning instruction), so it's consistent with the blank-identity constitution (§0), and it's gated by `u.enabled` (default on). The live U readout and the System 1/2 decision show in the status strip and the Activity log, so the gate is visible and tunable.
+
+**Deferred (Phase 4b and the resolution engine):** the **multi-round convergence loop** (`conv.maxIterations`, `conv.targetU` — re-reason until U drops, needs repeated generation); the **Dempster–Shafer contradiction resolution** (`ds.*`) that will populate the contradiction signal and set `ClaimStatus.ambiguous`/supersede; **competence/axioms** (`comp.*`, `axiom.*`); and a model-internal uncertainty signal (token logprobs/entropy) to replace the coarse ambiguity/risk proxies if llamadart exposes them.
+
 ## 5. Phased roadmap (each = shippable APK)
 - **Phase 0 — Baseline (DONE):** reverted forced persona; blank chats; SQLite WAL; **data-driven Parameters registry + panel** (`recall.*` and `consolidate.*` wired live); this spec.
 - **Phase 1 — Grounding + Event Log (DONE):** append-only `event_log` table (SQLite v2 migration, WAL) written through `EideticMemoryEngine.appendEvent`; every episodic write (the live chat path) and each app launch and consolidation is mirrored to it. Each event carries a `SensorAnchor`. **As-built:** the anchor is built from two independent, dependency-free clocks — wall clock + monotonic process uptime — plus a per-launch `sessionId`; their divergence (`clockSkewMs`) is the ground-truth signal that detects sleep/suspend/clock-jumps and gaps between launches. `batteryPercent`/`latitude`/`longitude` are reserved nullable fields, captured only once `ground.sensorsEnabled` is on and a sensor plugin is added — never faked. Causal `parentEventIds` are threaded in the paired `rememberTurn` path; the two-call chat path leaves them empty (events stay time/session-ordered). Visible in the Memory panel's **Events** tab; tunable via the **Event log** parameter group.
@@ -99,7 +118,8 @@ The math lives in one pure, unit-tested file (`memory_dynamics.dart`) — every 
 - **Phase 2b — Embedding helper model (LANDED):** a small embedding GGUF loads as a *second, co-resident* engine (`EmbeddingService`, CPU, opt-in) — llamadart auto-configures the embedding context, so a plain load + `embed()` is all it takes. Claims are embedded on consolidation (plus an idle backfill of older claims) into a `claim_embeddings` table (SQLite v3→v4, Float32 BLOBs); recall embeds the cue and unions the nearest claims by cosine (`nearestByCosine`, brute-force) into the spreading-activation seed set alongside keyword hits. Strictly additive: with no model loaded, recall stays on keyword+graph seeding, so it can only deepen recall, never break it. Vector math + migration are unit-tested; the model wiring is gated behind the on-device RAM headroom (the embedder is small but co-residency competes with the chat model's KV-cache). Tunable via the **Embeddings** parameter group; selected/toggled in **Settings → Meaning-based Memory**.
   - **On-device constraint (learned the hard way):** two native llama.cpp engines cannot be *loaded or run concurrently* in this process on Android — doing so hard-crashes (SIGABRT/SIGSEGV, uncatchable in Dart), independent of RAM (it crashed even at minimum chat context). So the embedder is **never auto-loaded**: it loads only by explicit action in Settings, only while the chat model is idle, and every embed call is gated on `!isGenerating`. It is labeled experimental. This makes normal chat crash-proof (no second engine is ever created on the turn path) while leaving meaning-based recall available on devices where an idle co-resident load succeeds. A proper fix — a single shared backend, or time-multiplexing one engine — is the real Phase-2b follow-up before embeddings can be default-on.
 - **Phase 3 — Ebbinghaus decay + reinforcement (LANDED, §4b):** two-strength adaptive memory (salience/confidence) on the existing columns — recalled claims strengthen, unused ones fade toward a confidence-derived permanence floor; pure curves unit-tested; all off the turn path, gated by `decay.*`. (Self-Schema + competence modeling remain for a later pass.)
-- **Phase 4 — U-score + System 1/2 gating + mutation validator + convergence.**
+- **Phase 4a — U-score + System 1/2 gating (LANDED, §4c):** per-turn uncertainty from the recall pass (no extra inference); clears `u.threshold` ⇒ single-pass "careful mode". Pure U-score unit-tested; gated by `u.enabled`; live readout in the status strip.
+- **Phase 4b — multi-round convergence + Dempster–Shafer contradiction resolution + mutation validator.** The iterative System-2 loop (`conv.*`), belief combination over conflicting claims (`ds.*`, sets `ClaimStatus.ambiguous`/supersede, feeds the U-score contradiction signal), and competence/axioms (`comp.*`, `axiom.*`).
 - **Phase 5 — Behavior Verifier + falsifiability + idle autonomous loop** (charging + idle only).
 
 ## 5b. Captured design directions (not yet built)

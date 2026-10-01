@@ -6,6 +6,7 @@ import '../../services/embedding_service.dart';
 import '../../services/llm_service.dart';
 import '../../services/log_service.dart';
 import '../../services/pipeline_status_service.dart';
+import '../cognition/uncertainty.dart';
 import '../params/parameters_service.dart';
 import 'eidetic_memory_engine.dart';
 import 'eidetic_store.dart' show tokenizeQuery;
@@ -61,6 +62,11 @@ class MemoryService extends GetxService {
   /// until the first recall; carries an empty [RecallResult] when nothing was
   /// recalled (so the UI can hide cleanly).
   final lastRecall = Rxn<RecallResult>();
+
+  /// The most recent turn's uncertainty score (Phase 4), computed from the
+  /// recall pass. Drives System 1 vs System 2 gating and is surfaced in
+  /// telemetry. Null when uncertainty gating is disabled (`u.enabled` off).
+  final lastUncertainty = Rxn<UScore>();
 
   LogService? get _log {
     try {
@@ -198,6 +204,7 @@ class MemoryService extends GetxService {
           MemoryCallType.recall, 'query="${_short(query)}" → disabled (k=0)');
       lastRecall.value =
           const RecallResult(injected: [], embeddingsActive: false);
+      lastUncertainty.value = null;
       return emptyResult();
     }
 
@@ -268,6 +275,7 @@ class MemoryService extends GetxService {
       _record(MemoryCallType.recall, 'query="${_short(query)}" → error: $e');
       lastRecall.value =
           const RecallResult(injected: [], embeddingsActive: false);
+      lastUncertainty.value = null;
       return emptyResult();
     }
 
@@ -325,6 +333,11 @@ class MemoryService extends GetxService {
     // never sits on the turn's critical path; it only touches the claims we
     // actually surfaced this turn.
     _reinforceRecalled(ranked);
+
+    // Phase 4 — uncertainty: score how much to trust the fast answer vs. think
+    // harder this turn, from how well memory covered it. Published for the
+    // System 1/2 gate and telemetry; costs no inference.
+    _scoreUncertainty(query, semantic);
 
     // Diagnostics make "0 meaning" explainable at a glance:
     //   idx N  — claims that actually have an embedding (0 ⇒ nothing indexed yet)
@@ -503,6 +516,91 @@ class MemoryService extends GetxService {
       // Consolidation is best-effort; never surface as a turn failure.
       _finishStatus();
     }
+  }
+
+  // ── Uncertainty / System 1–2 gating (Phase 4) ───────────────
+
+  /// Compute this turn's U-score from the recall pass and publish it. Pure
+  /// proxy signals (no extra inference): how strongly memory matched the query
+  /// (prediction), how little is known about the topic (novelty), how
+  /// terse/underspecified the query is (ambiguity, coarse), whether any
+  /// recalled claim is in an unresolved contradiction, and a coarse risk
+  /// keyword scan. Gated by `u.enabled`. See `cognition/uncertainty.dart`.
+  void _scoreUncertainty(
+      String query, List<({SemanticFact fact, double score})> semantic) {
+    if (!(_params?.getBool('u.enabled') ?? true)) {
+      lastUncertainty.value = null;
+      return;
+    }
+
+    // Prediction error: strongest semantic match this turn (1 ⇒ nothing close
+    // — the input wasn't anticipated by anything in memory).
+    final topRel = semantic.isEmpty
+        ? 0.0
+        : semantic
+            .map((s) => s.score)
+            .reduce((a, b) => a > b ? a : b)
+            .clamp(0.0, 1.0)
+            .toDouble();
+    final prediction = 1.0 - topRel;
+
+    // Novelty: how little the topic is represented in memory at all.
+    final novelty = semantic.isEmpty ? 1.0 : 1.0 / (1.0 + semantic.length);
+
+    // Ambiguity (coarse): a terse/underspecified query could mean many things.
+    final tokenCount = tokenizeQuery(query).length;
+    final ambiguity = (1.0 - tokenCount / 6.0).clamp(0.0, 1.0).toDouble();
+
+    // Contradiction: fraction of recalled claims flagged as in an unresolved
+    // contradiction. ~0 until the Dempster–Shafer resolution engine (ds.*)
+    // starts marking claims ambiguous — the signal is wired now, ready for it.
+    var contradiction = 0.0;
+    if (semantic.isNotEmpty) {
+      final amb =
+          semantic.where((s) => s.fact.status == ClaimStatus.ambiguous).length;
+      contradiction = (amb / semantic.length).clamp(0.0, 1.0).toDouble();
+    }
+
+    final weights = UScoreWeights(
+      prediction: _params?.getDouble('u.wPrediction') ?? 0.25,
+      contradiction: _params?.getDouble('u.wContradiction') ?? 0.20,
+      novelty: _params?.getDouble('u.wNovelty') ?? 0.15,
+      ambiguity: _params?.getDouble('u.wAmbiguity') ?? 0.15,
+      risk: _params?.getDouble('u.wRisk') ?? 0.25,
+    );
+    final threshold = _params?.getDouble('u.threshold') ?? 0.65;
+
+    final score = scoreUncertainty(
+      UScoreInputs(
+        prediction: prediction,
+        contradiction: contradiction,
+        novelty: novelty,
+        ambiguity: ambiguity,
+        risk: _riskProxy(query),
+      ),
+      weights,
+      threshold,
+    );
+    lastUncertainty.value = score;
+    _record(MemoryCallType.recall, score.breakdown);
+  }
+
+  /// A few high-stakes topics that justify extra care. A deliberate coarse
+  /// first pass — NOT a safety guarantee — it only nudges the turn toward
+  /// careful reasoning, which is always harmless.
+  static const _riskKeywords = <String>[
+    'suicide', 'overdose', 'dose', 'dosage', 'medication', 'poison',
+    'allergic', 'bleeding', 'emergency', 'lawsuit', 'legal', 'contract',
+    'diagnosis', 'symptom',
+  ];
+
+  /// Coarse risk proxy: 0.6 if the query mentions a high-stakes topic, else 0.
+  double _riskProxy(String query) {
+    final q = query.toLowerCase();
+    for (final k in _riskKeywords) {
+      if (q.contains(k)) return 0.6;
+    }
+    return 0.0;
   }
 
   // ── Adaptive dynamics (Phase 3 — decay + reinforcement) ─────

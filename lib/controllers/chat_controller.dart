@@ -8,6 +8,7 @@ import '../services/chat_storage_service.dart';
 import '../services/log_service.dart';
 import '../services/pipeline_status_service.dart';
 import '../core/engine/inference_worker.dart';
+import '../core/cognition/uncertainty.dart';
 import '../core/memory/memory_service.dart';
 import '../core/params/parameters_service.dart';
 
@@ -184,8 +185,24 @@ class ChatController extends GetxController {
     } else {
       _status?.mark('no memories matched yet');
     }
-    final effectiveSystem =
+    var effectiveSystem =
         recalled.isEmpty ? baseSystem : '$baseSystem\n\n$recalled';
+
+    // ── Phase 4: System 1 / System 2 gate ─────────────────────
+    // The recall pass also scored this turn's uncertainty (U-score). If it
+    // cleared the System-2 threshold, prepend a single-pass "careful mode"
+    // directive so an uncertain or unfamiliar turn is reasoned through rather
+    // than answered on reflex. No extra inference — just a posture change for
+    // this one reply. Off when `u.enabled` is false (lastUncertainty == null).
+    final u = _memory?.lastUncertainty.value;
+    if (u != null && u.mode == UMode.system2) {
+      effectiveSystem = '$system2Directive\n\n$effectiveSystem';
+      _status?.mark(
+          'uncertain (${u.value.toStringAsFixed(2)}) · System 2 — thinking carefully');
+      _log?.info('System 2 engaged · ${u.breakdown}', source: 'Chat');
+    } else if (u != null) {
+      _status?.mark('confident (${u.value.toStringAsFixed(2)}) · System 1');
+    }
 
     // ── MEMORY: remember the user turn up front (survives a crash) ──
     await _memory?.remember(
