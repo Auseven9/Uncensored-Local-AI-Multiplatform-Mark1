@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:get/get.dart';
 
 import '../../services/log_service.dart';
+import '../cognition/attribution.dart';
 import '../cognition/reconciliation.dart';
 import '../engine/inference_worker.dart';
 import '../params/parameters_service.dart';
@@ -448,13 +449,15 @@ class MemoryManager {
       ..writeln(
           '- "value": the bare value for that slot ("Jayden", "nurse", "Denver") — just the value, no sentence. Leave "" when "attribute" is empty. e.g. "my girlfriend is Jayden" -> attribute "partner_name", value "Jayden".')
       ..writeln(
-          '- "subjectType": "user" for facts about the human; "self" ONLY for facts about the AI assistant itself; "person"/"place"/"thing" for others the user mentioned (e.g. a partner, a city).')
+          '- "subjectType": "user" for facts about the human — INCLUDING who their partner, family, friends or pets are (a relationship is a fact ABOUT the user, even though it names someone else); "self" ONLY for facts about the AI assistant itself; "person"/"place"/"thing" for a STANDALONE fact about someone/somewhere else (e.g. "Jayden is a nurse", a city).')
       ..writeln(
           '- "holder": "user" when the user stated it (almost always); "assistant" only for the AI\'s own reflection about itself.')
       ..writeln(
           '- "subject": a short label for who/what the fact is about ("the user", "Jayden", "myself").')
       ..writeln(
-          '- Write "text" in the third person. Example: user says "my girlfriend is Jayden" -> {"subject":"the user","subjectType":"user","holder":"user","text":"The user has a girlfriend named Jayden"}.')
+          '- Write "text" in the third person — NEVER keep the user\'s "I"/"my". Example: user says "my girlfriend is Jayden" -> {"subject":"the user","subjectType":"user","holder":"user","attribute":"partner_name","value":"Jayden","text":"The user has a girlfriend named Jayden"}.')
+      ..writeln(
+          '- A relationship fact is about the user; a standalone fact about that other person is separate. Example: "my girlfriend Jayden is a nurse" -> TWO facts: {"subject":"the user","subjectType":"user","holder":"user","attribute":"partner_name","value":"Jayden","text":"The user has a girlfriend named Jayden"} AND {"subject":"Jayden","subjectType":"person","holder":"user","attribute":"job","value":"nurse","text":"Jayden works as a nurse"}.')
       ..writeln(
           '- "relations" links facts by their 0-based index in "facts" — use it to connect facts that support, contradict, cause, or are part of one another. Use [] if none.')
       ..writeln('- Omit anything transient, redundant, or uncertain.')
@@ -504,9 +507,29 @@ class MemoryManager {
       final item = rawFacts[origIdx];
       if (item is! Map) continue;
 
-      final text = (item['text'] as Object?)?.toString().trim() ?? '';
+      final rawText = (item['text'] as Object?)?.toString().trim() ?? '';
       // Hard curation filters: reject noise and over-long dumps.
-      if (text.length < minLen || text.length > maxLen) continue;
+      if (rawText.length < minLen || rawText.length > maxLen) continue;
+
+      // Identity/attribution (Phase 5): who the fact is about, and whose view.
+      final rawSubject = (item['subject'] as Object?)?.toString().trim() ?? '';
+      final subjectType =
+          _subjectTypeLoose((item['subjectType'] as Object?)?.toString());
+      final holder =
+          _claimHolderLoose((item['holder'] as Object?)?.toString());
+
+      // Deterministic third-person enforcement (v2.0.2): the curator is asked
+      // to write third-person text (and even given the Jayden example), but a
+      // small local model sometimes still leaves the user's first-person
+      // phrasing ("my girlfriend") in a claim the USER asserted — re-opening the
+      // Phase 5a second-person leak at the claim-text tier. Rewrite it here for
+      // user-asserted claims; never touch the assistant's own self-view, where
+      // "I"/"my" correctly means the AI. Scrub before hashing so dedupe keys off
+      // the canonical form.
+      final userView =
+          holder == ClaimHolder.user && subjectType != SubjectType.selfAI;
+      final text = userView ? thirdPersonizeUserText(rawText) : rawText;
+      final subject = userView ? thirdPersonizeUserText(rawSubject) : rawSubject;
 
       final hash = stableContentHash(text);
       if (!seen.add(hash)) continue; // in-batch dedupe
@@ -519,12 +542,6 @@ class MemoryManager {
       if (rawConf is num) confidence = rawConf.toDouble();
       confidence = confidence.clamp(0.0, 1.0).toDouble();
 
-      // Identity/attribution (Phase 5): who the fact is about, and whose view.
-      final subject = (item['subject'] as Object?)?.toString().trim() ?? '';
-      final subjectType =
-          _subjectTypeLoose((item['subjectType'] as Object?)?.toString());
-      final holder =
-          _claimHolderLoose((item['holder'] as Object?)?.toString());
       // Slot key (2.0) — normalized to snake_case so the model's spacing/case
       // variants group together.
       final attribute = ((item['attribute'] as Object?)?.toString() ?? '')

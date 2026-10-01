@@ -134,3 +134,47 @@ String renderMemoryBlock(
 
   return buf.toString().trim();
 }
+
+// ── Deterministic third-person enforcement (v2.0.2) ───────────
+
+/// Rewrite the user's first-person deixis in a claim the USER asserted into the
+/// third person, so a stored claim can never read as the AI's own
+/// ("my girlfriend" → "the user's girlfriend").
+///
+/// Phase 5a gave every claim a `subjectType`/`holder`, but relied on the
+/// curator model to WRITE third-person `text`. A small local model does not do
+/// that reliably: it sometimes leaves the user's "my"/"me" in a `holder=user`
+/// claim, which re-introduces — at the claim-text tier — the exact second-person
+/// leak 5a set out to kill. The identity-safety invariant must not depend on a
+/// 4B following instructions, so callers enforce it here for user-asserted
+/// claims. NEVER apply this to the assistant's own self-view (`holder=assistant`),
+/// where "I"/"my" correctly means the AI.
+///
+/// Only grammatically-safe possessive/object pronouns are rewritten; a leading
+/// subject "I" (+ verb) is left to the curator prompt, since rewriting it would
+/// need verb agreement this pure pass can't do. Capitalization of a
+/// sentence-initial match is preserved.
+String thirdPersonizeUserText(String s) {
+  if (s.isEmpty) return s;
+  // Longest forms first so "myself" isn't partially touched by "my".
+  const pairs = <List<String>>[
+    ['myself', 'the user'],
+    ['mine', "the user's"],
+    ['my', "the user's"],
+    ['me', 'the user'],
+  ];
+  var out = s;
+  for (final p in pairs) {
+    final re = RegExp('\\b${p[0]}\\b', caseSensitive: false);
+    out = out.replaceAllMapped(re, (m) {
+      final matched = m[0]!;
+      final startsUpper = matched[0] == matched[0].toUpperCase() &&
+          matched[0] != matched[0].toLowerCase();
+      return startsUpper ? _capitalizeFirst(p[1]) : p[1];
+    });
+  }
+  return out;
+}
+
+String _capitalizeFirst(String s) =>
+    s.isEmpty ? s : s[0].toUpperCase() + s.substring(1);

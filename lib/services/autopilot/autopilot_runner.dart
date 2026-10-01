@@ -227,6 +227,12 @@ class AutopilotRunner {
     final facts = await engine.recentFacts(limit: 500);
     final active = facts.where((f) => f.status == ClaimStatus.active).toList();
     log('  (${active.length} active claims in test memory)');
+    // Dump each stored claim's structure so a red assertion is explainable at a
+    // glance (which subjectType/holder, what slot, what text) instead of guessed.
+    for (final f in active) {
+      final slot = f.attribute.isNotEmpty ? ' ${f.attribute}=${f.value}' : '';
+      log('   • [${f.subjectType.name}/${f.holder.name}] "${f.subject}"$slot :: ${f.text}');
+    }
 
     final results = <AssertionResult>[];
     for (final a in scenario.assertions) {
