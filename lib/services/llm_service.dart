@@ -75,6 +75,51 @@ class LlmService extends GetxService {
     return 0;
   }
 
+  /// Enumerate the GPU-class devices this device actually exposes, probing the
+  /// Vulkan and OpenCL backend modules. This is a device query only — it loads
+  /// the backend .so to ask "what GPUs are here?", it does NOT load a model or
+  /// run inference — so it's the safe way to find out whether GPU offload is
+  /// even available on this phone before committing to it. Returns one
+  /// human-readable line per device, e.g. "opencl · Adreno (TM) 750 · 11.5 GB".
+  /// Empty means only CPU is available on this device/build. Refused while a
+  /// generation is in flight.
+  Future<List<String>> probeGpuDeviceLines() async {
+    if (isGenerating.value) {
+      throw StateError('The engine is busy generating — try again when idle.');
+    }
+    const probe = [GpuBackend.vulkan, GpuBackend.opencl];
+
+    List<GpuDeviceInfo> devices = const [];
+    final existing = _engine;
+    if (existing != null) {
+      _log?.info('Probing GPU devices on the loaded engine…', source: 'LLM');
+      devices = await existing.listGpuDevices(probeBackends: probe);
+    } else {
+      _log?.info('Probing GPU devices on a throwaway engine…', source: 'LLM');
+      LlamaEngine? temp;
+      try {
+        temp = LlamaEngine(LlamaBackend());
+        devices = await temp.listGpuDevices(probeBackends: probe);
+      } finally {
+        try {
+          await temp?.dispose();
+        } catch (_) {}
+      }
+    }
+
+    final lines = <String>[];
+    for (final d in devices) {
+      final gb = d.memoryTotalBytes > 0
+          ? ' · ${(d.memoryTotalBytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB'
+          : '';
+      final name = d.description.isNotEmpty ? d.description : d.name;
+      lines.add('${d.backend.name} · $name$gb');
+    }
+    _log?.info('GPU probe → ${lines.isEmpty ? 'CPU only' : lines.join(' | ')}',
+        source: 'LLM');
+    return lines;
+  }
+
   /// Initialize the service.
   Future<LlmService> init() async {
     // Backend is created fresh per loadModel() call — no init needed here

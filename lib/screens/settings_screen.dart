@@ -919,6 +919,26 @@ class _HardwareSettingsCardState extends State<_HardwareSettingsCard> {
   late final TextEditingController _ctxController;
   bool _showManual = false;
 
+  // GPU self-test results.
+  List<String>? _gpuDevices;
+  bool _gpuProbing = false;
+  String? _gpuProbeError;
+
+  Future<void> _detectGpu() async {
+    setState(() {
+      _gpuProbing = true;
+      _gpuProbeError = null;
+    });
+    try {
+      final lines = await Get.find<LlmService>().probeGpuDeviceLines();
+      setState(() => _gpuDevices = lines);
+    } catch (e) {
+      setState(() => _gpuProbeError = e.toString());
+    } finally {
+      if (mounted) setState(() => _gpuProbing = false);
+    }
+  }
+
   // Auto-detect the best backend and GPU layers for this device
   static Map<String, dynamic> _detectBestConfig() {
     if (!Platform.isAndroid && !Platform.isIOS) {
@@ -1092,6 +1112,123 @@ class _HardwareSettingsCardState extends State<_HardwareSettingsCard> {
 
           const SizedBox(height: 20),
 
+          // ── GPU offload self-test ──────────────────────────────
+          // Asks the device what GPU backends it actually exposes (Vulkan /
+          // OpenCL on the Adreno), without loading a model. The honest way to
+          // know whether GPU offload is even possible here before trying it.
+          Row(
+            children: [
+              Icon(Icons.developer_board_rounded,
+                  size: 18, color: AppColors.accent),
+              const SizedBox(width: 8),
+              Text('GPU Offload',
+                  style: TextStyle(
+                      color: context.text,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600)),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'GPU offload (Vulkan / OpenCL) moves the matrix math to the Adreno '
+            'GPU. On a phone the GPU shares the same RAM as the CPU, so the win '
+            'is compute throughput, not more memory — it can be a big speed-up '
+            'or can fail/stall depending on drivers. Detect first, then try it '
+            'and watch the t/s readout.',
+            style: TextStyle(color: context.textM, fontSize: 11, height: 1.35),
+          ),
+          const SizedBox(height: 10),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: _gpuProbing ? null : _detectGpu,
+              icon: _gpuProbing
+                  ? const SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Icon(Icons.search_rounded, size: 16),
+              label: Text(_gpuProbing ? 'Detecting…' : 'Detect GPU devices'),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: AppColors.accent,
+                side: BorderSide(color: AppColors.accent.withValues(alpha: 0.5)),
+                padding: const EdgeInsets.symmetric(vertical: 11),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8)),
+              ),
+            ),
+          ),
+          if (_gpuProbeError != null) ...[
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: AppColors.red.withValues(alpha: 0.10),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: AppColors.red.withValues(alpha: 0.3)),
+              ),
+              child: Text('Probe failed: $_gpuProbeError',
+                  style: TextStyle(color: AppColors.red, fontSize: 11)),
+            ),
+          ] else if (_gpuDevices != null) ...[
+            const SizedBox(height: 8),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: context.bgInput,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: context.border),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: _gpuDevices!.isEmpty
+                    ? [
+                        Text(
+                          'No GPU devices found — this device/build is CPU-only '
+                          'for inference. Keep Compute Device on CPU.',
+                          style:
+                              TextStyle(color: context.textM, fontSize: 12),
+                        ),
+                      ]
+                    : [
+                        Text('GPU devices available:',
+                            style: TextStyle(
+                                color: context.text,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600)),
+                        const SizedBox(height: 6),
+                        for (final line in _gpuDevices!)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 3),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Icon(Icons.check_circle_outline_rounded,
+                                    size: 13, color: AppColors.accent),
+                                const SizedBox(width: 6),
+                                Expanded(
+                                  child: Text(line,
+                                      style: TextStyle(
+                                          color: context.text, fontSize: 12)),
+                                ),
+                              ],
+                            ),
+                          ),
+                        const SizedBox(height: 4),
+                        Text(
+                          'To use one: open Manual Override below, pick its '
+                          'backend, set GPU layers high, then reload the model.',
+                          style:
+                              TextStyle(color: context.textM, fontSize: 11),
+                        ),
+                      ],
+              ),
+            ),
+          ],
+
+          const SizedBox(height: 20),
+
           // ── Context Window (always visible: it decides whether a model
           //    even loads on this device) ──
           Row(
@@ -1208,6 +1345,16 @@ class _HardwareSettingsCardState extends State<_HardwareSettingsCard> {
 
           if (_showManual) ...[
             const SizedBox(height: 12),
+            Text(
+              'Compute backend — where the model runs:\n'
+              '• CPU — most compatible, uses the processor cores. Default.\n'
+              '• Vulkan — Adreno GPU via the cross-platform Vulkan driver.\n'
+              '• OpenCL — Adreno GPU via Qualcomm\'s native compute path '
+              '(often the fastest on Snapdragon, when it works).\n'
+              'Use "Detect GPU devices" above to see what this phone supports.',
+              style: TextStyle(color: context.textM, fontSize: 11, height: 1.4),
+            ),
+            const SizedBox(height: 10),
             Row(
               children: [
                 _buildBackendButton('CPU', 'cpu'),
@@ -1254,7 +1401,12 @@ class _HardwareSettingsCardState extends State<_HardwareSettingsCard> {
               ),
             ),
             Text(
-              'If the app crashes when loading a model, reduce GPU layers or switch to CPU. Reload the model after changing settings.',
+              'GPU Layers — how many of the model\'s transformer layers run on '
+              'the GPU instead of the CPU (only applies with a GPU backend). A '
+              'typical 4B model has ~34 layers; set it at or above that to '
+              'offload the whole model, or lower to split work with the CPU if '
+              'GPU memory is tight. If the app crashes or stalls on load, reduce '
+              'this or switch to CPU. Reload the model after changing settings.',
               style: TextStyle(color: context.textD, fontSize: 11, height: 1.4),
             ),
           ],
