@@ -3,43 +3,6 @@ import 'package:portable_ai_flutter/core/cognition/attribution.dart';
 import 'package:portable_ai_flutter/core/memory/memory_records.dart';
 
 void main() {
-  group('thirdPersonizeUserText — deterministic 3rd-person enforcement', () {
-    test('rewrites first-person possessive (the "my girlfriend" leak)', () {
-      expect(thirdPersonizeUserText('My girlfriend is Jayden'),
-          "The user's girlfriend is Jayden");
-      expect(thirdPersonizeUserText('her name is my favorite'),
-          "her name is the user's favorite");
-    });
-
-    test('keeps a name while removing the leak', () {
-      // The identity-safety point: "Jayden" survives, "my girlfriend" does not.
-      final out = thirdPersonizeUserText("My girlfriend's name is Jayden");
-      expect(out.contains('Jayden'), isTrue);
-      expect(out.toLowerCase().contains('my girlfriend'), isFalse);
-    });
-
-    test('handles me / mine / myself', () {
-      expect(thirdPersonizeUserText('give it to me'), 'give it to the user');
-      expect(thirdPersonizeUserText('that book is mine'),
-          "that book is the user's");
-      expect(thirdPersonizeUserText('I hurt myself'), 'I hurt the user');
-    });
-
-    test('leaves already-third-person text untouched', () {
-      expect(thirdPersonizeUserText('The user has a dog named Buster'),
-          'The user has a dog named Buster');
-    });
-
-    test('does not touch subject "I" (+verb) — left to the curator prompt', () {
-      expect(
-          thirdPersonizeUserText('I work as a nurse'), 'I work as a nurse');
-    });
-
-    test('does not mangle substrings (time, user)', () {
-      expect(thirdPersonizeUserText('the time is mine'), "the time is the user's");
-    });
-  });
-
   group('renderMemoryBlock — identity safety', () {
     test('empty input renders nothing', () {
       expect(renderMemoryBlock(const [], awareness: true), '');

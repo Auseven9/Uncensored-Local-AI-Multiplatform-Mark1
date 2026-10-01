@@ -3,7 +3,6 @@ import 'dart:convert';
 import 'package:get/get.dart';
 
 import '../../services/log_service.dart';
-import '../cognition/attribution.dart';
 import '../cognition/reconciliation.dart';
 import '../engine/inference_worker.dart';
 import '../params/parameters_service.dart';
@@ -507,29 +506,9 @@ class MemoryManager {
       final item = rawFacts[origIdx];
       if (item is! Map) continue;
 
-      final rawText = (item['text'] as Object?)?.toString().trim() ?? '';
+      final text = (item['text'] as Object?)?.toString().trim() ?? '';
       // Hard curation filters: reject noise and over-long dumps.
-      if (rawText.length < minLen || rawText.length > maxLen) continue;
-
-      // Identity/attribution (Phase 5): who the fact is about, and whose view.
-      final rawSubject = (item['subject'] as Object?)?.toString().trim() ?? '';
-      final subjectType =
-          _subjectTypeLoose((item['subjectType'] as Object?)?.toString());
-      final holder =
-          _claimHolderLoose((item['holder'] as Object?)?.toString());
-
-      // Deterministic third-person enforcement (v2.0.2): the curator is asked
-      // to write third-person text (and even given the Jayden example), but a
-      // small local model sometimes still leaves the user's first-person
-      // phrasing ("my girlfriend") in a claim the USER asserted — re-opening the
-      // Phase 5a second-person leak at the claim-text tier. Rewrite it here for
-      // user-asserted claims; never touch the assistant's own self-view, where
-      // "I"/"my" correctly means the AI. Scrub before hashing so dedupe keys off
-      // the canonical form.
-      final userView =
-          holder == ClaimHolder.user && subjectType != SubjectType.selfAI;
-      final text = userView ? thirdPersonizeUserText(rawText) : rawText;
-      final subject = userView ? thirdPersonizeUserText(rawSubject) : rawSubject;
+      if (text.length < minLen || text.length > maxLen) continue;
 
       final hash = stableContentHash(text);
       if (!seen.add(hash)) continue; // in-batch dedupe
@@ -542,6 +521,15 @@ class MemoryManager {
       if (rawConf is num) confidence = rawConf.toDouble();
       confidence = confidence.clamp(0.0, 1.0).toDouble();
 
+      // Identity/attribution (Phase 5): who the fact is about, and whose view.
+      // The perspective (third-person text, subjectType, holder) is the MODEL's
+      // to get right from the curator prompt — deliberately not enforced in Dart
+      // (see §4d: the self/other boundary is earned by the model, not hardcoded).
+      final subject = (item['subject'] as Object?)?.toString().trim() ?? '';
+      final subjectType =
+          _subjectTypeLoose((item['subjectType'] as Object?)?.toString());
+      final holder =
+          _claimHolderLoose((item['holder'] as Object?)?.toString());
       // Slot key (2.0) — normalized to snake_case so the model's spacing/case
       // variants group together.
       final attribute = ((item['attribute'] as Object?)?.toString() ?? '')
