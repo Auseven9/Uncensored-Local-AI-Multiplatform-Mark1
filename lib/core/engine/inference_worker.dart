@@ -271,11 +271,13 @@ class InferenceWorker extends GetxService {
 
           final buffer = StringBuffer();
           final grammar = task.grammar;
-          // Non-grammar tasks (debate turns, plain generations) go through the
-          // model's OWN chat template — the identical path the chat screen uses
-          // — so off-chat generation is never a second-class hand-rolled prompt.
-          // Grammar tasks (consolidation) stay on the raw grammar-constrained
-          // path so their structured JSON is preserved verbatim.
+          // Non-grammar tasks (debate turns, plain generations, and now
+          // memory consolidation) go through the model's OWN chat template —
+          // the identical path the chat screen uses — so off-chat generation
+          // is never a second-class hand-rolled prompt, and runs at full GPU
+          // chat speed. Any task that still opts into a grammar stays on the
+          // raw grammar-constrained path so its structured output is preserved
+          // verbatim (at the cost of CPU-bound sampler speed on large vocabs).
           final stream = grammar == null
               ? _llm.generateChat(
                   messages: task.messages,

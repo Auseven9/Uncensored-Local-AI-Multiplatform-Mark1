@@ -138,9 +138,17 @@ class MemoryManager {
         ],
         temperature: _temp,
         priority: TaskPriority.backgroundIntrospection,
-        // Sampler-enforced structure: the curator can only emit a JSON object,
-        // so parsing below cannot misfire on a grammar-capable backend.
-        grammar: GbnfToolEngine.buildJsonObjectGrammar(),
+        // Output budget — the curation JSON is short; this just bounds runtime
+        // if the model rambles after the object.
+        maxTokens: 512,
+        // NOTE: deliberately NO GBNF grammar here. Grammar-constrained sampling
+        // filters the whole vocabulary through the grammar automaton on the CPU
+        // at every token — on a 260k-token vocabulary (Gemma) that collapses to
+        // ~0.3 tok/s even on GPU, because the sampler, not the matmul, is the
+        // bottleneck. We instead ask for JSON in the prompt and extract it
+        // tolerantly below (extractJsonObject strips fences/prose and finds the
+        // first balanced object), which runs at full chat speed. A rare
+        // unparseable reply simply defers the batch (see below), never corrupts.
       );
     } on InferenceCancelledException {
       // A higher-priority (user) task preempted us — leave the entries pending
@@ -154,6 +162,14 @@ class MemoryManager {
 
     final curation =
         _parseAndCurate(raw, sourceSessionId: entries.last.sessionId);
+    if (curation == null) {
+      // The model's reply wasn't parseable JSON. Without a grammar this can
+      // happen occasionally; leave the batch PENDING (don't mark it reviewed)
+      // so the next pass retries it, rather than silently losing the knowledge.
+      _log?.warn('Consolidation: unparseable output, deferring batch',
+          source: 'Memory');
+      return const ConsolidationResult(ran: false, note: 'unparseable');
+    }
     final facts = curation.facts;
 
     var promoted = 0;
@@ -229,6 +245,8 @@ class MemoryManager {
       ..writeln('Respond with ONLY a JSON object of this exact shape:')
       ..writeln(
           '{"facts": [{"category": "fact|preference|rule|summary", "text": "<concise statement>", "confidence": 0.0}], "relations": [{"from": 0, "to": 1, "type": "supports|contradicts|causes|part_of|related"}]}')
+      ..writeln(
+          'Output raw JSON only. No markdown fences, no commentary before or after.')
       ..writeln('Rules:')
       ..writeln('- Keep at most $maxFactsPerPass items; fewer is better.')
       ..writeln(
@@ -241,21 +259,29 @@ class MemoryManager {
 
   // ── Parsing + curation gate (Dart side) ─────────────────────
 
-  _CurationOutput _parseAndCurate(String raw,
+  /// Parse the curator's reply and apply the Dart-side curation gate.
+  ///
+  /// Returns `null` for a HARD parse failure (no JSON object found, malformed
+  /// JSON, not an object, or missing the `facts` array) — the caller must then
+  /// defer the batch (leave it pending) rather than mark it reviewed, so the
+  /// knowledge isn't lost. A valid object with an empty `facts` list is NOT a
+  /// failure: it means "reviewed, nothing worth promoting", and returns an
+  /// empty (non-null) result so the batch is correctly marked consolidated.
+  _CurationOutput? _parseAndCurate(String raw,
       {required String sourceSessionId}) {
     final jsonText = GbnfToolEngine.extractJsonObject(raw);
-    if (jsonText == null) return const _CurationOutput([], []);
+    if (jsonText == null) return null;
 
     Object? decoded;
     try {
       decoded = json.decode(jsonText);
     } on FormatException {
-      return const _CurationOutput([], []);
+      return null;
     }
-    if (decoded is! Map) return const _CurationOutput([], []);
+    if (decoded is! Map) return null;
 
     final rawFacts = decoded['facts'];
-    if (rawFacts is! List) return const _CurationOutput([], []);
+    if (rawFacts is! List) return null;
 
     final maxFacts = _params?.getInt('consolidate.maxFactsPerPass') ?? maxFactsPerPass;
     final minLen = _params?.getInt('consolidate.minFactLen') ?? 8;
