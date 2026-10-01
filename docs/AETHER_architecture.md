@@ -147,6 +147,49 @@ Everything active here is deterministic-and-tested (reconciliation) or best-effo
 
 **Deferred:** per-claim `raw_excerpt` verbatim anchors (voice preservation), affect labels, and a one-time repair pass to re-attribute legacy rows.
 
+## 4f. Multi-step agency — the fourth memory tier + the cerebellum (SOCKETS LANDED, v2.2.0)
+
+AETHER is going multi-step agentic. Mapping the standard agent-memory model onto
+what's already here keeps us building the *gap*, not re-building the substrate:
+
+| Agent memory layer | Human analogue | In AETHER |
+|---|---|---|
+| **Working** | prefrontal scratchpad | the context window + `remembering()` injection — **live** |
+| **Episodic** | hippocampus | `episodic_log` + `event_log` dual-clock spine — **live** |
+| **Semantic** | neocortex | `semantic_facts` claim graph + embeddings + spreading activation — **live** |
+| **Procedural** | basal ganglia / cerebellum | `procedures` store (v7) — the "how" — **socket landed, unused** |
+
+The *cerebrum vs. cerebellum* split is the other half: the LLM **reasons**
+(cerebrum, slow, ~1 tok/s), a reflex/execution layer **acts** (cerebellum, fast,
+deterministic Dart). That execution layer is the **Command Bus** (`core/agent/
+command_bus.dart`): the one validated path from a proposed action to a result.
+The model never touches state; it proposes a command, the bus validates args,
+enforces read-only vs. mutating, runs it, and returns a structured result —
+never an exception. Runtime owns execution (§1.3). The reload-on-reject recovery
+(v2.1.0) is the first tiny cerebellar reflex.
+
+**Agentic phase plan** (each a shippable, test-through-Autopilot increment):
+- **PA — sockets (LANDED, v2.2.0):** procedural-memory store (SQLite v7, CRUD,
+  adaptive-memory metadata) + Command Bus (pure, validated, unit-tested) +
+  `agent.*` / `procedural.*` params. Nothing wired to act yet — the foundation.
+- **PB — tool registry + read-only tools:** register a handful of SAFE tools on
+  the Command Bus (e.g. `recall_memory`, `get_time`, `list_open_questions`,
+  `systems_check`) and seed them as `procedures`. Reuses the existing
+  `GbnfToolEngine` to parse the model's tool calls. Nothing mutates the world.
+- **PC — the ReAct loop:** a gated `AgentController` that runs think → act via
+  the bus → observe → repeat, capped by `agent.maxSteps`. Idle-first per the
+  usability doctrine (a multi-step loop at ~1 tok/s is minutes — never on the
+  interactive path). Autopilot gets agentic scenarios.
+- **PD — mutating tools, with confirmation:** writes to memory/settings/device,
+  each `readOnly:false` and user-confirmed; the agent learns which procedures
+  work and reinforces their salience.
+- **PE — tool synthesis + System-2 sub-agents:** the agent authoring new
+  procedures (sandboxed), and the SQLite-as-RAM-bus multi-persona path (§5b).
+
+Hard constraints carried the whole way: single native engine (no concurrent
+generates), offline-first, deterministic-first, and System-2 work deferred to
+idle/charging.
+
 ## 5. Phased roadmap (each = shippable APK)
 - **Phase 0 — Baseline (DONE):** reverted forced persona; blank chats; SQLite WAL; **data-driven Parameters registry + panel** (`recall.*` and `consolidate.*` wired live); this spec.
 - **Phase 1 — Grounding + Event Log (DONE):** append-only `event_log` table (SQLite v2 migration, WAL) written through `EideticMemoryEngine.appendEvent`; every episodic write (the live chat path) and each app launch and consolidation is mirrored to it. Each event carries a `SensorAnchor`. **As-built:** the anchor is built from two independent, dependency-free clocks — wall clock + monotonic process uptime — plus a per-launch `sessionId`; their divergence (`clockSkewMs`) is the ground-truth signal that detects sleep/suspend/clock-jumps and gaps between launches. `batteryPercent`/`latitude`/`longitude` are reserved nullable fields, captured only once `ground.sensorsEnabled` is on and a sensor plugin is added — never faked. Causal `parentEventIds` are threaded in the paired `rememberTurn` path; the two-call chat path leaves them empty (events stay time/session-ordered). Visible in the Memory panel's **Events** tab; tunable via the **Event log** parameter group.

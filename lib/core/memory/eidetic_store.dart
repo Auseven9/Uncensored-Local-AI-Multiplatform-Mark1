@@ -1,6 +1,7 @@
 import 'event_records.dart';
 import 'memory_dynamics.dart';
 import 'memory_records.dart';
+import 'procedural_records.dart';
 
 // Platform-specific factory. On native (dart:io present) this resolves to the
 // SQLite-backed store; on the web it falls back to the in-memory store, which
@@ -118,6 +119,26 @@ abstract class EideticStore {
   /// Mark an open question resolved.
   Future<void> resolveOpenQuestion(int id);
 
+  // ── Procedural memory (the "how") — SQLite v7 ────────────────
+  /// Store a procedure (skill/workflow/tool/snippet/heuristic). Returns its id.
+  Future<int> addProcedure(ProcedureRecord p);
+
+  /// Stored procedures, newest first, optionally filtered by kind/status.
+  Future<List<ProcedureRecord>> procedures(
+      {ProcedureKind? kind, ProcedureStatus? status, int limit = 100});
+
+  /// A procedure by its [name], or null when none is stored.
+  Future<ProcedureRecord?> procedureByName(String name);
+
+  /// Record a use: bump the usage count + last-used time and reinforce salience.
+  Future<void> recordProcedureUse(int id);
+
+  /// Enable or disable a procedure.
+  Future<void> setProcedureStatus(int id, ProcedureStatus status);
+
+  /// Remove a procedure.
+  Future<void> deleteProcedure(int id);
+
   // ── Editing (memory panel) ──────────────────────────────────
   /// Update a fact's fields; recomputes the dedupe hash when [text] changes.
   Future<void> updateFact(int id,
@@ -155,6 +176,7 @@ class InMemoryEideticStore implements EideticStore {
   final List<({int factId, int eventId})> _provenance = [];
   final Map<int, List<double>> _embeddings = {};
   final List<OpenQuestion> _openQuestions = [];
+  final List<ProcedureRecord> _procedures = [];
   int _autoId = 0;
 
   @override
@@ -489,6 +511,55 @@ class InMemoryEideticStore implements EideticStore {
   }
 
   @override
+  Future<int> addProcedure(ProcedureRecord p) async {
+    final id = ++_autoId;
+    _procedures.add(p.copyWith(id: id));
+    return id;
+  }
+
+  @override
+  Future<List<ProcedureRecord>> procedures(
+      {ProcedureKind? kind, ProcedureStatus? status, int limit = 100}) async {
+    final rows = _procedures
+        .where((p) => kind == null || p.kind == kind)
+        .where((p) => status == null || p.status == status)
+        .toList()
+      ..sort((a, b) => (b.id ?? 0).compareTo(a.id ?? 0));
+    return rows.take(limit).toList();
+  }
+
+  @override
+  Future<ProcedureRecord?> procedureByName(String name) async {
+    for (final p in _procedures) {
+      if (p.name == name) return p;
+    }
+    return null;
+  }
+
+  @override
+  Future<void> recordProcedureUse(int id) async {
+    final i = _procedures.indexWhere((p) => p.id == id);
+    if (i < 0) return;
+    final p = _procedures[i];
+    _procedures[i] = p.copyWith(
+      usageCount: p.usageCount + 1,
+      lastUsedUtc: DateTime.now().toUtc(),
+      salience: (p.salience + 0.05).clamp(0.0, 1.0).toDouble(),
+    );
+  }
+
+  @override
+  Future<void> setProcedureStatus(int id, ProcedureStatus status) async {
+    final i = _procedures.indexWhere((p) => p.id == id);
+    if (i < 0) return;
+    _procedures[i] = _procedures[i].copyWith(status: status);
+  }
+
+  @override
+  Future<void> deleteProcedure(int id) async =>
+      _procedures.removeWhere((p) => p.id == id);
+
+  @override
   Future<void> updateFact(int id,
       {String? text, SemanticCategory? category, double? confidence}) async {
     final i = _facts.indexWhere((f) => f.id == id);
@@ -534,6 +605,7 @@ class InMemoryEideticStore implements EideticStore {
     _provenance.clear();
     _embeddings.clear();
     _openQuestions.clear();
+    _procedures.clear();
   }
 
   @override

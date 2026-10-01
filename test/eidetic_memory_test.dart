@@ -4,6 +4,7 @@ import 'package:portable_ai_flutter/core/memory/eidetic_memory_engine.dart';
 import 'package:portable_ai_flutter/core/memory/eidetic_store.dart';
 import 'package:portable_ai_flutter/core/memory/memory_manager.dart';
 import 'package:portable_ai_flutter/core/memory/memory_records.dart';
+import 'package:portable_ai_flutter/core/memory/procedural_records.dart';
 
 void main() {
   group('stableContentHash', () {
@@ -76,6 +77,36 @@ void main() {
       final excl = await engine.searchEpisodic('girlfriend tea',
           includeConsolidated: false);
       expect(excl.map((e) => e.content).toList(), ['I like green tea']);
+    });
+
+    test('procedural memory: CRUD + use reinforces salience (v7)', () async {
+      final id = await engine.addProcedure(ProcedureRecord(
+        createdUtc: DateTime.now().toUtc(),
+        name: 'get_time',
+        kind: ProcedureKind.tool,
+        trigger: 'user asks what time it is',
+        body: 'return the current local time',
+      ));
+      expect(id, greaterThan(0));
+
+      final byName = await engine.procedureByName('get_time');
+      expect(byName, isNotNull);
+      expect(byName!.kind, ProcedureKind.tool);
+
+      // Using a procedure bumps its count and reinforces its salience.
+      await engine.recordProcedureUse(id);
+      final used = await engine.procedureByName('get_time');
+      expect(used!.usageCount, 1);
+      expect(used.salience, greaterThan(0.5));
+      expect(used.lastUsedUtc, isNotNull);
+
+      // Disabling drops it from the active set.
+      await engine.setProcedureStatus(id, ProcedureStatus.disabled);
+      final active = await engine.procedures(status: ProcedureStatus.active);
+      expect(active.where((p) => p.id == id), isEmpty);
+
+      await engine.deleteProcedure(id);
+      expect(await engine.procedureByName('get_time'), isNull);
     });
 
     test('rememberFact deduplicates by content', () async {

@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.0] - 2026-10-01
+
+### Added — going multi-step agentic (first sockets)
+- **Procedural memory (the fourth memory tier):** a `procedures` store
+  (SQLite v7, additive) for the agent's skills, workflows, tool definitions,
+  snippets and heuristics — the "how". Carries adaptive-memory metadata
+  (salience reinforced on use, confidence, usage count) so the skill set
+  self-curates toward what works. Full CRUD across both store backends + the
+  engine; unit-tested. Nothing consumes it yet — it's the foundation the
+  agent loop reads from.
+- **Command Bus:** the single validated execution path (`core/agent/
+  command_bus.dart`). Every action — UI, agent, Autopilot — dispatches here;
+  it validates args, marks read-only vs. mutating, and turns a request into a
+  structured result, never an exception. The model proposes a command; the
+  runtime validates and runs it (spec §1.3). Pure + unit-tested; real tools
+  register next phase.
+- **Agent parameters** (`agent.enabled` off by default, `agent.maxSteps`,
+  `procedural.enabled`) — defined now, consumed as the loop lands.
+
 ## [2.1.0] - 2026-10-01
 
 ### Added — ease of use

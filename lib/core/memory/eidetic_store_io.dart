@@ -10,6 +10,7 @@ import 'eidetic_store.dart';
 import 'event_records.dart';
 import 'memory_dynamics.dart';
 import 'memory_records.dart';
+import 'procedural_records.dart';
 import 'vector_search.dart';
 
 /// Native (dart:io) factory: a SQLite-backed store. Selected via conditional
@@ -67,7 +68,8 @@ class SqliteEideticStore implements EideticStore {
       // v4: claim_embeddings for meaning-based recall (Phase 2b).
       // v5: identity/attribution columns on semantic_facts (Phase 5).
       // v6: attribute slot column + open_questions table (2.0 Living Memory).
-      version: 6,
+      // v7: procedures table — procedural memory, the "how" (multi-step agent).
+      version: 7,
       onConfigure: (db) async {
         // Write-Ahead Logging: durable, low-latency appends for the event log.
         //
@@ -134,6 +136,37 @@ class SqliteEideticStore implements EideticStore {
           'CREATE INDEX IF NOT EXISTS idx_facts_slot ON semantic_facts(subject, attribute)');
       await _createOpenQuestionsTable(db);
     }
+    if (oldVersion < 7) {
+      // Procedural memory: the agent's skills/workflows/tools/snippets — the
+      // "how", read by the multi-step agent loop. Additive; empty on upgrade.
+      await _createProceduresTable(db);
+    }
+  }
+
+  /// Procedural memory (v7): the fourth memory tier — stored skills, workflows,
+  /// tool definitions, snippets and heuristics the multi-step agent reaches for.
+  /// Created fresh in [_onCreate] and back-filled in [_onUpgrade].
+  Future<void> _createProceduresTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS procedures (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_utc TEXT NOT NULL,
+        name TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        trigger TEXT NOT NULL DEFAULT '',
+        body TEXT NOT NULL DEFAULT '',
+        params_json TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'active',
+        salience REAL NOT NULL DEFAULT 0.5,
+        confidence REAL NOT NULL DEFAULT 0.5,
+        usage_count INTEGER NOT NULL DEFAULT 0,
+        last_used_utc TEXT
+      )
+    ''');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_proc_name ON procedures(name)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_proc_kind_status ON procedures(kind, status)');
   }
 
   /// Open questions (2.0): contradictions the agent noticed in its own memory,
@@ -276,6 +309,7 @@ class SqliteEideticStore implements EideticStore {
     await _createGraphTables(db);
     await _createEmbeddingsTable(db);
     await _createOpenQuestionsTable(db);
+    await _createProceduresTable(db);
   }
 
   @override
@@ -595,6 +629,62 @@ class SqliteEideticStore implements EideticStore {
     );
   }
 
+  // ── Procedural memory (v7) ──────────────────────────────────
+
+  @override
+  Future<int> addProcedure(ProcedureRecord p) async =>
+      _database.insert('procedures', p.toRow());
+
+  @override
+  Future<List<ProcedureRecord>> procedures(
+      {ProcedureKind? kind, ProcedureStatus? status, int limit = 100}) async {
+    final where = <String>[];
+    final args = <Object?>[];
+    if (kind != null) {
+      where.add('kind = ?');
+      args.add(kind.name);
+    }
+    if (status != null) {
+      where.add('status = ?');
+      args.add(status.name);
+    }
+    final rows = await _database.query(
+      'procedures',
+      where: where.isEmpty ? null : where.join(' AND '),
+      whereArgs: where.isEmpty ? null : args,
+      orderBy: 'id DESC',
+      limit: limit,
+    );
+    return rows.map(ProcedureRecord.fromRow).toList();
+  }
+
+  @override
+  Future<ProcedureRecord?> procedureByName(String name) async {
+    final rows = await _database.query('procedures',
+        where: 'name = ?', whereArgs: [name], orderBy: 'id DESC', limit: 1);
+    return rows.isEmpty ? null : ProcedureRecord.fromRow(rows.first);
+  }
+
+  @override
+  Future<void> recordProcedureUse(int id) async {
+    await _database.rawUpdate(
+      'UPDATE procedures SET usage_count = usage_count + 1, '
+      'last_used_utc = ?, salience = MIN(1.0, salience + 0.05) WHERE id = ?',
+      [DateTime.now().toUtc().toIso8601String(), id],
+    );
+  }
+
+  @override
+  Future<void> setProcedureStatus(int id, ProcedureStatus status) async {
+    await _database.update('procedures', {'status': status.name},
+        where: 'id = ?', whereArgs: [id]);
+  }
+
+  @override
+  Future<void> deleteProcedure(int id) async {
+    await _database.delete('procedures', where: 'id = ?', whereArgs: [id]);
+  }
+
   @override
   Future<void> updateFact(int id,
       {String? text, SemanticCategory? category, double? confidence}) async {
@@ -676,6 +766,7 @@ class SqliteEideticStore implements EideticStore {
     await _database.delete('provenance');
     await _database.delete('claim_embeddings');
     await _database.delete('open_questions');
+    await _database.delete('procedures');
   }
 
   @override

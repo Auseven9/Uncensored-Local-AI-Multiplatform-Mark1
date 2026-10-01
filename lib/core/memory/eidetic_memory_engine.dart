@@ -6,6 +6,7 @@ import '../../services/log_service.dart';
 import 'eidetic_store.dart';
 import 'event_records.dart';
 import 'memory_records.dart';
+import 'procedural_records.dart';
 import 'spreading_activation.dart';
 import 'vector_search.dart';
 
@@ -496,6 +497,39 @@ class EideticMemoryEngine extends GetxService {
   Future<void> resolveOpenQuestion(int id) async {
     await _ensureInit();
     await _store.resolveOpenQuestion(id);
+  }
+
+  // ── Procedural memory (v7) — the "how" the agent can do ──────
+
+  Future<int> addProcedure(ProcedureRecord p) async {
+    await _ensureInit();
+    return _store.addProcedure(p);
+  }
+
+  Future<List<ProcedureRecord>> procedures(
+      {ProcedureKind? kind, ProcedureStatus? status, int limit = 100}) async {
+    await _ensureInit();
+    return _store.procedures(kind: kind, status: status, limit: limit);
+  }
+
+  Future<ProcedureRecord?> procedureByName(String name) async {
+    await _ensureInit();
+    return _store.procedureByName(name);
+  }
+
+  Future<void> recordProcedureUse(int id) async {
+    await _ensureInit();
+    await _store.recordProcedureUse(id);
+  }
+
+  Future<void> setProcedureStatus(int id, ProcedureStatus status) async {
+    await _ensureInit();
+    await _store.setProcedureStatus(id, status);
+  }
+
+  Future<void> deleteProcedure(int id) async {
+    await _ensureInit();
+    await _store.deleteProcedure(id);
   }
 
   // ── Editing (memory panel) ──────────────────────────────────
