@@ -85,6 +85,33 @@ abstract class EideticStore {
     required double beta,
   });
 
+  // ── Active self-curation (2.0 — contradiction / open-questions) ─
+  /// Active claims pinning the same (subject, attribute) slot — the candidates
+  /// for a contradiction. Empty when either key is blank.
+  Future<List<SemanticFact>> claimsForSlot(String subject, String attribute);
+
+  /// Every active claim that pins a slot (non-empty attribute) — for the
+  /// full-memory contradiction sweep that catches pre-existing conflicts.
+  Future<List<SemanticFact>> allSlotClaims({int limit = 2000});
+
+  /// Mark [oldId] superseded and point [byId].supersedes at it (a correction).
+  Future<void> supersedeClaim(int oldId, {required int byId});
+
+  /// Set a claim's lifecycle status (e.g. ambiguous while a contradiction is open).
+  Future<void> setClaimStatus(int id, ClaimStatus status);
+
+  /// Record a noticed contradiction to surface to the user. Returns its id.
+  Future<int> addOpenQuestion(OpenQuestion q);
+
+  /// Currently-open questions, newest first.
+  Future<List<OpenQuestion>> openQuestions({int limit = 50});
+
+  /// An existing open question on this slot, if any (so we don't duplicate).
+  Future<OpenQuestion?> openQuestionForSlot(String subject, String attribute);
+
+  /// Mark an open question resolved.
+  Future<void> resolveOpenQuestion(int id);
+
   // ── Editing (memory panel) ──────────────────────────────────
   /// Update a fact's fields; recomputes the dedupe hash when [text] changes.
   Future<void> updateFact(int id,
@@ -121,6 +148,7 @@ class InMemoryEideticStore implements EideticStore {
   final List<RelationEdge> _edges = [];
   final List<({int factId, int eventId})> _provenance = [];
   final Map<int, List<double>> _embeddings = {};
+  final List<OpenQuestion> _openQuestions = [];
   int _autoId = 0;
 
   @override
@@ -349,6 +377,108 @@ class InMemoryEideticStore implements EideticStore {
     return n;
   }
 
+  // ── Active self-curation (2.0) ──────────────────────────────
+
+  @override
+  Future<List<SemanticFact>> claimsForSlot(
+      String subject, String attribute) async {
+    final s = subject.toLowerCase().trim();
+    final a = attribute.toLowerCase().trim();
+    if (s.isEmpty || a.isEmpty) return const [];
+    return _facts
+        .where((f) =>
+            f.status == ClaimStatus.active &&
+            f.subject.toLowerCase().trim() == s &&
+            f.attribute.toLowerCase().trim() == a)
+        .toList();
+  }
+
+  @override
+  Future<List<SemanticFact>> allSlotClaims({int limit = 2000}) async {
+    final rows = _facts
+        .where((f) =>
+            f.status == ClaimStatus.active && f.attribute.trim().isNotEmpty)
+        .toList()
+      ..sort((a, b) => b.createdUtc.compareTo(a.createdUtc));
+    return rows.take(limit).toList();
+  }
+
+  @override
+  Future<void> supersedeClaim(int oldId, {required int byId}) async {
+    for (var i = 0; i < _facts.length; i++) {
+      if (_facts[i].id == oldId) {
+        _facts[i] = _facts[i].copyWith(status: ClaimStatus.superseded);
+      }
+      if (_facts[i].id == byId) {
+        _facts[i] = _facts[i].copyWith(supersedes: oldId);
+      }
+    }
+  }
+
+  @override
+  Future<void> setClaimStatus(int id, ClaimStatus status) async {
+    final i = _facts.indexWhere((f) => f.id == id);
+    if (i >= 0) _facts[i] = _facts[i].copyWith(status: status);
+  }
+
+  @override
+  Future<int> addOpenQuestion(OpenQuestion q) async {
+    final id = ++_autoId;
+    _openQuestions.add(OpenQuestion(
+      id: id,
+      subject: q.subject,
+      attribute: q.attribute,
+      claimIds: q.claimIds,
+      question: q.question,
+      status: q.status,
+      createdUtc: q.createdUtc,
+      resolvedUtc: q.resolvedUtc,
+    ));
+    return id;
+  }
+
+  @override
+  Future<List<OpenQuestion>> openQuestions({int limit = 50}) async {
+    final rows =
+        _openQuestions.where((q) => q.status == OpenQuestionStatus.open).toList()
+          ..sort((a, b) => (b.id ?? 0).compareTo(a.id ?? 0));
+    return rows.take(limit).toList();
+  }
+
+  @override
+  Future<OpenQuestion?> openQuestionForSlot(
+      String subject, String attribute) async {
+    final s = subject.toLowerCase().trim();
+    final a = attribute.toLowerCase().trim();
+    for (final q in _openQuestions) {
+      if (q.status == OpenQuestionStatus.open &&
+          q.subject.toLowerCase().trim() == s &&
+          q.attribute.toLowerCase().trim() == a) {
+        return q;
+      }
+    }
+    return null;
+  }
+
+  @override
+  Future<void> resolveOpenQuestion(int id) async {
+    for (var i = 0; i < _openQuestions.length; i++) {
+      final q = _openQuestions[i];
+      if (q.id == id) {
+        _openQuestions[i] = OpenQuestion(
+          id: q.id,
+          subject: q.subject,
+          attribute: q.attribute,
+          claimIds: q.claimIds,
+          question: q.question,
+          status: OpenQuestionStatus.resolved,
+          createdUtc: q.createdUtc,
+          resolvedUtc: DateTime.now().toUtc(),
+        );
+      }
+    }
+  }
+
   @override
   Future<void> updateFact(int id,
       {String? text, SemanticCategory? category, double? confidence}) async {
@@ -394,6 +524,7 @@ class InMemoryEideticStore implements EideticStore {
     _edges.clear();
     _provenance.clear();
     _embeddings.clear();
+    _openQuestions.clear();
   }
 
   @override

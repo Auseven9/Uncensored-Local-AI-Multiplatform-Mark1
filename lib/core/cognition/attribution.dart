@@ -39,6 +39,8 @@ const String kAiFromUserHeader = 'What you have told me about myself:';
 const String kAiSelfViewHeader = 'What I have come to think about myself:';
 const String kThirdPartyHeader = 'People and things you have mentioned:';
 const String kOtherHeader = 'Other remembered details:';
+const String kOpenQuestionsHeader =
+    'Things I have conflicting notes on — ask to clarify rather than guess:';
 
 /// Render [lines] into an identity-safe memory block.
 ///
@@ -51,6 +53,7 @@ String renderMemoryBlock(
   List<MemoryLine> lines, {
   required bool awareness,
   String userLabel = 'the person you are talking with',
+  List<String> openQuestions = const [],
 }) {
   final aboutUser = <String>[];
   final aiFromUser = <String>[]; // subject=AI, holder=user
@@ -83,11 +86,17 @@ String renderMemoryBlock(
     }
   }
 
+  final questions = [
+    for (final q in openQuestions)
+      if (q.trim().isNotEmpty) q.trim()
+  ];
+
   if (aboutUser.isEmpty &&
       aiFromUser.isEmpty &&
       aiSelfView.isEmpty &&
       thirdParty.isEmpty &&
-      other.isEmpty) {
+      other.isEmpty &&
+      questions.isEmpty) {
     return '';
   }
 
@@ -120,6 +129,8 @@ String renderMemoryBlock(
   section(kAiFromUserHeader, aiFromUser);
   section(kAiSelfViewHeader, aiSelfView);
   section(kOtherHeader, other);
+  // Noticed contradictions the agent should raise rather than guess past (2.0).
+  section(kOpenQuestionsHeader, questions);
 
   return buf.toString().trim();
 }

@@ -58,6 +58,10 @@ class MemoryService extends GetxService {
   /// right after a cold start (an accepted Phase 3a simplification).
   int _turnsSinceDecay = 0;
 
+  /// Successful consolidations since the agent last reflected on itself (2.0).
+  /// Self-reflection is a model pass, so it runs only every N consolidations.
+  int _consolidationsSinceReflect = 0;
+
   /// The most recent recall pass, for the chat UI's "recalled-memory chips" —
   /// what was pulled into context, by source, before the model spoke. Null
   /// until the first recall; carries an empty [RecallResult] when nothing was
@@ -352,18 +356,49 @@ class MemoryService extends GetxService {
     _record(MemoryCallType.recall,
         'cue="${_short(query)}" → sem ${semantic.length}, epi ${episodic.length}, injected ${ranked.length}$embInfo');
 
-    if (ranked.isEmpty) return emptyResult();
+    // Open questions (2.0): surface a noticed contradiction when this turn
+    // actually touched the conflicted claims, or when the user asks about the
+    // state of memory ("do you have anything unresolved?"). Best-effort.
+    var openQ = const <String>[];
+    if (_params?.getBool('reconcile.enabled') ?? true) {
+      final injectedFactIds =
+          ranked.map((c) => c.factId).whereType<int>().toSet();
+      final metaQuery = _looksLikeMemoryMetaQuery(query);
+      try {
+        final all = await _memory.openQuestions(limit: 20);
+        openQ = all
+            .where((q) => metaQuery || q.claimIds.any(injectedFactIds.contains))
+            .take(3)
+            .map((q) => q.question)
+            .toList();
+      } catch (_) {}
+    }
 
-    // Identity-safe rendering (Phase 5): bucket by subject/holder so a fact
-    // about the user can never be read as a fact about the AI itself.
+    if (ranked.isEmpty && openQ.isEmpty) return emptyResult();
+
+    // Identity-safe rendering (Phase 5) + noticed contradictions (2.0): bucket
+    // by subject/holder so a fact about the user can never be read as a fact
+    // about the AI itself, and append any open questions to raise.
     return renderMemoryBlock(
       [
         for (final c in ranked)
           MemoryLine(c.text, subjectType: c.subjectType, holder: c.holder),
       ],
       awareness: awareness,
+      openQuestions: openQ,
     );
   }
+
+  static final _metaQueryCue = RegExp(
+    r"\b(unresolved|unsure|uncertain|not sure|conflict|contradict|"
+    r"contradiction|mixed up|confus|which is right|remember correctly|"
+    r"open questions?|get .* (right|wrong)|clarif)\w*",
+    caseSensitive: false,
+  );
+
+  /// Whether the user is asking about the STATE of memory (so we should surface
+  /// open questions regardless of topical match).
+  bool _looksLikeMemoryMetaQuery(String q) => _metaQueryCue.hasMatch(q);
 
   /// Fraction of cue tokens present in [content] (0..1) — episodic relevance.
   double _overlap(Set<String> cueTokens, String content) {
@@ -514,6 +549,25 @@ class MemoryService extends GetxService {
             }
             _status?.mark('meaning index updated');
           } catch (_) {}
+        }
+
+        // Self-reflection (2.0): every N consolidations, the agent forms a few
+        // tentative observations about itself (the holder=assistant self-view).
+        // Best-effort, idle-only (it's a model pass), gated by reflect.enabled.
+        if ((_params?.getBool('reflect.enabled') ?? true) && !_chatBusy) {
+          _consolidationsSinceReflect++;
+          final every = _params?.getInt('reflect.everyConsolidations') ?? 3;
+          if (every > 0 && _consolidationsSinceReflect >= every) {
+            _consolidationsSinceReflect = 0;
+            try {
+              _status?.begin(PipelinePhase.consolidating, 'reflecting…');
+              final n = await _manager.reflectOnSelf();
+              if (n > 0) {
+                _record(MemoryCallType.consolidate,
+                    'self-reflection · +$n observation(s) about myself');
+              }
+            } catch (_) {}
+          }
         }
       }
       _finishStatus();

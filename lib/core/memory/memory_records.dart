@@ -156,6 +156,20 @@ class SemanticFact {
   /// view. Defaults to [ClaimHolder.user] (the user told us).
   final ClaimHolder holder;
 
+  /// A short *slot key* for what aspect of [subject] this claim pins down —
+  /// e.g. "partner_name", "job", "birthday" (Phase 5b / 2.0). Empty when the
+  /// claim isn't a single-slot fact. Two active claims sharing (subject,
+  /// attribute) but asserting different [value]s are a contradiction the agent
+  /// can detect, surface, and resolve.
+  final String attribute;
+
+  /// The bare value this claim asserts for its (subject, attribute) slot —
+  /// e.g. "Jayden", "nurse", "Denver" (2.0). Lets contradiction detection
+  /// compare *values* rather than whole-sentence phrasings (so "partner is
+  /// Jayden" and "partner's name is Jayden" aren't a false conflict). Empty
+  /// when [attribute] is empty; falls back to [text] when the curator omits it.
+  final String value;
+
   SemanticFact({
     this.id,
     required this.createdUtc,
@@ -171,6 +185,8 @@ class SemanticFact {
     this.subject = '',
     this.subjectType = SubjectType.user,
     this.holder = ClaimHolder.user,
+    this.attribute = '',
+    this.value = '',
   }) : dedupeHash = dedupeHash ?? stableContentHash(text);
 
   Map<String, Object?> toRow() => {
@@ -187,6 +203,8 @@ class SemanticFact {
         'subject': subject,
         'subject_type': subjectType.name,
         'holder': holder.name,
+        'attribute': attribute,
+        'value': value,
       };
 
   static SemanticFact fromRow(Map<String, Object?> row) {
@@ -210,6 +228,8 @@ class SemanticFact {
       subject: (row['subject'] as String?) ?? '',
       subjectType: subjectTypeFromName((row['subject_type'] as String?) ?? 'user'),
       holder: claimHolderFromName((row['holder'] as String?) ?? 'user'),
+      attribute: (row['attribute'] as String?) ?? '',
+      value: (row['value'] as String?) ?? '',
     );
   }
 
@@ -227,6 +247,8 @@ class SemanticFact {
     String? subject,
     SubjectType? subjectType,
     ClaimHolder? holder,
+    String? attribute,
+    String? value,
   }) {
     final newText = text ?? this.text;
     return SemanticFact(
@@ -244,6 +266,74 @@ class SemanticFact {
       subject: subject ?? this.subject,
       subjectType: subjectType ?? this.subjectType,
       holder: holder ?? this.holder,
+      attribute: attribute ?? this.attribute,
+      value: value ?? this.value,
+    );
+  }
+}
+
+/// Lifecycle of an [OpenQuestion].
+enum OpenQuestionStatus { open, resolved }
+
+OpenQuestionStatus openQuestionStatusFromName(String name) =>
+    OpenQuestionStatus.values.firstWhere((e) => e.name == name,
+        orElse: () => OpenQuestionStatus.open);
+
+/// An unresolved contradiction the agent has noticed in its own memory (2.0):
+/// two or more active claims that pin the same (subject, attribute) slot to
+/// different values. Surfaced to the user as a clarifying question, and
+/// resolved by a correction (which supersedes the losing claim).
+class OpenQuestion {
+  final int? id;
+  final String subject;
+  final String attribute;
+
+  /// The conflicting claim ids this question is about.
+  final List<int> claimIds;
+
+  /// A ready-to-inject, human-readable question ("Is the user's partner named
+  /// Jayden or Jordan?").
+  final String question;
+
+  final OpenQuestionStatus status;
+  final DateTime createdUtc;
+  final DateTime? resolvedUtc;
+
+  OpenQuestion({
+    this.id,
+    required this.subject,
+    required this.attribute,
+    required this.claimIds,
+    required this.question,
+    this.status = OpenQuestionStatus.open,
+    DateTime? createdUtc,
+    this.resolvedUtc,
+  }) : createdUtc = createdUtc ?? DateTime.now().toUtc();
+
+  Map<String, Object?> toRow() => {
+        'subject': subject,
+        'attribute': attribute,
+        'claim_ids_json': json.encode(claimIds),
+        'question': question,
+        'status': status.name,
+        'created_utc': createdUtc.toUtc().toIso8601String(),
+        'resolved_utc': resolvedUtc?.toUtc().toIso8601String(),
+      };
+
+  static OpenQuestion fromRow(Map<String, Object?> row) {
+    final idsRaw = row['claim_ids_json'] as String?;
+    final resolved = row['resolved_utc'] as String?;
+    return OpenQuestion(
+      id: row['id'] as int?,
+      subject: (row['subject'] as String?) ?? '',
+      attribute: (row['attribute'] as String?) ?? '',
+      claimIds: idsRaw == null
+          ? const []
+          : (json.decode(idsRaw) as List).map((e) => (e as num).toInt()).toList(),
+      question: (row['question'] as String?) ?? '',
+      status: openQuestionStatusFromName((row['status'] as String?) ?? 'open'),
+      createdUtc: DateTime.parse(row['created_utc'] as String).toUtc(),
+      resolvedUtc: resolved == null ? null : DateTime.parse(resolved).toUtc(),
     );
   }
 }

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:get/get.dart';
 
 import '../../services/log_service.dart';
+import '../cognition/reconciliation.dart';
 import '../engine/inference_worker.dart';
 import '../params/parameters_service.dart';
 import '../tools/gbnf_tool_engine.dart';
@@ -204,6 +205,11 @@ class MemoryManager {
       }
     }
 
+    // ── Active self-curation (2.0): reconcile slot contradictions ──
+    if (_params?.getBool('reconcile.enabled') ?? true) {
+      await _reconcile(entries, indexToId, facts);
+    }
+
     // The batch has now been reviewed — mark it consolidated so it is not
     // reprocessed, whether or not it produced new facts.
     final ids = entries.map((e) => e.id).whereType<int>().toList();
@@ -219,6 +225,188 @@ class MemoryManager {
     );
     _log?.info('Consolidation: $result', source: 'Memory');
     return result;
+  }
+
+  /// Active self-curation (2.0): detect slot contradictions and act. Considers
+  /// the slots just touched this pass PLUS a bounded full-memory sweep, so
+  /// pre-existing conflicts (stored before this feature, or across separate
+  /// batches) are caught too — not only brand-new collisions. For each
+  /// conflicted slot: if a user turn in this batch is a *targeted* correction
+  /// (a correction cue that mentions the new value), supersede the old value;
+  /// otherwise raise a question. Best-effort per slot.
+  Future<void> _reconcile(
+    List<EpisodicEntry> entries,
+    Map<int, int> indexToId,
+    List<SemanticFact> facts,
+  ) async {
+    String slotKey(String s, String a) =>
+        '${s.toLowerCase()}\u0000${a.toLowerCase()}';
+
+    // Slots a claim was promoted into this pass → that claim's id (correction
+    // target); and the set of slots to examine.
+    final touched = <String, int>{};
+    final slots = <String, ({String subject, String attribute})>{};
+    for (final e in indexToId.entries) {
+      final f = facts[e.key];
+      final subj = f.subject.trim();
+      final attr = f.attribute.trim();
+      if (subj.isEmpty || attr.isEmpty) continue;
+      final k = slotKey(subj, attr);
+      touched[k] = e.value;
+      slots[k] = (subject: subj, attribute: attr);
+    }
+    try {
+      for (final c in findSlotCollisions(await memory.allSlotClaims())) {
+        slots[slotKey(c.subject.trim(), c.attribute.trim())] =
+            (subject: c.subject.trim(), attribute: c.attribute.trim());
+      }
+    } catch (_) {
+      // Sweep is best-effort; fall back to just the touched slots.
+    }
+
+    for (final entry in slots.entries) {
+      final slot = entry.value;
+      try {
+        final slotClaims =
+            await memory.claimsForSlot(slot.subject, slot.attribute);
+        final collisions = findSlotCollisions(slotClaims);
+        if (collisions.isEmpty) continue;
+
+        // Is this a targeted correction? A correction-cued user turn that
+        // actually mentions the newly-promoted value for this slot.
+        final newId = touched[entry.key];
+        var corrected = false;
+        if (newId != null) {
+          final newFact = slotClaims.firstWhere((f) => f.id == newId,
+              orElse: () => slotClaims.first);
+          final newVal = newFact.value.trim().isNotEmpty
+              ? newFact.value
+              : newFact.text;
+          corrected = entries.any(
+              (e) => e.role == 'user' && correctionTargets(e.content, newVal));
+        }
+
+        if (corrected && newId != null) {
+          for (final c in slotClaims) {
+            if (c.id != null && c.id != newId) {
+              await memory.supersedeClaim(c.id!, byId: newId);
+            }
+          }
+          final oq =
+              await memory.openQuestionForSlot(slot.subject, slot.attribute);
+          if (oq?.id != null) await memory.resolveOpenQuestion(oq!.id!);
+          _log?.info(
+              'Reconcile: corrected "${slot.subject}/${slot.attribute}" → kept #$newId',
+              source: 'Memory');
+        } else if (await memory.openQuestionForSlot(
+                slot.subject, slot.attribute) ==
+            null) {
+          await memory.addOpenQuestion(OpenQuestion(
+            subject: slot.subject,
+            attribute: slot.attribute,
+            claimIds: slotClaims.map((f) => f.id).whereType<int>().toList(),
+            question: buildQuestion(collisions.first),
+          ));
+          _log?.info(
+              'Reconcile: raised question on "${slot.subject}/${slot.attribute}"',
+              source: 'Memory');
+        }
+      } catch (_) {
+        // Per-slot best-effort; a bad slot must not abort the pass.
+      }
+    }
+  }
+
+  /// Self-reflection (2.0): the agent forms its OWN tentative view of itself
+  /// from recent activity — the `holder=assistant` half of the dual self-model.
+  /// A self that is *earned* from evidence, never a scripted persona: every
+  /// observation is grounded in the log, stored first-person, tentative, and at
+  /// low confidence so it decays unless it keeps proving true. Best-effort and
+  /// gated; returns how many self-observations were stored.
+  Future<int> reflectOnSelf({int recent = 30}) async {
+    final entries = await memory.recentEpisodic(limit: recent);
+    if (entries.length < 6) return 0; // too little to reflect on honestly
+
+    final String raw;
+    try {
+      raw = await worker.run(
+        id: 'reflect-${DateTime.now().millisecondsSinceEpoch}',
+        systemPrompt: _reflectionSystemPrompt,
+        messages: [
+          {'role': 'user', 'content': _buildReflectionPrompt(entries)},
+        ],
+        temperature: 0.4,
+        priority: TaskPriority.backgroundIntrospection,
+        maxTokens: 300,
+      );
+    } on InferenceCancelledException {
+      return 0;
+    } catch (_) {
+      return 0;
+    }
+
+    final jsonText = GbnfToolEngine.extractJsonObject(raw);
+    if (jsonText == null) return 0;
+    Object? decoded;
+    try {
+      decoded = json.decode(jsonText);
+    } on FormatException {
+      return 0;
+    }
+    if (decoded is! Map) return 0;
+    final rawObs = decoded['observations'];
+    if (rawObs is! List) return 0;
+
+    var stored = 0;
+    final now = DateTime.now().toUtc();
+    for (final o in rawObs.take(3)) {
+      final text =
+          (o is Map ? o['text'] : o)?.toString().trim() ?? '';
+      if (text.length < 8 || text.length > 300) continue;
+      final id = await memory.rememberFact(SemanticFact(
+        createdUtc: now,
+        category: SemanticCategory.summary,
+        text: text,
+        confidence: 0.3, // tentative — storage strength must be earned
+        salience: 0.4,
+        subject: 'myself',
+        subjectType: SubjectType.selfAI,
+        holder: ClaimHolder.assistant,
+      ));
+      if (id != null) stored++;
+    }
+    if (stored > 0) {
+      _log?.info('Self-reflection: +$stored self-observation(s)',
+          source: 'Memory');
+    }
+    return stored;
+  }
+
+  static const _reflectionSystemPrompt =
+      'You are the AI assistant, reflecting on your OWN recent behavior in a '
+      'conversation log to form a tentative, honest sense of yourself. Base '
+      'every observation strictly on what the log shows you actually did — '
+      'never invent a personality, backstory, feelings, or a name. Be humble '
+      'and specific. These are first-person observations about yourself, '
+      'phrased tentatively ("I seem to…", "I tend to…").';
+
+  String _buildReflectionPrompt(List<EpisodicEntry> entries) {
+    final buffer = StringBuffer()
+      ..writeln('Here is a log of recent activity (your turns are "assistant"):')
+      ..writeln();
+    for (final e in entries) {
+      buffer.writeln('- (${e.role}) ${_truncate(e.content, 200)}');
+    }
+    buffer
+      ..writeln()
+      ..writeln(
+          'From ONLY what this log shows about how you (the assistant) behaved, '
+          'write at most 3 tentative first-person observations about yourself.')
+      ..writeln(
+          'Respond with ONLY JSON: {"observations": [{"text": "I seem to ..."}]}')
+      ..writeln(
+          'Output raw JSON only. If the log shows nothing clear about you, return {"observations": []}.');
+    return buffer.toString();
   }
 
   // ── Prompt construction ─────────────────────────────────────
@@ -250,11 +438,15 @@ class MemoryManager {
       ..writeln('Extract the durable knowledge worth storing long term.')
       ..writeln('Respond with ONLY a JSON object of this exact shape:')
       ..writeln(
-          '{"facts": [{"category": "fact|preference|rule|summary", "subject": "<who/what it is about>", "subjectType": "user|self|person|place|thing", "holder": "user|assistant", "text": "<concise third-person statement>", "confidence": 0.0}], "relations": [{"from": 0, "to": 1, "type": "supports|contradicts|causes|part_of|related"}]}')
+          '{"facts": [{"category": "fact|preference|rule|summary", "subject": "<who/what it is about>", "subjectType": "user|self|person|place|thing", "holder": "user|assistant", "attribute": "<slot key, or empty>", "value": "<the bare value, or empty>", "text": "<concise third-person statement>", "confidence": 0.0}], "relations": [{"from": 0, "to": 1, "type": "supports|contradicts|causes|part_of|related"}]}')
       ..writeln(
           'Output raw JSON only. No markdown fences, no commentary before or after.')
       ..writeln('Rules:')
       ..writeln('- Keep at most $maxFactsPerPass items; fewer is better.')
+      ..writeln(
+          '- "attribute": a short snake_case slot key for a single-valued fact ("partner_name", "job", "birthday", "home_city"). Leave "" for anything that is not a single slot. Facts sharing the same subject+attribute are treated as the SAME fact about the SAME thing.')
+      ..writeln(
+          '- "value": the bare value for that slot ("Jayden", "nurse", "Denver") — just the value, no sentence. Leave "" when "attribute" is empty. e.g. "my girlfriend is Jayden" -> attribute "partner_name", value "Jayden".')
       ..writeln(
           '- "subjectType": "user" for facts about the human; "self" ONLY for facts about the AI assistant itself; "person"/"place"/"thing" for others the user mentioned (e.g. a partner, a city).')
       ..writeln(
@@ -333,6 +525,17 @@ class MemoryManager {
           _subjectTypeLoose((item['subjectType'] as Object?)?.toString());
       final holder =
           _claimHolderLoose((item['holder'] as Object?)?.toString());
+      // Slot key (2.0) — normalized to snake_case so the model's spacing/case
+      // variants group together.
+      final attribute = ((item['attribute'] as Object?)?.toString() ?? '')
+          .toLowerCase()
+          .trim()
+          .replaceAll(RegExp(r'\s+'), '_')
+          .replaceAll(RegExp(r'[^a-z0-9_]'), '');
+      // The bare value for that slot (only meaningful when attribute is set).
+      final value = attribute.isEmpty
+          ? ''
+          : (item['value'] as Object?)?.toString().trim() ?? '';
 
       origToOut[origIdx] = out.length;
       out.add(SemanticFact(
@@ -345,6 +548,8 @@ class MemoryManager {
         subject: subject,
         subjectType: subjectType,
         holder: holder,
+        attribute: attribute,
+        value: value,
       ));
     }
 

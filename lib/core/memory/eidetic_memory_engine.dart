@@ -450,6 +450,53 @@ class EideticMemoryEngine extends GetxService {
         cyclesElapsed: cyclesElapsed, tau: tau, beta: beta);
   }
 
+  // ── Active self-curation (2.0 — contradiction / open-questions) ─
+
+  /// Active claims pinning the same (subject, attribute) slot.
+  Future<List<SemanticFact>> claimsForSlot(
+      String subject, String attribute) async {
+    await _ensureInit();
+    return _store.claimsForSlot(subject, attribute);
+  }
+
+  /// Every active slot-pinning claim — for the full contradiction sweep.
+  Future<List<SemanticFact>> allSlotClaims({int limit = 2000}) async {
+    await _ensureInit();
+    return _store.allSlotClaims(limit: limit);
+  }
+
+  /// Record a correction: [oldId] is superseded by [byId].
+  Future<void> supersedeClaim(int oldId, {required int byId}) async {
+    await _ensureInit();
+    await _store.supersedeClaim(oldId, byId: byId);
+  }
+
+  Future<void> setClaimStatus(int id, ClaimStatus status) async {
+    await _ensureInit();
+    await _store.setClaimStatus(id, status);
+  }
+
+  Future<int> addOpenQuestion(OpenQuestion q) async {
+    await _ensureInit();
+    return _store.addOpenQuestion(q);
+  }
+
+  Future<List<OpenQuestion>> openQuestions({int limit = 50}) async {
+    await _ensureInit();
+    return _store.openQuestions(limit: limit);
+  }
+
+  Future<OpenQuestion?> openQuestionForSlot(
+      String subject, String attribute) async {
+    await _ensureInit();
+    return _store.openQuestionForSlot(subject, attribute);
+  }
+
+  Future<void> resolveOpenQuestion(int id) async {
+    await _ensureInit();
+    await _store.resolveOpenQuestion(id);
+  }
+
   // ── Editing (memory panel) ──────────────────────────────────
 
   Future<void> updateFact(int id,

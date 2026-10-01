@@ -66,7 +66,8 @@ class SqliteEideticStore implements EideticStore {
       // v2: event_log (Phase 1). v3: epistemic-graph columns + tables (Phase 2a).
       // v4: claim_embeddings for meaning-based recall (Phase 2b).
       // v5: identity/attribution columns on semantic_facts (Phase 5).
-      version: 5,
+      // v6: attribute slot column + open_questions table (2.0 Living Memory).
+      version: 6,
       onConfigure: (db) async {
         // Write-Ahead Logging: durable, low-latency appends for the event log.
         //
@@ -120,6 +121,41 @@ class SqliteEideticStore implements EideticStore {
       await db.execute(
           "ALTER TABLE semantic_facts ADD COLUMN holder TEXT NOT NULL DEFAULT 'user'");
     }
+    if (oldVersion < 6) {
+      // Active self-curation (2.0): a slot key + bare value per claim, and a
+      // table of noticed contradictions the agent surfaces and resolves.
+      await db.execute(
+          "ALTER TABLE semantic_facts ADD COLUMN attribute TEXT NOT NULL DEFAULT ''");
+      await db.execute(
+          "ALTER TABLE semantic_facts ADD COLUMN value TEXT NOT NULL DEFAULT ''");
+      // Same slot index fresh installs get in _onCreate, so upgraded devices
+      // don't full-scan on every slot lookup.
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_facts_slot ON semantic_facts(subject, attribute)');
+      await _createOpenQuestionsTable(db);
+    }
+  }
+
+  /// Open questions (2.0): contradictions the agent noticed in its own memory,
+  /// to surface to the user and resolve. Created fresh in [_onCreate] and
+  /// back-filled in [_onUpgrade].
+  Future<void> _createOpenQuestionsTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS open_questions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        subject TEXT NOT NULL,
+        attribute TEXT NOT NULL,
+        claim_ids_json TEXT NOT NULL,
+        question TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'open',
+        created_utc TEXT NOT NULL,
+        resolved_utc TEXT
+      )
+    ''');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_oq_status ON open_questions(status)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_oq_slot ON open_questions(subject, attribute)');
   }
 
   /// Per-claim embedding vectors (Phase 2b), stored as compact little-endian
@@ -226,15 +262,20 @@ class SqliteEideticStore implements EideticStore {
         supersedes INTEGER,
         subject TEXT NOT NULL DEFAULT '',
         subject_type TEXT NOT NULL DEFAULT 'user',
-        holder TEXT NOT NULL DEFAULT 'user'
+        holder TEXT NOT NULL DEFAULT 'user',
+        attribute TEXT NOT NULL DEFAULT '',
+        value TEXT NOT NULL DEFAULT ''
       )
     ''');
     await db.execute(
         'CREATE INDEX idx_facts_category ON semantic_facts(category)');
+    await db.execute(
+        'CREATE INDEX idx_facts_slot ON semantic_facts(subject, attribute)');
 
     await _createEventLog(db);
     await _createGraphTables(db);
     await _createEmbeddingsTable(db);
+    await _createOpenQuestionsTable(db);
   }
 
   @override
@@ -477,6 +518,81 @@ class SqliteEideticStore implements EideticStore {
     return n;
   }
 
+  // ── Active self-curation (2.0) ──────────────────────────────
+
+  @override
+  Future<List<SemanticFact>> claimsForSlot(
+      String subject, String attribute) async {
+    if (subject.trim().isEmpty || attribute.trim().isEmpty) return const [];
+    final rows = await _database.query(
+      'semantic_facts',
+      where: "LOWER(subject) = ? AND LOWER(attribute) = ? AND status = 'active'",
+      whereArgs: [subject.toLowerCase().trim(), attribute.toLowerCase().trim()],
+      orderBy: 'created_utc DESC',
+    );
+    return rows.map(SemanticFact.fromRow).toList();
+  }
+
+  @override
+  Future<List<SemanticFact>> allSlotClaims({int limit = 2000}) async {
+    final rows = await _database.query(
+      'semantic_facts',
+      where: "status = 'active' AND attribute != ''",
+      orderBy: 'created_utc DESC',
+      limit: limit,
+    );
+    return rows.map(SemanticFact.fromRow).toList();
+  }
+
+  @override
+  Future<void> supersedeClaim(int oldId, {required int byId}) async {
+    await _database.update('semantic_facts', {'status': 'superseded'},
+        where: 'id = ?', whereArgs: [oldId]);
+    await _database.update('semantic_facts', {'supersedes': oldId},
+        where: 'id = ?', whereArgs: [byId]);
+  }
+
+  @override
+  Future<void> setClaimStatus(int id, ClaimStatus status) async {
+    await _database.update('semantic_facts', {'status': status.name},
+        where: 'id = ?', whereArgs: [id]);
+  }
+
+  @override
+  Future<int> addOpenQuestion(OpenQuestion q) async =>
+      _database.insert('open_questions', q.toRow());
+
+  @override
+  Future<List<OpenQuestion>> openQuestions({int limit = 50}) async {
+    final rows = await _database.query('open_questions',
+        where: "status = 'open'", orderBy: 'id DESC', limit: limit);
+    return rows.map(OpenQuestion.fromRow).toList();
+  }
+
+  @override
+  Future<OpenQuestion?> openQuestionForSlot(
+      String subject, String attribute) async {
+    final rows = await _database.query('open_questions',
+        where: "status = 'open' AND LOWER(subject) = ? AND LOWER(attribute) = ?",
+        whereArgs: [subject.toLowerCase().trim(), attribute.toLowerCase().trim()],
+        limit: 1);
+    if (rows.isEmpty) return null;
+    return OpenQuestion.fromRow(rows.first);
+  }
+
+  @override
+  Future<void> resolveOpenQuestion(int id) async {
+    await _database.update(
+      'open_questions',
+      {
+        'status': 'resolved',
+        'resolved_utc': DateTime.now().toUtc().toIso8601String(),
+      },
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
   @override
   Future<void> updateFact(int id,
       {String? text, SemanticCategory? category, double? confidence}) async {
@@ -557,6 +673,7 @@ class SqliteEideticStore implements EideticStore {
     await _database.delete('relation_edges');
     await _database.delete('provenance');
     await _database.delete('claim_embeddings');
+    await _database.delete('open_questions');
   }
 
   @override
