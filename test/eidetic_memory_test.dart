@@ -55,6 +55,29 @@ void main() {
       expect(await engine.pendingCount(), 0);
     });
 
+    test('searchEpisodic can exclude consolidated turns', () async {
+      await engine.recordTurn('s1', 'user', 'my girlfriend is Jayden');
+      await engine.recordTurn('s1', 'user', 'I like green tea');
+
+      // Before consolidation both raw turns are recall candidates.
+      expect((await engine.searchEpisodic('girlfriend tea')).length, 2);
+
+      // Fold the Jayden turn into a semantic claim (mark it reviewed).
+      final all = await engine.pendingEpisodic();
+      final jayden = all.firstWhere((e) => e.content.contains('Jayden'));
+      await engine.markConsolidated([jayden.id!]);
+
+      // Default still returns it (verbatim recall available on request)…
+      expect((await engine.searchEpisodic('girlfriend tea')).length, 2);
+
+      // …but excluding consolidated hides the folded turn, so its original
+      // second-person wording can't leak back into recall — the clean claim
+      // represents it instead.
+      final excl = await engine.searchEpisodic('girlfriend tea',
+          includeConsolidated: false);
+      expect(excl.map((e) => e.content).toList(), ['I like green tea']);
+    });
+
     test('rememberFact deduplicates by content', () async {
       final now = DateTime.now().toUtc();
       final first = await engine.rememberFact(SemanticFact(

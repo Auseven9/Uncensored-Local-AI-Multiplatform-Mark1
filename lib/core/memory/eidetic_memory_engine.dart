@@ -166,9 +166,10 @@ class EideticMemoryEngine extends GetxService {
   /// Keyword search over the raw episodic log (all sessions), for the hybrid
   /// recall engine's episodic tier.
   Future<List<EpisodicEntry>> searchEpisodic(String query,
-      {int limit = 20}) async {
+      {int limit = 20, bool includeConsolidated = true}) async {
     await _ensureInit();
-    return _store.searchEpisodic(query, limit: limit);
+    return _store.searchEpisodic(query,
+        limit: limit, includeConsolidated: includeConsolidated);
   }
 
   /// Graph-aware recall that keeps each claim's activation score, for the hybrid

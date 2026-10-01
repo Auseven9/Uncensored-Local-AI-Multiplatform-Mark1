@@ -26,7 +26,13 @@ abstract class EideticStore {
   Future<List<EpisodicEntry>> recentEpisodic({String? sessionId, int limit = 50});
   /// Keyword search across the raw episodic log (all sessions), newest first.
   /// Empty/too-short query falls back to the most recent entries.
-  Future<List<EpisodicEntry>> searchEpisodic(String query, {int limit = 20});
+  ///
+  /// When [includeConsolidated] is false, entries already folded into semantic
+  /// claims are omitted — recall then injects the clean third-person claim
+  /// instead of the raw (often second-person) turn, which keeps the two tiers
+  /// from double-covering the same fact. See `MemoryService.remembering`.
+  Future<List<EpisodicEntry>> searchEpisodic(String query,
+      {int limit = 20, bool includeConsolidated = true});
   Future<List<EpisodicEntry>> pendingEpisodic({int limit = 200});
   Future<int> pendingCount();
   Future<void> markConsolidated(List<int> ids);
@@ -195,9 +201,12 @@ class InMemoryEideticStore implements EideticStore {
 
   @override
   Future<List<EpisodicEntry>> searchEpisodic(String query,
-      {int limit = 20}) async {
+      {int limit = 20, bool includeConsolidated = true}) async {
     final tokens = tokenizeQuery(query);
-    final rows = [..._episodic]..sort((a, b) => b.id!.compareTo(a.id!));
+    final rows = _episodic
+        .where((e) => includeConsolidated || !e.consolidated)
+        .toList()
+      ..sort((a, b) => b.id!.compareTo(a.id!));
     if (tokens.isEmpty) return rows.take(limit).toList();
     final matches = rows.where((e) {
       final t = e.content.toLowerCase();

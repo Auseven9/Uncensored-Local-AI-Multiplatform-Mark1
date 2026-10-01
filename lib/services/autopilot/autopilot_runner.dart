@@ -76,7 +76,6 @@ class AutopilotReport {
 /// test SQLite — proving memory behaviour on the real phone/GPU that CI can't.
 class AutopilotRunner {
   EideticMemoryEngine? _engine;
-  MemoryManager? _manager;
   MemoryService? _memory;
 
   LlmService get _llm => Get.find<LlmService>();
@@ -87,19 +86,23 @@ class AutopilotRunner {
     final path = p.join(dir.path, 'eidetic_autopilot.db');
     final engine = EideticMemoryEngine(store: SqliteEideticStore(path: path));
     await engine.init();
-    // Share the ONE real inference worker (so background work is serialized
-    // with the engine we drive directly). A very high consolidation threshold
-    // disables opportunistic mid-run consolidation — we force it once at the
-    // end instead, which keeps the single native engine out of a concurrent
-    // generate+consolidate that would crash the process.
+    // Share the ONE real inference worker so the harness's work is queued on the
+    // same engine as everything else.
     final manager = MemoryManager(
       memory: engine,
       worker: Get.find<InferenceWorker>(),
-      minEntriesToConsolidate: 100000,
     );
     _engine = engine;
-    _manager = manager;
-    _memory = MemoryService(memory: engine, manager: manager);
+    // autoConsolidate:false is the real serialization guarantee: the service
+    // never fires the unawaited opportunistic consolidation (a background model
+    // pass) after a turn, so nothing runs on the single native engine while the
+    // next turn is generating. The harness instead drives ONE explicit, awaited
+    // consolidation per scenario (consolidateNow). That background race — not a
+    // threshold — was the "generation already in progress" crash the first run
+    // surfaced; each scenario is now a deterministic ingest → consolidate →
+    // assert.
+    _memory = MemoryService(
+        memory: engine, manager: manager, autoConsolidate: false);
   }
 
   AutopilotReport _errorReport(String name, String error) => AutopilotReport(
@@ -131,7 +134,6 @@ class AutopilotRunner {
 
     final engine = _engine!;
     final memory = _memory!;
-    final manager = _manager!;
 
     // Fresh slate in the ISOLATED test DB (never your real memory).
     await engine.clearAll();
@@ -209,7 +211,9 @@ class AutopilotRunner {
       log('⏳ forcing consolidation…');
       final sw = Stopwatch()..start();
       try {
-        final r = await manager.consolidatePending(force: true);
+        // Full production pipeline (extract + reconcile, then best-effort embed
+        // + reflect), forced past the pending-count gate and fully awaited.
+        final r = await memory.consolidateNow();
         log('  ↳ $r');
       } catch (e) {
         log('  ⚠ consolidation error: $e');

@@ -40,12 +40,23 @@ class MemoryCall {
 /// the gated [MemoryManager] pass so long-term memory is not poisoned and the
 /// GPU is not kept hot — consistent with the offline-memory design.
 class MemoryService extends GetxService {
-  MemoryService({EideticMemoryEngine? memory, MemoryManager? manager})
+  MemoryService(
+      {EideticMemoryEngine? memory,
+      MemoryManager? manager,
+      this.autoConsolidate = true})
       : _memory = memory ?? Get.find<EideticMemoryEngine>(),
         _manager = manager ?? Get.find<MemoryManager>();
 
   final EideticMemoryEngine _memory;
   final MemoryManager _manager;
+
+  /// When false, this service never opportunistically consolidates or runs the
+  /// decay sweep on [rememberTurn]; the owner drives consolidation explicitly
+  /// via [consolidateNow]. Production keeps this true. The Autopilot harness
+  /// sets it false so a scenario is a deterministic ingest → force-consolidate
+  /// → assert, with no background model pass racing the next turn's generation
+  /// on the single native engine (the "generation already in progress" crash).
+  final bool autoConsolidate;
 
   /// Reviewable history of recent memory calls (newest first).
   final recentCalls = <MemoryCall>[].obs;
@@ -271,7 +282,15 @@ class MemoryService extends GetxService {
           queryEmbedding: cueVec,
           embedSeedK: embSeedK,
           embedThreshold: embThreshold);
-      episodic = await _memory.searchEpisodic(cue, limit: epiDepth);
+      // Prefer the clean third-person semantic claim over the raw turn once a
+      // fact is consolidated: injecting the verbatim turn as well is redundant
+      // and can leak its original second-person phrasing ("my girlfriend") back
+      // into context. Un-consolidated recent turns still surface. Opt back in
+      // with recall.injectConsolidatedEpisodic for verbatim recall.
+      episodic = await _memory.searchEpisodic(cue,
+          limit: epiDepth,
+          includeConsolidated:
+              _params?.getBool('recall.injectConsolidatedEpisodic') ?? false);
     } catch (e) {
       _record(MemoryCallType.recall, 'query="${_short(query)}" → error: $e');
       lastRecall.value =
@@ -495,19 +514,32 @@ class MemoryService extends GetxService {
     final userEv = await _appendMessageEvent('user', userText);
     await _appendMessageEvent('assistant', aiText,
         parents: userEv == null ? const [] : [userEv]);
-    unawaited(_maybeConsolidate());
-    // Adaptive decay (Phase 3): advance the cadence; sweeps every N turns.
-    _maybeDecay();
+    if (autoConsolidate) {
+      unawaited(maybeConsolidate());
+      // Adaptive decay (Phase 3): advance the cadence; sweeps every N turns.
+      _maybeDecay();
+    }
   }
 
   /// Public opportunistic-consolidation trigger (gated; no-op when idle).
-  Future<void> maybeConsolidate() => _maybeConsolidate();
+  Future<void> maybeConsolidate() async {
+    await _maybeConsolidate();
+  }
 
-  Future<void> _maybeConsolidate() async {
+  /// Force a full consolidation pass now — extraction + reconciliation, then the
+  /// best-effort embed/reflect steps — bypassing the pending-count gate but
+  /// using the exact production pipeline. Awaited end-to-end, so nothing is left
+  /// running on the engine when it returns; the Autopilot harness calls this
+  /// once per scenario instead of relying on opportunistic consolidation.
+  Future<ConsolidationResult> consolidateNow() => _maybeConsolidate(force: true);
+
+  Future<ConsolidationResult> _maybeConsolidate({bool force = false}) async {
     try {
-      if (!await _manager.hasPendingWork()) return;
+      if (!force && !await _manager.hasPendingWork()) {
+        return const ConsolidationResult(ran: false, note: 'no pending work');
+      }
       _status?.begin(PipelinePhase.consolidating, 'curating memories…');
-      final result = await _manager.consolidatePending();
+      final result = await _manager.consolidatePending(force: force);
       if (result.ran) {
         _record(MemoryCallType.consolidate,
             'reviewed ${result.considered} · +${result.promoted} stored · ${result.deduped} dup · ${result.relationsAdded} links');
@@ -571,9 +603,11 @@ class MemoryService extends GetxService {
         }
       }
       _finishStatus();
-    } catch (_) {
+      return result;
+    } catch (e) {
       // Consolidation is best-effort; never surface as a turn failure.
       _finishStatus();
+      return ConsolidationResult(ran: false, note: 'error: $e');
     }
   }
 

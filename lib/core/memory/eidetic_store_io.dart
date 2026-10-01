@@ -308,14 +308,16 @@ class SqliteEideticStore implements EideticStore {
 
   @override
   Future<List<EpisodicEntry>> searchEpisodic(String query,
-      {int limit = 20}) async {
+      {int limit = 20, bool includeConsolidated = true}) async {
     final tokens = tokenizeQuery(query);
     if (tokens.isEmpty) return recentEpisodic(limit: limit);
     final clause = tokens.map((_) => 'LOWER(content) LIKE ?').join(' OR ');
     final args = tokens.map((t) => '%$t%').toList();
+    final where =
+        includeConsolidated ? '($clause)' : '($clause) AND consolidated = 0';
     final rows = await _database.query(
       'episodic_log',
-      where: clause,
+      where: where,
       whereArgs: args,
       orderBy: 'id DESC',
       limit: limit,

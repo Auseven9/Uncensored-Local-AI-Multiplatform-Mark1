@@ -677,7 +677,7 @@ class _SettingsBody extends StatelessWidget {
                     GestureDetector(
                       onLongPress: () => Get.to(() => const AutopilotScreen()),
                       child: Text(
-                        'Uncensored Local AI v2.0.0',
+                        'Uncensored Local AI v2.0.1',
                         style: TextStyle(
                           fontSize: 13,
                           fontWeight: FontWeight.w500,
