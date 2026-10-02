@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.4] - 2026-10-02
+
+### Added / Changed — the dev screen becomes a development TOOL page
+- **Reload models** button in the backend pen-test card: trials offload the
+  model, so this re-arms chat + embedder (`ModelController.reloadModels`) in one
+  tap without leaving the page.
+- **CPU baseline** trial alongside the Vulkan/OpenCL ladder, so the speed proof
+  is apples-to-apples in one place (same 12-token probe methodology).
+- **Organized into labeled sections** — "Hardware & performance" (systems
+  check, backend pen test, apply-best, reload) and "Memory & cognition" (the
+  real-engine scenarios). Intro reframed: the page is the proving ground;
+  pure-logic units stay in CI and aren't re-run here.
+- **NPU: honest status row.** llama.cpp has no NPU backend (CPU/Vulkan/OpenCL
+  only), so there is nothing to measure through the current engine. The row
+  says so plainly and defers the NPU to a separate-runtime socket (LiteRT /
+  QNN / ONNX-QNN), tracked in the idea pad — no faked readings.
+
+### Notes
+- "Proof of a socket" pattern, now explicit: measure a backend on real hardware
+  → record the number → wire the engine to it. The GPU path (pen test →
+  `bestOk` → Settings apply → engine load) is the first complete example; the
+  NPU is the next, as its own native-integration phase.
+
 ## [2.2.3] - 2026-10-02
 
 ### Changed — act on the pen-test measurement (GPU is real, but less is more)

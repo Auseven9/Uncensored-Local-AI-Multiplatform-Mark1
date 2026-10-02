@@ -101,6 +101,20 @@ class _AutopilotScreenState extends State<AutopilotScreen> {
         child: Text(label),
       );
 
+  /// Re-arm the chat model + embedder after a pen-test trial offloaded them —
+  /// so you can get back to chatting (or run more trials) without leaving this
+  /// screen.
+  Future<void> _reloadModels() async {
+    if (_gpuRunning || _running) return;
+    _appendLog('↻ reloading models (chat + embedder)…');
+    try {
+      await Get.find<ModelController>().reloadModels();
+      _appendLog('✓ models reloaded');
+    } catch (e) {
+      _appendLog('✗ reload failed: $e');
+    }
+  }
+
   /// Set the chat engine to the fastest config the pen test actually measured
   /// on this device — the data-driven answer, which on a shared-memory mobile
   /// GPU is often a LOW layer count, not full offload.
@@ -221,36 +235,27 @@ class _AutopilotScreenState extends State<AutopilotScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('On-device self-test',
+                  Text('AETHER dev tool',
                       style: theme.textTheme.titleMedium),
                   const SizedBox(height: 6),
                   Text(
-                    'Runs scripted conversations through the REAL model against '
-                    'an isolated test database (your real memories are never '
-                    'touched), then checks what survived. Load a model first. '
-                    'Each turn is a real generation, so a scenario takes real '
-                    'time (~seconds/turn).',
+                    'The proving ground. Two kinds of proof live here: HARDWARE '
+                    '(which compute backend is fastest and stable on this phone) '
+                    'and MEMORY / COGNITION (scripted conversations through the '
+                    'REAL model against an isolated test DB — your real memories '
+                    'are never touched). Pure-logic units (command bus, belief '
+                    'math, procedural CRUD) are covered by CI on every build, so '
+                    'they are not re-run here. Load a model first; real '
+                    'generations take real time.',
                     style: theme.textTheme.bodySmall,
                   ),
                 ],
               ),
             ),
           ),
-          const SizedBox(height: 12),
-          FilledButton.icon(
-            onPressed: _running ? null : () => _run(_scenarios),
-            icon: _running
-                ? const SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.play_arrow_rounded),
-            label: Text(_running
-                ? 'Running: $_currentName'
-                : 'Run all (${_scenarios.length})'),
-          ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 16),
+          Text('Hardware & performance', style: theme.textTheme.titleMedium),
+          const SizedBox(height: 8),
           Row(
             children: [
               Expanded(
@@ -279,17 +284,19 @@ class _AutopilotScreenState extends State<AutopilotScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('GPU pen test (Vulkan / OpenCL)',
+                  Text('Backend pen test — prove the socket',
                       style: theme.textTheme.titleMedium),
                   const SizedBox(height: 6),
                   Text(
-                    'Tries to get INTO the GPU and actually compute, one config '
-                    'at a time. Each test UNLOADS your model and attempts a '
-                    'throwaway load on the chosen backend + layer count, then '
-                    'runs a few tokens — results go to the log below. If the app '
-                    'vanishes, that config crashed the driver; reopen this screen '
-                    'and the crash is recorded at the top of the log. Start low '
-                    '(×1) and climb. Load a model first.',
+                    'Trial-loads each compute backend and measures REAL '
+                    'tokens/sec — the proof a backend is usable before we wire '
+                    'the engine to it. Each test UNLOADS your model, loads a '
+                    'throwaway engine on the chosen backend + layer count, runs a '
+                    'few tokens, then frees it. If the app vanishes, that config '
+                    'crashed the driver — reopen this screen and the crash is '
+                    'recorded at the top of the log. CPU is the baseline; start '
+                    'GPU low (×1) and climb. Use "Reload models" to re-arm after '
+                    'a run.',
                     style: theme.textTheme.bodySmall,
                   ),
                   const SizedBox(height: 10),
@@ -297,6 +304,7 @@ class _AutopilotScreenState extends State<AutopilotScreen> {
                     spacing: 8,
                     runSpacing: 8,
                     children: [
+                      _gpuBtn('CPU baseline', TrialBackend.cpu, 0),
                       _gpuBtn('Vulkan ×1', TrialBackend.vulkan, 1),
                       _gpuBtn('Vulkan ×8', TrialBackend.vulkan, 8),
                       _gpuBtn('Vulkan ×99', TrialBackend.vulkan, 99),
@@ -315,15 +323,47 @@ class _AutopilotScreenState extends State<AutopilotScreen> {
                         ),
                       ),
                       const SizedBox(width: 8),
-                      OutlinedButton.icon(
-                        onPressed: _gpuRunning
-                            ? null
-                            : () async {
-                                await _gpu.clear();
-                                _appendLog('— GPU pen-test history cleared —');
-                              },
-                        icon: const Icon(Icons.delete_outline, size: 16),
-                        label: const Text('Clear'),
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: (_gpuRunning || _running) ? null : _reloadModels,
+                          icon: const Icon(Icons.refresh_rounded, size: 16),
+                          label: const Text('Reload models'),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: OutlinedButton.icon(
+                      onPressed: _gpuRunning
+                          ? null
+                          : () async {
+                              await _gpu.clear();
+                              _appendLog('— GPU pen-test history cleared —');
+                            },
+                      icon: const Icon(Icons.delete_outline, size: 16),
+                      label: const Text('Clear history'),
+                    ),
+                  ),
+                  const Divider(height: 24),
+                  // NPU — honest status. llama.cpp has no NPU backend, so there
+                  // is nothing to measure here through the current engine.
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(Icons.memory_outlined,
+                          size: 18, color: theme.disabledColor),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'NPU (Hexagon): not reachable through this engine — '
+                          'llama.cpp is CPU/Vulkan/OpenCL only. The NPU needs a '
+                          'separate runtime (LiteRT / QNN / ONNX-QNN); its pen '
+                          'test is a future socket, tracked in the idea pad. No '
+                          'faked readings.',
+                          style: theme.textTheme.bodySmall,
+                        ),
                       ),
                     ],
                   ),
@@ -332,6 +372,24 @@ class _AutopilotScreenState extends State<AutopilotScreen> {
             ),
           ),
           const SizedBox(height: 16),
+
+          // ═══ Memory & cognition ═══
+          Text('Memory & cognition', style: theme.textTheme.titleMedium),
+          const SizedBox(height: 8),
+          FilledButton.icon(
+            onPressed: _running ? null : () => _run(_scenarios),
+            icon: _running
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.play_arrow_rounded),
+            label: Text(_running
+                ? 'Running: $_currentName'
+                : 'Run all (${_scenarios.length})'),
+          ),
+          const SizedBox(height: 10),
 
           // Scenarios
           ..._scenarios.map((s) => Card(

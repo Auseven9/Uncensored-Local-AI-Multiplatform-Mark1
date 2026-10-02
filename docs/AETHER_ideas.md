@@ -9,6 +9,56 @@ spec's roadmap (§5) or captured directions (§5b).
 
 ---
 
+## 2026-10-02 — The dev page is the proving ground; sockets are earned by measurement
+
+**Direction (user):** make the Autopilot/dev screen a real development TOOL page
+— build automated tests for everything, organized nicely; and use it to produce
+PROOF (readings, numbers) that we can touch each compute backend — "proof of a
+socket so we can wire it in for the assistant to actually utilize", chasing
+speed + stability because that unlocks higher phases.
+
+**The pattern, named:** a *socket* is earned, not assumed — measure a capability
+on real hardware, record the number, then wire the runtime to it. The GPU
+socket is the first complete example and the template:
+
+> pen test measures backend×layers → t/s (`GpuPenTest`) → `bestOk` picks the
+> device's fastest → Settings "Apply best measured" / "Apply Recommended"
+> writes it → the chat engine loads with it. Measured → wired → used.
+
+**Dev page layout (v2.2.4):** two kinds of proof, plus a CI note.
+- **Hardware & performance** — systems check, the backend pen test (CPU
+  baseline + Vulkan/OpenCL ladder), apply-best, reload-models (trials offload
+  the model; one tap re-arms without leaving the page).
+- **Memory & cognition** — the real-engine scripted scenarios (need the live
+  model + isolated DB).
+- **Pure-logic units stay in CI** (command bus, belief math, procedural CRUD,
+  dynamics, uncertainty) — fast, deterministic, run every build; not re-run
+  on-device. Working agreement: **every new capability ships with its proof**
+  — a dev-page scenario if it needs the engine, a CI unit test if it's pure.
+
+**NPU — an honest wall, and a real future socket.** The user wants NPU proof
+too. Hard fact: **llama.cpp has no NPU backend** — GGML is CPU/Vulkan/OpenCL
+only, so there is nothing to measure through the current engine, and a faked
+NPU reading would betray the whole measure-don't-guess ethos. The Hexagon NPU
+is reachable only through a *different* runtime: Qualcomm QNN, LiteRT (TFLite)
+with the QNN/Hexagon delegate, ONNX Runtime's QNN execution provider, or
+MLC — all of which are already forked into this account (`litert-lm`,
+`litert`, `litert-lm-native`, `onnxruntime`, `mlc-llm`). So the NPU socket is a
+**separate engine integration**, not a backend flag, and it collides with the
+single-engine rule: it would be an *alternative* engine (a swap) or a *second,
+small* model (a draft model for speculative decoding, or the embedder on the
+NPU while the chat model stays on GPU) — never a second full LLM engine
+resident alongside llama.cpp. Proof-of-socket = a LiteRT/QNN probe that loads a
+tiny model on Hexagon and reports t/s, surfaced on this same dev page next to
+the GPU ladder. Substantial native work; its own phase. For now the page says
+so plainly instead of pretending.
+
+**Why speed is load-bearing:** the higher phases (the multi-step ReAct loop,
+System-2 sub-agents, the live DAG) are impractical at ~1 t/s. Every t/s the
+pen test buys back (vulkan ×1 ≈ 2×; a future NPU draft model could be more)
+directly widens what the agent can afford to do per turn. Speed is not polish
+here — it's the budget the cognition spends.
+
 ## 2026-10-02 — Challenge the backend trace: measure first, then turn the GPU on
 
 **Direction (user):** "We can challenge that gpu backend trace as well. Always

@@ -4,12 +4,17 @@
 /// a trial, `LlmService.runGpuTrial`) and the orchestrator (which records and
 /// persists results, `GpuPenTest`) can share them without a circular import.
 
-/// A GPU backend we attempt to get INTO. CPU is not a "trial" — it always
-/// works; these are the paths that may or may not engage on a given device.
-enum TrialBackend { vulkan, opencl }
+/// A compute backend we trial-load to measure. Vulkan/OpenCL are the GPU paths
+/// that may or may not engage on a given device; CPU is included as an
+/// in-harness baseline so the speed ladder is apples-to-apples in one place.
+enum TrialBackend { vulkan, opencl, cpu }
 
 extension TrialBackendLabel on TrialBackend {
-  String get label => this == TrialBackend.vulkan ? 'vulkan' : 'opencl';
+  String get label => this == TrialBackend.opencl
+      ? 'opencl'
+      : this == TrialBackend.cpu
+          ? 'cpu'
+          : 'vulkan';
 }
 
 /// The raw outcome of a single trial load, as the engine sees it. A hard native
@@ -59,7 +64,7 @@ class GpuTrialResult {
 
   /// A single monospace log/report line.
   String get line {
-    final who = '${backend.label} ×$layers';
+    final who = backend == TrialBackend.cpu ? 'cpu' : '${backend.label} ×$layers';
     switch (status) {
       case GpuTrialStatus.ok:
         return '✓ $who → GPU engaged · ${tps.toStringAsFixed(2)} t/s '
@@ -83,9 +88,11 @@ class GpuTrialResult {
       };
 
   static GpuTrialResult fromMap(Map<String, dynamic> m) => GpuTrialResult(
-        backend: (m['backend'] == 'opencl')
+        backend: m['backend'] == 'opencl'
             ? TrialBackend.opencl
-            : TrialBackend.vulkan,
+            : m['backend'] == 'cpu'
+                ? TrialBackend.cpu
+                : TrialBackend.vulkan,
         layers: (m['layers'] as num?)?.toInt() ?? 0,
         status: GpuTrialStatus.values.firstWhere(
           (s) => s.name == m['status'],
