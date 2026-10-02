@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.5] - 2026-10-02
+
+### Fixed — honest, accurate measurement
+- **Systems-check no longer gives advice we disproved.** The CPU-bound verdict
+  used to say "raise GPU layers to ~99" — measured to be the *slowest* config
+  on this Adreno. It now says start LOW (1 layer), and points to the pen test +
+  "Apply best measured" for the exact fastest config.
+- **Pen test measures steady-state decode, not an all-in 12-token sprint.** The
+  trial now starts its clock AFTER the first token (so prompt-eval / TTFT no
+  longer drags the number down) and averages over more tokens. A 12-token
+  all-in probe understated real sustained speed (its CPU read was ~0.5 t/s vs a
+  real-chat ~1.0); the steady-state number tracks what a long reply actually
+  runs at. (Expect the pen-test figures to read higher than before — that's the
+  more honest number.)
+
+### On-device confirmation (v2.2.4 pen test, two consistent runs)
+- Ladder: vulkan ×1 ≈ 1.95 (best) › opencl ×1 ≈ 1.66 › opencl ×99 ≈ 1.20 ›
+  vulkan ×8 ≈ 0.89 › cpu ≈ 0.49 (probe) › vulkan ×99 ≈ 0.27 (worst). Vulkan
+  collapses with layers; OpenCL degrades gracefully. The measure → apply →
+  reload loop works end to end (Settings shows the applied config).
+
 ## [2.2.4] - 2026-10-02
 
 ### Added / Changed — the dev screen becomes a development TOOL page

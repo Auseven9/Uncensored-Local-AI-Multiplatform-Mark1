@@ -321,8 +321,10 @@ class ModelController extends GetxController {
         b.writeln('available GPUs: ${gpu.join(' | ')}');
         if (!onGpu) {
           b.writeln('⚠ running on CPU while a GPU is available — enable it in '
-              'Settings ▸ Hardware (pick a backend, raise GPU layers to ~99, '
-              'then reload the model) for a likely large speed-up.');
+              'Settings ▸ Hardware, then reload. On a phone GPU, start LOW '
+              '(1 layer): full offload is usually SLOWER here. Run the GPU pen '
+              'test (dev screen) and tap "Apply best measured" for the exact '
+              'fastest config.');
         }
       }
     } catch (e) {

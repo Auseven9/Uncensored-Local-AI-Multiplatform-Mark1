@@ -160,7 +160,7 @@ class LlmService extends GetxService {
     required GpuBackend backend,
     required int gpuLayers,
     int contextSize = 256,
-    int probeTokens = 12,
+    int probeTokens = 24,
   }) async {
     if (isGenerating.value) {
       return const GpuTrialOutcome(ok: false, error: 'engine is busy generating');
@@ -195,22 +195,30 @@ class LlmService extends GetxService {
           source: 'LLM');
       await engine.loadModel(modelPath, modelParams: params);
 
-      // Prove it actually computes — a load can succeed but decode can
-      // crash/stall on a bad driver path.
-      var tokens = 0;
-      sw.start();
-      await for (final _ in engine.generate('Hello').take(probeTokens)) {
-        tokens++;
+      // Prove it computes, and measure STEADY-STATE decode speed: start the
+      // clock AFTER the first token so prompt-eval / time-to-first-token
+      // doesn't drag the number down — that's what a sustained chat actually
+      // runs at (a 12-token all-in probe badly understates it). A story prompt
+      // reliably yields enough tokens to average over.
+      var produced = 0;
+      await for (final _ in engine
+          .generate('Tell me a short story about a robot.')
+          .take(probeTokens)) {
+        produced++;
+        if (produced == 1) {
+          sw.start(); // exclude the first token (carries prompt eval)
+        }
       }
       sw.stop();
+      final decoded = produced > 1 ? produced - 1 : 0;
       final secs = sw.elapsedMilliseconds / 1000.0;
-      final tps = (tokens > 0 && secs > 0) ? tokens / secs : 0.0;
+      final tps = (decoded > 0 && secs > 0) ? decoded / secs : 0.0;
       _log?.info(
-          'GPU trial OK: ${backend.name} @ $gpuLayers → $tokens tok, '
-          '${tps.toStringAsFixed(2)} t/s',
+          'GPU trial OK: ${backend.name} @ $gpuLayers → $decoded decode tok, '
+          '${tps.toStringAsFixed(2)} t/s (steady-state)',
           source: 'LLM');
       return GpuTrialOutcome(
-          ok: true, tps: tps, tokens: tokens, ms: sw.elapsedMilliseconds);
+          ok: true, tps: tps, tokens: decoded, ms: sw.elapsedMilliseconds);
     } catch (e) {
       _log?.error('GPU trial FAILED: ${backend.name} @ $gpuLayers → $e',
           source: 'LLM');
