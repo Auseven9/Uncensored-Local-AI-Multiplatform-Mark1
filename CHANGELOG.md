@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.3] - 2026-10-02
+
+### Changed — act on the pen-test measurement (GPU is real, but less is more)
+- **Device result:** the GPU pen test ran clean — nothing crashed, and OpenCL
+  turned out to be in the build after all (the device probe just doesn't
+  enumerate it). The surprise: on this Adreno, throughput *falls* as GPU layers
+  rise — vulkan ×1 = 2.10 t/s (≈2× the 0.96 CPU baseline), vulkan ×8 = 1.04,
+  vulkan ×99 = 0.28 (3× slower than CPU). Full offload is a desktop-dGPU
+  assumption; on a shared-memory mobile GPU every offloaded layer adds
+  CPU↔GPU overhead.
+- **"Apply best measured config"** button in the pen-test card: sets the chat
+  engine to the fastest config the harness actually measured on THIS device
+  (`GpuPenTest.bestOk`) — no guessing.
+- **"Apply Recommended" (Settings ▸ Hardware) no longer full-offloads.** It now
+  (1) uses your pen-test measured best if you've run one, else (2) enables the
+  GPU at a LOW starting point (1 layer) and points you at the pen test for the
+  exact sweet spot. This replaces the v2.2.1/2.2.2 behaviour that recommended
+  99 layers — which, on this hardware, was the *slowest* possible setting.
+
 ## [2.2.2] - 2026-10-02
 
 ### Added — GPU pen-test harness (dev screen)

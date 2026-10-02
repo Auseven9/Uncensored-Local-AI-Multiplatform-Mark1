@@ -4,6 +4,8 @@ import 'package:get/get.dart';
 
 import '../theme/app_colors.dart';
 import '../core/app_version.dart';
+import '../core/diagnostics/gpu_pentest.dart';
+import '../core/diagnostics/gpu_trial.dart';
 import 'autopilot_screen.dart';
 import '../controllers/chat_controller.dart';
 import '../controllers/theme_controller.dart';
@@ -964,10 +966,11 @@ class _HardwareSettingsCardState extends State<_HardwareSettingsCard> {
       // device and upgrades to OpenCL automatically when the build has it.
       return {
         'backend': 'vulkan',
-        'gpuLayers': 99,
-        'reason': 'GPU recommended for this SoC ($cores cores). '
-            'Tap Apply — it detects the real backend (OpenCL if your build has '
-            'it, else Vulkan) and offloads the whole model.',
+        'gpuLayers': 1,
+        'reason': 'GPU available on this SoC ($cores cores). Tap Apply — it '
+            'uses your GPU pen-test best if you\'ve measured one, else starts '
+            'LOW (full offload is often slower than a few layers on a phone). '
+            'Run the GPU pen test for the exact fastest config.',
       };
     } else if (cores >= 6) {
       // Mid-range device
@@ -1010,11 +1013,42 @@ class _HardwareSettingsCardState extends State<_HardwareSettingsCard> {
   }
 
   Future<void> _applyAutoConfig() async {
-    // Probe-aware: never recommend a backend this device+build doesn't actually
-    // expose (picking one that isn't present silently falls back to CPU — the
-    // old bug this replaces). We ask the engine what GPU backends really exist,
-    // then choose OpenCL > Vulkan > CPU from what's available, offloading the
-    // whole model on a GPU backend.
+    // 1) Prefer the GPU pen test's MEASURED best for this exact device, if it
+    //    has run. This beats any heuristic: on a shared-memory mobile GPU the
+    //    fastest config is often a LOW layer count, not full offload (measured
+    //    on Adreno: vulkan ×1 ≫ vulkan ×99).
+    try {
+      final pt = GpuPenTest(Get.find<LlmService>());
+      await pt.load();
+      final best = pt.bestOk;
+      if (best != null) {
+        final backend = best.backend.label; // 'vulkan' | 'opencl'
+        final layers = best.layers;
+        widget.storage.backendType = backend;
+        widget.storage.gpuLayers = layers;
+        if (!mounted) return;
+        setState(() {
+          _backend = backend;
+          _gpuLayers = layers.toDouble();
+        });
+        Get.snackbar(
+          'Applied measured best',
+          '$backend ×$layers · ${best.tps.toStringAsFixed(2)} t/s '
+              '(from the GPU pen test). Reload the model.',
+          snackPosition: SnackPosition.BOTTOM,
+          duration: const Duration(seconds: 3),
+        );
+        return;
+      }
+    } catch (_) {
+      // Fall through to the heuristic below.
+    }
+
+    // 2) No measurement yet → probe-aware guess. Never recommend a backend the
+    //    build can't expose, and START LOW: full offload is frequently SLOWER
+    //    than a few layers on a shared-memory mobile GPU, so a conservative
+    //    starting point beats "99 layers" until the pen test measures the
+    //    device's real sweet spot.
     List<String> devices = _gpuDevices ?? const [];
     if (_gpuDevices == null) {
       setState(() {
@@ -1032,34 +1066,29 @@ class _HardwareSettingsCardState extends State<_HardwareSettingsCard> {
       }
     }
 
-    final hasOpencl =
-        devices.any((l) => l.toLowerCase().startsWith('opencl'));
     final hasVulkan =
         devices.any((l) => l.toLowerCase().startsWith('vulkan'));
+    final hasOpencl =
+        devices.any((l) => l.toLowerCase().startsWith('opencl'));
+    final hasGpu = hasVulkan || hasOpencl;
 
     final String backend;
     final int layers;
     final String reason;
-    if (hasOpencl) {
-      backend = 'opencl';
-      layers = 99;
-      reason = 'OpenCL GPU detected — Qualcomm compute path, whole model '
-          'offloaded. Reload the model to apply.';
-    } else if (hasVulkan) {
-      backend = 'vulkan';
-      layers = 99;
-      reason = 'Vulkan GPU detected — whole model offloaded. Reload the '
-          'model to apply.';
+    if (hasGpu) {
+      // Prefer Vulkan as the conservative starting backend (broadest support);
+      // the pen test will find whether OpenCL or a higher layer count wins.
+      backend = hasVulkan ? 'vulkan' : 'opencl';
+      layers = 1;
+      reason = '$backend GPU detected — starting LOW (1 layer). Run the GPU '
+          'pen test (dev screen) to find this device\'s fastest config, then '
+          'tap "Apply best measured". Reload the model to apply.';
     } else {
       backend = 'cpu';
       layers = 0;
-      reason = devices.isEmpty
-          ? 'No GPU backend available in this build — staying on CPU.'
-          : 'No usable GPU backend — staying on CPU.';
+      reason = 'No GPU backend available — staying on CPU.';
     }
 
-    // Persist first (safe regardless of widget lifecycle), then update the UI
-    // only if still mounted — this runs after the probe await.
     widget.storage.backendType = backend;
     widget.storage.gpuLayers = layers;
     if (!mounted) return;
@@ -1071,7 +1100,7 @@ class _HardwareSettingsCardState extends State<_HardwareSettingsCard> {
       'Auto Config Applied',
       reason,
       snackPosition: SnackPosition.BOTTOM,
-      duration: const Duration(seconds: 3),
+      duration: const Duration(seconds: 4),
     );
   }
 

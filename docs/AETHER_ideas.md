@@ -76,6 +76,34 @@ the Vulkan path or justifying the OpenCL native-bundle build. Revised order:
 prove none does)** → (3) fix Vulkan offload or build the OpenCL bundle, guided
 by what the pen test shows.
 
+**Update (v2.2.3) — the pen test ran, and it rewrote the plan.** Nothing
+crashed. All five configs loaded and computed, and OpenCL turned out to be IN
+the build (the device probe simply never enumerates it — a probe bug, not a
+missing backend; two of my earlier calls were wrong). The real finding is a
+counter-intuitive throughput curve on this Adreno 750 + Q4_0 (12-token probe):
+
+| config       | t/s  |
+|--------------|------|
+| vulkan ×1    | 2.10 | ← fastest, ~2× the 0.96 CPU baseline
+| opencl ×1    | 1.80 |
+| opencl ×99   | 1.35 |
+| CPU          | 0.96 |
+| vulkan ×8    | 1.04 |
+| vulkan ×99   | 0.28 | ← slowest, 3× worse than CPU
+
+So **more GPU layers = slower** here. Full offload ("99 layers", the desktop-
+dGPU idiom) is the *worst* setting on a shared-memory mobile GPU — every
+offloaded layer adds CPU↔GPU sync/dequant cost that outweighs the compute win.
+Vulkan is fast at low offload but collapses as layers climb; OpenCL is flatter
+but lower-peak. **Measured winner: vulkan ×1.** Consequences shipped v2.2.3:
+"Apply best measured" (data-driven, from `GpuPenTest.bestOk`) and an
+"Apply Recommended" that starts LOW instead of full-offloading. Open question
+to confirm on-device: does vulkan ×1's ~2× hold over a *sustained* real chat
+(longer context, growing KV cache), or is it a short-probe artifact? If the
+peak stays ~2 t/s, the next real lever for speed isn't layer-count tuning — it's
+a faster quant or a properly Adreno-kernelled OpenCL build. Measure, then
+decide.
+
 ## 2026-10-02 — The glass box: a live node graph for the cerebellum
 
 **Direction (user):** visualize the agent's execution as an interactive node

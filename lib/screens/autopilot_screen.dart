@@ -7,6 +7,7 @@ import '../core/diagnostics/gpu_pentest.dart';
 import '../core/diagnostics/gpu_trial.dart';
 import '../models/autopilot_scenario.dart';
 import '../services/autopilot/autopilot_runner.dart';
+import '../services/chat_storage_service.dart';
 import '../services/llm_service.dart';
 
 /// Developer self-test harness UI (reached by long-pressing the version text in
@@ -99,6 +100,24 @@ class _AutopilotScreenState extends State<AutopilotScreen> {
         onPressed: (_gpuRunning || _running) ? null : () => _gpuStage(backend, layers),
         child: Text(label),
       );
+
+  /// Set the chat engine to the fastest config the pen test actually measured
+  /// on this device — the data-driven answer, which on a shared-memory mobile
+  /// GPU is often a LOW layer count, not full offload.
+  void _applyBestGpu() {
+    final best = _gpu.bestOk;
+    if (best == null) {
+      _toast('Run at least one passing GPU trial first');
+      return;
+    }
+    final storage = Get.find<ChatStorageService>();
+    storage.backendType = best.backend.label;
+    storage.gpuLayers = best.layers;
+    _appendLog('✓ applied measured best: ${best.backend.label} ×${best.layers} '
+        '(${best.tps.toStringAsFixed(2)} t/s). Reload the model from the chat '
+        'home to use it.');
+    _toast('Set ${best.backend.label} ×${best.layers} — reload the model');
+  }
 
   void _appendLog(String line) {
     _transcript.add(line); // full record, never truncated
@@ -286,15 +305,27 @@ class _AutopilotScreenState extends State<AutopilotScreen> {
                     ],
                   ),
                   const SizedBox(height: 8),
-                  OutlinedButton.icon(
-                    onPressed: _gpuRunning
-                        ? null
-                        : () async {
-                            await _gpu.clear();
-                            _appendLog('— GPU pen-test history cleared —');
-                          },
-                    icon: const Icon(Icons.delete_outline, size: 16),
-                    label: const Text('Clear GPU history'),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: FilledButton.tonalIcon(
+                          onPressed: _gpuRunning ? null : _applyBestGpu,
+                          icon: const Icon(Icons.check_circle_outline, size: 16),
+                          label: const Text('Apply best measured'),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      OutlinedButton.icon(
+                        onPressed: _gpuRunning
+                            ? null
+                            : () async {
+                                await _gpu.clear();
+                                _appendLog('— GPU pen-test history cleared —');
+                              },
+                        icon: const Icon(Icons.delete_outline, size: 16),
+                        label: const Text('Clear'),
+                      ),
+                    ],
                   ),
                 ],
               ),
