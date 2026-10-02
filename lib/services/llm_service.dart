@@ -9,6 +9,7 @@ import 'wakelock_service.dart';
 import 'chat_storage_service.dart';
 import 'log_service.dart';
 import 'pipeline_status_service.dart';
+import '../core/diagnostics/gpu_trial.dart';
 
 /// Wraps llamadart's LlamaEngine for model loading, generation, and lifecycle.
 class LlmService extends GetxService {
@@ -138,6 +139,95 @@ class LlmService extends GetxService {
   /// Cancel an in-progress model load.
   void cancelLoading() {
     _loadingCancelled = true;
+  }
+
+  /// Trial-load [modelPath] on a specific [backend] + [gpuLayers] to find out
+  /// whether this device can actually get INTO the GPU and compute — WITHOUT
+  /// disturbing the user's saved settings or their resident model's config.
+  ///
+  /// Only one native engine may be resident, so this tears down any loaded
+  /// model first, loads a throwaway engine with a small context, runs a few
+  /// tokens to confirm real compute (a load can succeed while decode crashes),
+  /// measures throughput, then disposes. The caller is left with NO model
+  /// loaded — re-arm to chat again.
+  ///
+  /// Dart-level failures (backend missing, allocation refused) are caught and
+  /// returned as `ok: false`. A hard native crash inside a GPU driver CANNOT be
+  /// caught here — it kills the process — which is why the pen-test harness
+  /// write-ahead-logs each attempt to disk before calling this.
+  Future<GpuTrialOutcome> runGpuTrial({
+    required String modelPath,
+    required GpuBackend backend,
+    required int gpuLayers,
+    int contextSize = 256,
+    int probeTokens = 12,
+  }) async {
+    if (isGenerating.value) {
+      return const GpuTrialOutcome(ok: false, error: 'engine is busy generating');
+    }
+    if (!await File(modelPath).exists()) {
+      return GpuTrialOutcome(ok: false, error: 'model file not found: $modelPath');
+    }
+    // Enforce the single-engine rule: fully release the resident model first.
+    await _fullTeardown();
+    await Future.delayed(const Duration(milliseconds: 300));
+
+    LlamaBackend? backendObj;
+    LlamaEngine? engine;
+    final sw = Stopwatch();
+    try {
+      backendObj = LlamaBackend();
+      engine = LlamaEngine(backendObj);
+      final params = ModelParams(
+        contextSize: contextSize,
+        gpuLayers: gpuLayers,
+        preferredBackend: backend,
+        numberOfThreads: _autoThreads,
+        numberOfThreadsBatch: _autoThreads,
+        flashAttention: FlashAttention.auto,
+        cacheTypeK: KvCacheType.f16,
+        cacheTypeV: KvCacheType.f16,
+        batchSize: 0,
+        microBatchSize: 0,
+      );
+      _log?.info(
+          'GPU trial: ${backend.name} @ $gpuLayers layers (ctx $contextSize) — loading…',
+          source: 'LLM');
+      await engine.loadModel(modelPath, modelParams: params);
+
+      // Prove it actually computes — a load can succeed but decode can
+      // crash/stall on a bad driver path.
+      var tokens = 0;
+      sw.start();
+      await for (final _ in engine.generate('Hello').take(probeTokens)) {
+        tokens++;
+      }
+      sw.stop();
+      final secs = sw.elapsedMilliseconds / 1000.0;
+      final tps = (tokens > 0 && secs > 0) ? tokens / secs : 0.0;
+      _log?.info(
+          'GPU trial OK: ${backend.name} @ $gpuLayers → $tokens tok, '
+          '${tps.toStringAsFixed(2)} t/s',
+          source: 'LLM');
+      return GpuTrialOutcome(
+          ok: true, tps: tps, tokens: tokens, ms: sw.elapsedMilliseconds);
+    } catch (e) {
+      _log?.error('GPU trial FAILED: ${backend.name} @ $gpuLayers → $e',
+          source: 'LLM');
+      return GpuTrialOutcome(ok: false, error: e.toString());
+    } finally {
+      try {
+        await engine?.dispose();
+      } catch (_) {}
+      engine = null;
+      backendObj = null;
+      _engine = null;
+      _backend = null;
+      isLoaded.value = false;
+      loadedModelPath.value = '';
+      activeBackend.value = '';
+      activeGpuLayers.value = 0;
+    }
   }
 
   /// Load a GGUF model from [path] with progress tracking.

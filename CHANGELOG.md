@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.2] - 2026-10-02
+
+### Added — GPU pen-test harness (dev screen)
+- **Confirmed from a device log:** the model has been running **CPU-only**
+  (`compute: CPU → CPU inference`, 0.96 t/s) with a Vulkan Adreno sitting
+  unused — and selecting Vulkan has been *crashing* for several builds, so the
+  GPU has never actually been used. This harness is how we get into it safely.
+- **GPU pen test** in the Autopilot/dev screen: per-config buttons
+  (Vulkan ×1 / ×8 / ×99, OpenCL ×1 / ×99) that try to get INTO the GPU and
+  actually compute. Each trial is fully isolated — it tears down the resident
+  model (single-engine rule), loads a throwaway engine on the chosen backend +
+  GPU-layer count with a tiny context, runs a few tokens to prove real compute,
+  measures t/s, then disposes. The user's saved settings and `lastModelId` are
+  never touched.
+- **Crash attribution via write-ahead breadcrumbs.** A bad GPU driver crashes
+  the whole process — Dart can't catch that. So before every attempt the
+  harness writes a breadcrumb to disk *synchronously*; if the app dies, the
+  next launch reads it and reports exactly which backend + layer count killed
+  it (`💥 vulkan ×99 → CRASHED`). The crash becomes a data point.
+- `LlmService.runGpuTrial()` (the isolated trial loader) + `GpuPenTest`
+  orchestrator + dependency-free `gpu_trial.dart` value types. Results stream
+  into the existing dev-screen log and Copy-log.
+
 ## [2.2.1] - 2026-10-02
 
 ### Fixed — honest GPU diagnostics + a real backend bug

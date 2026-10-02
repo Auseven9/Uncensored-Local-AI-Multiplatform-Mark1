@@ -59,6 +59,23 @@ reload + paste a systems-check so we see real Adreno t/s; (3) only then weigh
 the OpenCL native-bundle build against the measured Vulkan number. Measure,
 don't guess.
 
+**Update (v2.2.2) — measurement is in, and it reframes the problem.** The
+device systems-check confirmed it: `compute: CPU → CPU inference`, 0.96 t/s,
+Vulkan Adreno present but unused. So step (1) did its job — we now *know* it's
+CPU-only, not a slow GPU. But step (2) ("just turn Vulkan on") is blocked:
+the user reports Vulkan has been **crashing the app for several builds**, which
+is why they've stayed on CPU. So the real obstacle isn't *selecting* the GPU —
+it's *getting into it without the process dying*. New lever, shipped v2.2.2: a
+**GPU pen-test harness** in the dev screen that trial-loads the model on
+Vulkan/OpenCL at escalating GPU-layer counts, each attempt isolated and
+**write-ahead-breadcrumbed** so a hard native crash (uncatchable in Dart) is
+attributed to the exact backend+layers on the next launch. That turns the
+crash into a reproducible data point and is the groundwork for either fixing
+the Vulkan path or justifying the OpenCL native-bundle build. Revised order:
+(1) measure ✅ → (2) **pen-test into the GPU, find the config that survives (or
+prove none does)** → (3) fix Vulkan offload or build the OpenCL bundle, guided
+by what the pen test shows.
+
 ## 2026-10-02 — The glass box: a live node graph for the cerebellum
 
 **Direction (user):** visualize the agent's execution as an interactive node

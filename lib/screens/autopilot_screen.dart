@@ -3,8 +3,11 @@ import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 
 import '../controllers/model_controller.dart';
+import '../core/diagnostics/gpu_pentest.dart';
+import '../core/diagnostics/gpu_trial.dart';
 import '../models/autopilot_scenario.dart';
 import '../services/autopilot/autopilot_runner.dart';
+import '../services/llm_service.dart';
 
 /// Developer self-test harness UI (reached by long-pressing the version text in
 /// Settings). Runs scripted scenarios through the REAL engine against an
@@ -28,11 +31,74 @@ class _AutopilotScreenState extends State<AutopilotScreen> {
   String _currentName = '';
   final List<AutopilotReport> _reports = [];
 
+  // GPU pen-test harness — can this device actually get INTO Vulkan / OpenCL?
+  late final GpuPenTest _gpu;
+  bool _gpuRunning = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _gpu = GpuPenTest(Get.find<LlmService>());
+    _loadGpuCrashBreadcrumb();
+  }
+
   @override
   void dispose() {
     _logScroll.dispose();
     super.dispose();
   }
+
+  /// On open, surface any GPU trial that never finished last time — i.e. a
+  /// config that hard-crashed the app. This is the whole point of the
+  /// write-ahead breadcrumb: a crash becomes an attributable data point.
+  Future<void> _loadGpuCrashBreadcrumb() async {
+    String? note;
+    try {
+      note = await _gpu.loadAndReconcile();
+    } catch (_) {
+      note = null;
+    }
+    if (!mounted || note == null) return;
+    _appendLog('⚠ last GPU pen-test did not finish — it crashed the app:');
+    _appendLog('  $note');
+  }
+
+  /// Run one isolated GPU trial. Captures the resident model's path first
+  /// (the trial unloads it), write-ahead-logs the attempt, then reports.
+  Future<void> _gpuStage(TrialBackend backend, int layers) async {
+    if (_gpuRunning || _running) return;
+    final path = Get.find<LlmService>().loadedModelPath.value;
+    if (path.isEmpty) {
+      _toast('Load a model first — the trial reloads it on the GPU');
+      return;
+    }
+    setState(() => _gpuRunning = true);
+    _appendLog('▶ GPU pen-test: ${backend.label} ×$layers — unloading model, '
+        'trying GPU load (may crash if the driver is bad)…');
+    try {
+      final r = await _gpu.runStage(
+        backend: backend,
+        layers: layers,
+        modelPath: path,
+      );
+      _appendLog(r.line);
+      if (r.status == GpuTrialStatus.ok) {
+        _appendLog('  → GPU works here. Set backend=${backend.label}, '
+            'GPU layers=$layers in Settings ▸ Hardware, then reload.');
+      }
+      _appendLog('  (model is now unloaded — re-arm it from the chat home)');
+    } catch (e) {
+      _appendLog('✗ pen-test error: $e');
+    } finally {
+      if (mounted) setState(() => _gpuRunning = false);
+    }
+  }
+
+  Widget _gpuBtn(String label, TrialBackend backend, int layers) =>
+      OutlinedButton(
+        onPressed: (_gpuRunning || _running) ? null : () => _gpuStage(backend, layers),
+        child: Text(label),
+      );
 
   void _appendLog(String line) {
     _transcript.add(line); // full record, never truncated
@@ -184,6 +250,55 @@ class _AutopilotScreenState extends State<AutopilotScreen> {
                 ),
               ),
             ],
+          ),
+          const SizedBox(height: 16),
+
+          // GPU pen test
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('GPU pen test (Vulkan / OpenCL)',
+                      style: theme.textTheme.titleMedium),
+                  const SizedBox(height: 6),
+                  Text(
+                    'Tries to get INTO the GPU and actually compute, one config '
+                    'at a time. Each test UNLOADS your model and attempts a '
+                    'throwaway load on the chosen backend + layer count, then '
+                    'runs a few tokens — results go to the log below. If the app '
+                    'vanishes, that config crashed the driver; reopen this screen '
+                    'and the crash is recorded at the top of the log. Start low '
+                    '(×1) and climb. Load a model first.',
+                    style: theme.textTheme.bodySmall,
+                  ),
+                  const SizedBox(height: 10),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      _gpuBtn('Vulkan ×1', TrialBackend.vulkan, 1),
+                      _gpuBtn('Vulkan ×8', TrialBackend.vulkan, 8),
+                      _gpuBtn('Vulkan ×99', TrialBackend.vulkan, 99),
+                      _gpuBtn('OpenCL ×1', TrialBackend.opencl, 1),
+                      _gpuBtn('OpenCL ×99', TrialBackend.opencl, 99),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  OutlinedButton.icon(
+                    onPressed: _gpuRunning
+                        ? null
+                        : () async {
+                            await _gpu.clear();
+                            _appendLog('— GPU pen-test history cleared —');
+                          },
+                    icon: const Icon(Icons.delete_outline, size: 16),
+                    label: const Text('Clear GPU history'),
+                  ),
+                ],
+              ),
+            ),
           ),
           const SizedBox(height: 16),
 
