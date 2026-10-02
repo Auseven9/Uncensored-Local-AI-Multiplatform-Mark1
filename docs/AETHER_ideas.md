@@ -59,6 +59,40 @@ pen test buys back (vulkan ×1 ≈ 2×; a future NPU draft model could be more)
 directly widens what the agent can afford to do per turn. Speed is not polish
 here — it's the budget the cognition spends.
 
+## 2026-10-02 — GPU verdict: CPU wins. The honest end of the backend chase.
+
+With the probe finally measuring the **real** config (`kv=q8_0, flash=on`,
+steady-state 23-token decode), the device gave a clear, humbling answer:
+
+| config (real cfg, steady-state) | t/s |
+|---|---|
+| **cpu ×0** | **1.75** ← fastest + most stable |
+| vulkan ×1 (first run) | 1.70, degrading 1.70→1.50→1.31→1.18 (thermal) |
+| opencl ×1 | 1.21 |
+
+**For gemma-3-4b Q4_0 on Adreno 750, the GPU does not beat the CPU.** CPU ties
+Vulkan's best single run, and Vulkan *throttles* under back-to-back load while
+CPU holds. CPU also has no shader-compile warm-up, no thermal cliff, and no
+GPU-driver crash risk. `bestOk` / "Apply best measured" now correctly selects
+CPU. The app's original conservative CPU default was right all along.
+
+**What killed the hypothesis:** honest measurement. The whole GPU arc
+(v2.2.1→2.2.6) was driven by "turn on the GPU for a big speed-up" — my idea —
+and the pen test disproved it rather than letting a slower config ship. The GPU
+*socket* is proven (we can touch Vulkan/OpenCL and get real numbers); it just
+isn't *faster* here. Keep the socket for a future model/quant that might benefit;
+stop tuning the backend for this one.
+
+**Revised speed reality + levers (locked):** ceiling ≈ **1.75 t/s on CPU**.
+GPU-backend tuning is a dead end for this workload. The only real speed-ups
+left are (a) a **smaller/faster model or quant**, or (b) the **NPU** (LiteRT/QNN
+— a separate native engine, its own phase). Not the GPU.
+
+**Top of the backlog now (above new features):** the **consolidation OOM**
+(stability) — the one real bug the crash log surfaced. After that, the
+cognition roadmap (agentic phases, the node viewport) proceeds at the honest
+~1.75 t/s budget, with the NPU as the standing bet for a real speed jump.
+
 ## 2026-10-02 — The crash log: Vulkan cold-start, probe≠reality, and consolidation OOM
 
 A crash-surviving device log (real multi-turn chat on vulkan ×1) corrected the
