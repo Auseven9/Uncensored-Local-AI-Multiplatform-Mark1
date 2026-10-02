@@ -59,6 +59,41 @@ pen test buys back (vulkan ×1 ≈ 2×; a future NPU draft model could be more)
 directly widens what the agent can afford to do per turn. Speed is not polish
 here — it's the budget the cognition spends.
 
+## 2026-10-02 — The crash log: Vulkan cold-start, probe≠reality, and consolidation OOM
+
+A crash-surviving device log (real multi-turn chat on vulkan ×1) corrected the
+rosy pen-test picture and exposed the real stability risk. Four findings:
+
+1. **Vulkan shader cold-start.** First generation after a load = ~89s for 48
+   chars; the *next* turn = 3.5s for 59 chars, same prompt length. That cliff is
+   the Adreno Vulkan driver compiling compute shaders on first use — a one-time
+   cost that was landing on the user's first chat message. Fix (v2.2.6): a
+   1-token warm-up in `loadModel` pays it behind the loading screen. Real
+   elimination across loads needs a persistent pipeline cache (a llamadart/ggml
+   feature — future).
+2. **The probe lied because it measured a different config.** `runGpuTrial`
+   hardcoded `flash=auto, kv=f16`; the real chat ran `flash=enabled, kv=q8_0`
+   (the user picked q8_0 KV to save RAM, which forces flash on). So the probe's
+   1.95 t/s was for a config never used. Fixed to read the real settings. Open
+   question worth measuring now: is `q8_0` KV actually slower than `f16` here?
+   The honest probe can answer it (set kv=f16, re-run, compare) — RAM vs speed.
+3. **Warm real-chat speed is ~1 t/s and variable** (turn 2 ~4 t/s, turns 3–4
+   ~1, degrading with context length + thermal) — not the ~2 the old probe
+   implied. The warm-up fixes the first-turn cliff; the sustained number is what
+   it is until a faster quant or the NPU.
+4. **Consolidation is the crash.** A session was OS-killed ~72s into a
+   consolidation generation (no error line = OOM, not a Dart throw) — the long
+   gen on top of the resident 4B + embedder spikes memory. Already capped
+   (maxTokens 512), gated, and **resumable** (items marked consolidated only on
+   success, so the batch survived and the next session recovered it, `+2
+   stored`). Next stability work: shrink consolidation's live memory (smaller
+   effective context / tighter input batch), and a crash-loop guard (back off a
+   batch that keeps killing the app) so a poison batch can't brick startup.
+
+Cross-link: the GPU socket is proven + wired; these are the follow-through on
+making it *stable and honest* in real use. Consolidation OOM is now the top
+stability item above new features.
+
 ## 2026-10-02 — Challenge the backend trace: measure first, then turn the GPU on
 
 **Direction (user):** "We can challenge that gpu backend trace as well. Always

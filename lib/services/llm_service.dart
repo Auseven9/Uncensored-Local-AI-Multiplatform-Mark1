@@ -178,20 +178,54 @@ class LlmService extends GetxService {
     try {
       backendObj = LlamaBackend();
       engine = LlamaEngine(backendObj);
+      // Match the REAL chat's compute config (flash / KV / batch / threads) so
+      // the probe predicts what a sustained chat actually runs at — not an
+      // idealized f16/auto config the user never selects. (A q8_0 KV + flash
+      // path can measure very differently from f16.)
+      final storage = Get.find<ChatStorageService>();
+      FlashAttention parsedFlash;
+      switch (storage.flashAttention) {
+        case 'on':
+          parsedFlash = FlashAttention.enabled;
+          break;
+        case 'off':
+          parsedFlash = FlashAttention.disabled;
+          break;
+        default:
+          parsedFlash = FlashAttention.auto;
+      }
+      KvCacheType parsedKv;
+      switch (storage.kvCacheType) {
+        case 'q8_0':
+          parsedKv = KvCacheType.q8_0;
+          break;
+        case 'q4_0':
+          parsedKv = KvCacheType.q4_0;
+          break;
+        default:
+          parsedKv = KvCacheType.f16;
+      }
+      if (parsedKv != KvCacheType.f16 &&
+          parsedFlash == FlashAttention.disabled) {
+        parsedFlash = FlashAttention.auto; // quantized KV requires flash
+      }
+      final trialThreads =
+          storage.cpuThreads > 0 ? storage.cpuThreads : _autoThreads;
       final params = ModelParams(
         contextSize: contextSize,
         gpuLayers: gpuLayers,
         preferredBackend: backend,
-        numberOfThreads: _autoThreads,
-        numberOfThreadsBatch: _autoThreads,
-        flashAttention: FlashAttention.auto,
-        cacheTypeK: KvCacheType.f16,
-        cacheTypeV: KvCacheType.f16,
-        batchSize: 0,
-        microBatchSize: 0,
+        numberOfThreads: trialThreads,
+        numberOfThreadsBatch: trialThreads,
+        flashAttention: parsedFlash,
+        cacheTypeK: parsedKv,
+        cacheTypeV: parsedKv,
+        batchSize: storage.batchSize,
+        microBatchSize: storage.microBatchSize,
       );
       _log?.info(
-          'GPU trial: ${backend.name} @ $gpuLayers layers (ctx $contextSize) — loading…',
+          'GPU trial: ${backend.name} @ $gpuLayers (ctx $contextSize, '
+          'flash=${parsedFlash.name}, kv=${parsedKv.name}) — loading…',
           source: 'LLM');
       await engine.loadModel(modelPath, modelParams: params);
 
@@ -430,6 +464,30 @@ class LlmService extends GetxService {
       // hardware exists. (backend=cpu or layers=0 ⇒ CPU inference.)
       activeBackend.value = parsedBackend.name;
       activeGpuLayers.value = userGpuLayers;
+
+      // GPU warm-up: the first Vulkan/OpenCL inference after a load compiles the
+      // compute shaders (~tens of seconds on Adreno), which otherwise lands on
+      // the user's FIRST chat message and makes it hang for a minute+. Pay it
+      // here, behind the loading screen, so the first real reply is already
+      // warm. Best-effort and CPU needs none. Safe because every chat turn
+      // rebuilds its full prompt, so this throwaway token can't leak into a
+      // real reply.
+      if (parsedBackend != GpuBackend.cpu) {
+        try {
+          _status?.mark('warming up GPU (first-use shader compile)…');
+          loadingStatusMsg.value = 'Warming up GPU (one-time)…';
+          log?.info('GPU warmup: priming compute pipelines…', source: 'LLM');
+          final warmSw = Stopwatch()..start();
+          await for (final _ in _engine!.generate('Hi').take(1)) {
+            break;
+          }
+          warmSw.stop();
+          log?.info('GPU warmup done in ${warmSw.elapsedMilliseconds}ms',
+              source: 'LLM');
+        } catch (e) {
+          log?.warn('GPU warmup failed (non-fatal): $e', source: 'LLM');
+        }
+      }
 
       // Report the context window actually in effect. When contextSize is 0
       // (auto), llamadart resolves it to the model's trained maximum, so this

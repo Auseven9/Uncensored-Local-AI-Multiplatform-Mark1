@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.6] - 2026-10-02
+
+### Fixed — what the crash log revealed
+- **GPU warm-up on load.** On Vulkan/OpenCL the first inference after a load
+  compiles the compute shaders (~tens of seconds on Adreno), which was landing
+  on the user's FIRST chat message — a real device log showed turn 1 taking
+  ~89s while turn 2 took 3.5s. `loadModel` now runs a 1-token warm-up right
+  after load (behind the "Warming up GPU" screen) so the first real reply is
+  already warm. Best-effort, GPU-only; safe because every chat turn rebuilds
+  its full prompt, so the throwaway token can't leak into a reply.
+- **Pen test now measures the REAL compute config.** `runGpuTrial` was
+  hardcoding `flash=auto, kv=f16`, but the real chat loads with the user's
+  saved `flash`/`kv`/`batch` (the device was on `flash=enabled, kv=q8_0`). So
+  the probe was measuring a config the user never runs — which is why it
+  over-promised. It now reads the same settings as a real load, and the
+  dev-screen log shows the `kv=…, flash=…` it used.
+
+### Known / next (from the same log)
+- **Consolidation is the stability risk.** A prior session was killed mid-
+  consolidation (~72s in, no error line = an OS OOM kill) — the long generation
+  on top of the resident model + embedder spikes memory. No data was lost
+  (items are marked consolidated only on success, so the batch is resumable —
+  the next session recovered it, `+2 stored`). Reducing consolidation's memory
+  footprint + a crash-loop guard is the next stability target.
+
 ## [2.2.5] - 2026-10-02
 
 ### Fixed — honest, accurate measurement

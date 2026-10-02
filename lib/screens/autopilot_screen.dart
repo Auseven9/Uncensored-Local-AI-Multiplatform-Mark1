@@ -74,8 +74,10 @@ class _AutopilotScreenState extends State<AutopilotScreen> {
       return;
     }
     setState(() => _gpuRunning = true);
-    _appendLog('▶ GPU pen-test: ${backend.label} ×$layers — unloading model, '
-        'trying GPU load (may crash if the driver is bad)…');
+    final st = Get.find<ChatStorageService>();
+    _appendLog('▶ GPU pen-test: ${backend.label} ×$layers '
+        '(kv=${st.kvCacheType}, flash=${st.flashAttention}) — unloading model, '
+        'trying load (may crash if the driver is bad)…');
     try {
       final r = await _gpu.runStage(
         backend: backend,
