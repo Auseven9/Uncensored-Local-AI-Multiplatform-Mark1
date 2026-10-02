@@ -957,11 +957,17 @@ class _HardwareSettingsCardState extends State<_HardwareSettingsCard> {
     final cores = Platform.numberOfProcessors;
     
     if (cores >= 8) {
-      // High-end device (e.g. Snapdragon 8 Gen 2+, Dimensity 9000+)
+      // High-end device (e.g. Snapdragon 8 Gen 2+, Dimensity 9000+). Recommend
+      // Vulkan — the GPU backend most builds actually ship — not OpenCL, which
+      // needs a native bundle compiled with the Adreno OpenCL backend and will
+      // silently fall back to CPU if it isn't present. "Apply" probes the real
+      // device and upgrades to OpenCL automatically when the build has it.
       return {
-        'backend': 'opencl',
-        'gpuLayers': 33,
-        'reason': 'OpenCL GPU — best for high-end SoC ($cores cores detected)',
+        'backend': 'vulkan',
+        'gpuLayers': 99,
+        'reason': 'GPU recommended for this SoC ($cores cores). '
+            'Tap Apply — it detects the real backend (OpenCL if your build has '
+            'it, else Vulkan) and offloads the whole model.',
       };
     } else if (cores >= 6) {
       // Mid-range device
@@ -1003,19 +1009,69 @@ class _HardwareSettingsCardState extends State<_HardwareSettingsCard> {
     widget.storage.contextSize = val;
   }
 
-  void _applyAutoConfig() {
-    final config = _detectBestConfig();
+  Future<void> _applyAutoConfig() async {
+    // Probe-aware: never recommend a backend this device+build doesn't actually
+    // expose (picking one that isn't present silently falls back to CPU — the
+    // old bug this replaces). We ask the engine what GPU backends really exist,
+    // then choose OpenCL > Vulkan > CPU from what's available, offloading the
+    // whole model on a GPU backend.
+    List<String> devices = _gpuDevices ?? const [];
+    if (_gpuDevices == null) {
+      setState(() {
+        _gpuProbing = true;
+        _gpuProbeError = null;
+      });
+      try {
+        devices = await Get.find<LlmService>().probeGpuDeviceLines();
+        if (mounted) setState(() => _gpuDevices = devices);
+      } catch (e) {
+        if (mounted) setState(() => _gpuProbeError = e.toString());
+        devices = const [];
+      } finally {
+        if (mounted) setState(() => _gpuProbing = false);
+      }
+    }
+
+    final hasOpencl =
+        devices.any((l) => l.toLowerCase().startsWith('opencl'));
+    final hasVulkan =
+        devices.any((l) => l.toLowerCase().startsWith('vulkan'));
+
+    final String backend;
+    final int layers;
+    final String reason;
+    if (hasOpencl) {
+      backend = 'opencl';
+      layers = 99;
+      reason = 'OpenCL GPU detected — Qualcomm compute path, whole model '
+          'offloaded. Reload the model to apply.';
+    } else if (hasVulkan) {
+      backend = 'vulkan';
+      layers = 99;
+      reason = 'Vulkan GPU detected — whole model offloaded. Reload the '
+          'model to apply.';
+    } else {
+      backend = 'cpu';
+      layers = 0;
+      reason = devices.isEmpty
+          ? 'No GPU backend available in this build — staying on CPU.'
+          : 'No usable GPU backend — staying on CPU.';
+    }
+
+    // Persist first (safe regardless of widget lifecycle), then update the UI
+    // only if still mounted — this runs after the probe await.
+    widget.storage.backendType = backend;
+    widget.storage.gpuLayers = layers;
+    if (!mounted) return;
     setState(() {
-      _backend = config['backend'] as String;
-      _gpuLayers = (config['gpuLayers'] as int).toDouble();
+      _backend = backend;
+      _gpuLayers = layers.toDouble();
     });
-    widget.storage.backendType = _backend;
-    widget.storage.gpuLayers = _gpuLayers.toInt();
     Get.snackbar(
       'Auto Config Applied',
-      config['reason'] as String,
+      reason,
       snackPosition: SnackPosition.BOTTOM,
-      duration: const Duration(seconds: 2),
+      duration: const Duration(seconds: 3),
     );
   }
 

@@ -299,13 +299,34 @@ class ModelController extends GetxController {
         ? 'embedder: (none selected)'
         : 'embedder: $ef  (${embUp ? 'LOADED' : 'not loaded'})');
 
+    // What the resident model is ACTUALLY running on (if one is loaded). This
+    // is the honest answer — distinct from the hardware probe below, which only
+    // says what GPUs exist, not what's in use. A CPU backend or 0 GPU layers
+    // means CPU inference regardless of what hardware is present.
+    final backend = _llm.isLoaded.value
+        ? (_llm.activeBackend.value.isEmpty ? 'cpu' : _llm.activeBackend.value)
+        : _storage.backendType; // fall back to the saved setting when unloaded
+    final layers = _llm.isLoaded.value ? _llm.activeGpuLayers.value : _storage.gpuLayers;
+    final onGpu = backend != 'cpu' && backend.isNotEmpty && layers > 0;
+    b.writeln('compute: ${backend.toUpperCase()}'
+        '${backend == 'cpu' ? '' : ' · $layers GPU layers'}'
+        '${onGpu ? '' : '  → CPU inference'}'
+        '${_llm.isLoaded.value ? '' : '  (saved setting; no model loaded)'}');
+
     try {
       final gpu = await _llm.probeGpuDeviceLines();
-      b.writeln(gpu.isEmpty
-          ? 'backend: CPU only (no GPU offload) — expect ~1 tok/s'
-          : 'backend: ${gpu.join(' | ')}');
+      if (gpu.isEmpty) {
+        b.writeln('available GPUs: none — this device/build is CPU-only');
+      } else {
+        b.writeln('available GPUs: ${gpu.join(' | ')}');
+        if (!onGpu) {
+          b.writeln('⚠ running on CPU while a GPU is available — enable it in '
+              'Settings ▸ Hardware (pick a backend, raise GPU layers to ~99, '
+              'then reload the model) for a likely large speed-up.');
+        }
+      }
     } catch (e) {
-      b.writeln('backend: GPU probe failed ($e)');
+      b.writeln('available GPUs: probe failed ($e)');
     }
     return b.toString().trim();
   }

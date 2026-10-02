@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.1] - 2026-10-02
+
+### Fixed — honest GPU diagnostics + a real backend bug
+- **Systems-check stops lying about the backend.** It used to print the GPU
+  *availability probe* (what hardware exists) under a `backend:` label, which
+  read like "the model is using the GPU" when it may not have been. It now
+  reports `compute:` — the backend **and GPU-layer count the resident model
+  actually loaded with** (tracked in `LlmService.activeBackend/activeGpuLayers`)
+  — separately from `available GPUs:` (the probe), and adds a verdict when the
+  model is running on CPU while a GPU is present. So a pasted systems-check now
+  says definitively whether you're on CPU or the Adreno.
+- **"Apply Recommended" no longer picks a backend the build doesn't have.** The
+  recommender suggested **OpenCL** for any ≥8-core SoC, but OpenCL isn't in the
+  shipped native bundle — so it silently fell back to CPU. It's now
+  **probe-aware**: it asks the engine what backends truly exist and picks
+  OpenCL > Vulkan > CPU from what's present, offloading the whole model. The
+  pre-probe hint recommends Vulkan (not OpenCL) and says Apply auto-detects.
+
+### Notes
+- Default compute is still CPU (`backend_type='cpu'`, `gpu_layers=0`) for
+  device safety — GPU offload is opt-in via Settings ▸ Hardware. The OpenCL
+  Adreno backend is a future native-bundle build (see idea pad); the app's
+  selector/probe/params are already in place for it.
+
 ## [2.2.0] - 2026-10-01
 
 ### Added — going multi-step agentic (first sockets)

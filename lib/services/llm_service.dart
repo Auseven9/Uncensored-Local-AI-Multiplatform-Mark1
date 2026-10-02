@@ -22,6 +22,15 @@ class LlmService extends GetxService {
   final lastGenerationTokens = 0.obs;
   final lastGenerationSpeed = 0.0.obs;
 
+  // ── Active compute config ──────────────────────────────────
+  // The backend + GPU-layer count the CURRENTLY RESIDENT model was actually
+  // loaded with — set on a successful load, cleared on teardown. This is the
+  // honest answer to "what is the model running on right now", as opposed to
+  // probeGpuDeviceLines() which only reports what hardware is AVAILABLE. Empty
+  // backend / 0 layers while loaded means CPU inference.
+  final activeBackend = ''.obs; // 'cpu' | 'vulkan' | 'opencl' | 'auto'
+  final activeGpuLayers = 0.obs;
+
   // ── Loading progress tracking ──────────────────────────────
   final isLoadingModel = false.obs;
   final loadingProgress = 0.0.obs; // 0.0 to 1.0
@@ -317,6 +326,12 @@ class LlmService extends GetxService {
       log?.info('invoking native engine.loadModel() …', source: 'LLM');
       await _engine!.loadModel(path, modelParams: params);
       log?.info('native engine.loadModel() returned OK', source: 'LLM');
+
+      // Record the compute config this resident model actually loaded with, so
+      // the systems check can report what we're RUNNING ON — not just what GPU
+      // hardware exists. (backend=cpu or layers=0 ⇒ CPU inference.)
+      activeBackend.value = parsedBackend.name;
+      activeGpuLayers.value = userGpuLayers;
 
       // Report the context window actually in effect. When contextSize is 0
       // (auto), llamadart resolves it to the model's trained maximum, so this
@@ -772,6 +787,8 @@ class LlmService extends GetxService {
     isLoaded.value = false;
     loadedModelPath.value = '';
     tokensPerSecond.value = 0.0;
+    activeBackend.value = '';
+    activeGpuLayers.value = 0;
   }
 
   /// Unload the current model and free memory.

@@ -9,6 +9,107 @@ spec's roadmap (§5) or captured directions (§5b).
 
 ---
 
+## 2026-10-02 — Challenge the backend trace: measure first, then turn the GPU on
+
+**Direction (user):** "We can challenge that gpu backend trace as well. Always
+optimize."
+
+**What investigation turned up (and a correction I owe):** the systems-check
+`backend:` line was reporting `probeGpuDeviceLines()` — which lists the GPUs
+that *exist*, not the one the model is *using*. So "backend: vulkan · Adreno
+750" never meant the model was on the GPU. Meanwhile the real defaults are
+`backend_type = 'cpu'` and `gpu_layers = 0` (zero layers offloaded = CPU
+inference). Unless the user tapped "Apply Recommended" or hand-set a GPU backend
++ raised the layer slider, **the 4B has very likely been running on the CPU** —
+which is the first-order explanation for ~1 tok/s. My earlier "the GPU is
+engaged, it's just slow Vulkan" claim was therefore probably wrong; the honest
+move is to make the diagnostic report what's *active*, not what's *available*,
+and let the next run settle it with data.
+
+**A real bug found alongside it:** `_detectBestConfig()` recommended **OpenCL**
+for any ≥8-core SoC — but OpenCL isn't in the shipped native build (the probe
+shows no OpenCL device), so "Apply Recommended" was selecting a backend that
+silently falls back to CPU.
+
+**Shipped (v2.2.1), cheap + safe + CI-verifiable:**
+- Systems-check now prints `compute:` (the backend + GPU layers the resident
+  model actually loaded with — tracked in `LlmService.activeBackend/
+  activeGpuLayers`) separately from `available GPUs:` (the probe), plus a
+  verdict when CPU-bound while a GPU exists. The diagnostic stops lying.
+- "Apply Recommended" is now **probe-aware**: it asks the engine what backends
+  truly exist and picks OpenCL > Vulkan > CPU from what's present, offloading
+  the whole model. No more recommending a backend the build lacks.
+
+**The OpenCL native track (the deep lever, not yet pulled).** llamadart ships
+each platform's native library as a **prebuilt bundle** its build hook downloads
+(`hooks.user_defines.llamadart`: a native *tag* / *repository* / *path*, with
+`llamadart_native_backends` selecting the variant). There are no `opencl` /
+`vulkan` strings in the hook because the backend set is baked into the bundle.
+So OpenCL-on-Android means: build an arm64 llama.cpp bundle **with the GGML
+OpenCL (Adreno) backend** in `llamadart-native` (using the forked
+`opencl-icd-loader` + `opencl-headers`), publish it / point the app's native
+user-define at it, and declare `android-arm64: [vulkan, opencl]`. Cross-repo,
+device-verified only — but the entire **consumer** side (backend selector, GPU
+probe, `preferredBackend`/`gpuLayers` params, the layers slider) is already
+built and waiting. On Adreno, OpenCL is frequently 2–3× Vulkan for Q4_0.
+
+**Optimization order (locked):** (1) measure — truthful systems-check ✅;
+(2) turn on the GPU that's already there — Vulkan + full offload, one tap, then
+reload + paste a systems-check so we see real Adreno t/s; (3) only then weigh
+the OpenCL native-bundle build against the measured Vulkan number. Measure,
+don't guess.
+
+## 2026-10-02 — The glass box: a live node graph for the cerebellum
+
+**Direction (user):** visualize the agent's execution as an interactive node
+editor / live DAG — watch payloads traverse nodes and wires as the agent
+reasons and acts, and be able to *sever a wire* to halt a runaway reflex loop.
+Explicit, locked requirement: **"We want to see all active branches."** When
+work fans out, the viewport shows the whole active frontier — not a single
+"primary path."
+
+**Honest grounding against the single-engine constraint (§0.3, §5b).** AETHER
+runs one native LLM engine at ~1 tok/s. That rules out parallel *reasoning*:
+there is no "three model calls at once." The true topology of the agent DAG is
+therefore:
+
+> a **sequential reasoning spine** — one cerebrum (LLM) node active at a time —
+> where each step may **fan out to parallel deterministic tool nodes** (the
+> Command-Bus handlers: recall, get-time, read open-questions — fast Dart, no
+> model) that rejoin before the next reasoning step.
+
+So the genuine parallelism lives in the **cerebellum** (the deterministic tool
+fan-out), not the cerebrum. "Show all active branches" is exactly right, and
+it's the tool fan-out that makes it meaningful: auto-fit the full active
+sub-graph, light-trace every in-flight edge. The viewport must never imply the
+engine is reasoning in parallel — that would sell a lie the hardware can't tell.
+
+**Decisions locked:**
+- **Show all active branches / auto-fit.** The viewport frames the entire
+  active frontier and scales to fit; no hidden branches, no privileged path.
+- **Sever = cancel.** Snipping a wire maps onto the real preemption we already
+  have (InferenceWorker cancel / command cancellation) — a true manual override
+  that stops an in-flight step before it executes, not a cosmetic cut.
+- **It renders a trace; it does not drive.** The viewport is a read-out of an
+  execution trace the agent loop *emits*. The loop (runtime) stays the single
+  source of truth; the graph is a window, never a second controller.
+
+**Honest sequencing.** You cannot visualize a DAG that isn't executing yet. The
+nodes only exist once there are tools (PB) and a loop that runs them (PC). So:
+
+1. **PB** — register the first read-only tools on the Command Bus (the nodes).
+2. **PC** — the gated ReAct loop that runs them, emitting a structured trace
+   (reasoning spine + tool fan-out + per-node status: pending / running / ok /
+   failed / severed). The trace model is the data contract the viewport reads.
+3. **Viewport** — render that trace live: all active branches, payload traces,
+   sever-to-cancel, plus the consolidation trace (Working Memory → Knowledge
+   Graph). Built incrementally with the user's eyes — it's the single largest
+   custom UI in the app and lands piece by piece, not blind in one shot.
+
+Cross-link: spec §4f agentic phase plan (PA landed → PB → PC → PD → PE). The
+viewport is a consumer of the PC trace; file it as the visualization layer that
+rides on top of PC, not a prerequisite for it.
+
 ## 2026-09-30 — Working principle: build from the pad, and make the memory itself adaptive
 
 Set by Dylon: *"we should be implementing from the idea pad on our way up the
