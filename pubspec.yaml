@@ -1,7 +1,7 @@
 name: portable_ai_flutter
 description: "Portable AI — Run uncensored local LLMs natively on any device."
 publish_to: 'none'
-version: 3.0.0-beta+19
+version: 3.1.0-beta+20
 
 environment:
   sdk: ^3.11.4
@@ -47,10 +47,11 @@ dependencies:
   flutter_foreground_task: ^9.2.2    # Foreground service for downloads/inference
   disable_battery_optimization: ^1.1.1 # Guide users to disable battery optimization
 
-  # ── Monitor tab: native live sensor suite (no-permission, reliable) ──
-  sensors_plus: ^6.1.1               # accelerometer + gyroscope (game-rate)
-  battery_plus: ^6.2.1               # battery level + charging state
-  connectivity_plus: ^6.1.0          # online state + transport type
+  # ── Monitor tab ─────────────────────────────────────────────────
+  # The full sensor/telemetry suite streams natively over the Kotlin
+  # `aether/stream` EventChannel (see MainActivity.kt) — no sensor plugins.
+  # Every value is a real hardware reading or an exact derivation of one;
+  # anything unavailable is reported as "no socket", never simulated.
 
 dev_dependencies:
   flutter_test:

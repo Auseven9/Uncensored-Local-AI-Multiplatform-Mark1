@@ -1,42 +1,52 @@
 import 'dart:async';
 import 'dart:io' show Platform;
 
-import 'package:battery_plus/battery_plus.dart';
-import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
-import 'package:sensors_plus/sensors_plus.dart';
 
-/// Shared, fully-native sensor sampler for the Monitor tab. Reads only real
-/// on-device data — nothing is ever simulated. A reading that can't be obtained
-/// is simply absent, and the UI renders it as "no socket".
+/// Shared, fully-native sensor sampler for the Monitor tab.
+///
+/// A single Kotlin [EventChannel] (`aether/stream`) pushes a combined sensor
+/// frame ~60×/second: every motion/orientation/environment sensor sampled at
+/// the fastest rate the hardware allows, plus derived values (magnitudes, jerk,
+/// altitude, fusion states) and per-second system telemetry (CPU, battery,
+/// thermal, network, display, audio). There are no Flutter sensor plugins —
+/// the native layer is the single source of truth.
+///
+/// Every value is a genuine hardware reading or an exact derivation of one.
+/// Anything the device/OS does not expose is simply absent from the frame, so
+/// the UI renders it as "no socket". Nothing is ever simulated.
 ///
 /// For each tile it publishes a formatted display string in [readings], a raw
 /// numeric in [nums] (so cards can draw a meter), and a timestamp in [_stamps]
-/// (so the UI can verify each sensor is actively operating). No runtime
-/// permissions are required for anything here.
+/// (so the UI can verify each sensor is actively operating).
 class SensorService {
   static const double _radToDeg = 57.2957795131;
-  static const MethodChannel _stats = MethodChannel('aether/stats');
+  static const EventChannel _stream = EventChannel('aether/stream');
 
-  final Battery _battery = Battery();
-  final Connectivity _connectivity = Connectivity();
-  final List<StreamSubscription<dynamic>> _subs = <StreamSubscription<dynamic>>[];
+  StreamSubscription<dynamic>? _sub;
+  bool _running = false;
 
   final Map<String, String> _readings = <String, String>{};
   final Map<String, double> _nums = <String, double>{};
   final Map<String, int> _stamps = <String, int>{};
 
-  Timer? _pumpFast;
-  Timer? _pumpSlow;
-  bool _running = false;
-  int? _batLevel;
-  bool? _charging;
+  // Live rotation matrix (9) from the fused rotation vector — drives the 3D
+  // orientation phone. Null until the sensor delivers a frame.
+  final ValueNotifier<List<double>?> rot = ValueNotifier<List<double>?>(null);
 
+  // Rolling histories for the live accel/gyro graph (magnitude, last N).
+  static const int _histLen = 90;
+  final List<double> accelHist = <double>[];
+  final List<double> gyroHist = <double>[];
+
+  // Gauge rings.
   final ValueNotifier<double?> cpuPct = ValueNotifier<double?>(null);
   final ValueNotifier<double?> ramPct = ValueNotifier<double?>(null);
   final ValueNotifier<int?> batteryPct = ValueNotifier<int?>(null);
   final ValueNotifier<int> tick = ValueNotifier<int>(0);
+
+  int coreCount = Platform.numberOfProcessors;
 
   Map<String, String> get readings => _readings;
   double? numOf(String id) => _nums[id];
@@ -51,175 +61,243 @@ class SensorService {
   void start() {
     if (_running) return;
     _running = true;
-
     try {
-      _subs.add(accelerometerEventStream(
-              samplingPeriod: SensorInterval.gameInterval)
-          .listen((e) {
-        _put('ax', '${e.x.toStringAsFixed(2)} m/s²', e.x);
-        _put('ay', '${e.y.toStringAsFixed(2)} m/s²', e.y);
-        _put('az', '${e.z.toStringAsFixed(2)} m/s²', e.z);
-      }, onError: (_) {}));
-    } catch (_) {}
-
-    try {
-      _subs.add(gyroscopeEventStream(samplingPeriod: SensorInterval.gameInterval)
-          .listen((e) {
-        _put('gx', '${(e.x * _radToDeg).toStringAsFixed(1)} °/s', e.x * _radToDeg);
-        _put('gy', '${(e.y * _radToDeg).toStringAsFixed(1)} °/s', e.y * _radToDeg);
-        _put('gz', '${(e.z * _radToDeg).toStringAsFixed(1)} °/s', e.z * _radToDeg);
-      }, onError: (_) {}));
-    } catch (_) {}
-
-    try {
-      _subs.add(_connectivity.onConnectivityChanged
-          .listen(_applyConnectivity, onError: (_) {}));
-      _connectivity.checkConnectivity().then(_applyConnectivity).catchError((_) {});
-    } catch (_) {}
-
-    try {
-      _subs.add(_battery.onBatteryStateChanged.listen((s) {
-        _charging = (s == BatteryState.charging || s == BatteryState.full);
-      }, onError: (_) {}));
-    } catch (_) {}
-
-    _pumpFast = Timer.periodic(const Duration(milliseconds: 40), (_) async {
-      await _pollFast();
-      tick.value = tick.value + 1;
-    });
-    _pumpSlow = Timer.periodic(const Duration(seconds: 1), (_) async {
-      await _pollSlow();
-      try {
-        _batLevel = await _battery.batteryLevel;
-        batteryPct.value = _batLevel;
-      } catch (_) {}
-      if (_batLevel != null) _put('batl', '$_batLevel %', _batLevel!.toDouble());
-      if (_charging != null) _put('batc', _charging! ? 'Yes' : 'No', _charging! ? 1 : 0);
-    });
+      _sub = _stream.receiveBroadcastStream().listen(
+        (dynamic frame) {
+          if (frame is Map) _apply(frame.cast<dynamic, dynamic>());
+          tick.value = tick.value + 1;
+        },
+        onError: (_) {},
+        cancelOnError: false,
+      );
+    } catch (_) {
+      _running = false;
+    }
   }
 
-  Future<void> _pollFast() async {
-    try {
-      final res = await _stats.invokeMethod<Map<dynamic, dynamic>>('readFast');
-      if (res == null) return;
-      final m = res.cast<String, dynamic>();
-      _orientation(m);
-      _environment(m);
-    } catch (_) {}
-  }
+  void _apply(Map<dynamic, dynamic> raw) {
+    final m = <String, dynamic>{};
+    raw.forEach((k, v) => m[k.toString()] = v);
 
-  Future<void> _pollSlow() async {
-    try {
-      final res = await _stats.invokeMethod<Map<dynamic, dynamic>>('read');
-      if (res == null) return;
-      final m = res.cast<String, dynamic>();
+    // ── Motion: accelerometer ──
+    _d2(m['ax'], 'ax', (v) => '${v.toStringAsFixed(3)} m/s²');
+    _d2(m['ay'], 'ay', (v) => '${v.toStringAsFixed(3)} m/s²');
+    _d2(m['az'], 'az', (v) => '${v.toStringAsFixed(3)} m/s²');
+    _d2(m['amag'], 'amag', (v) => '${v.toStringAsFixed(3)} m/s²');
+    _d2(m['jerk'], 'jerk', (v) => '${v.toStringAsFixed(2)} m/s³');
+    _d2(m['lax'], 'lax', (v) => '${v.toStringAsFixed(3)} m/s²');
+    _d2(m['lay'], 'lay', (v) => '${v.toStringAsFixed(3)} m/s²');
+    _d2(m['laz'], 'laz', (v) => '${v.toStringAsFixed(3)} m/s²');
+    _d2(m['lmag'], 'lmag', (v) => '${v.toStringAsFixed(3)} m/s²');
+    _d2(m['grx'], 'grx', (v) => '${v.toStringAsFixed(3)} m/s²');
+    _d2(m['gry'], 'gry', (v) => '${v.toStringAsFixed(3)} m/s²');
+    _d2(m['grz'], 'grz', (v) => '${v.toStringAsFixed(3)} m/s²');
+    _d2(m['incl'], 'incl', (v) => '${v.toStringAsFixed(1)} °');
+    _d2(m['menergy'], 'menergy', (v) => v.toStringAsFixed(2));
 
-      _put('cores', '${Platform.numberOfProcessors}');
+    // ── Motion: gyroscope (native rad/s → °/s) ──
+    _deg(m['gx'], 'gx');
+    _deg(m['gy'], 'gy');
+    _deg(m['gz'], 'gz');
+    _deg(m['gmag'], 'gmag');
 
-      final cpu = _d(m['cpu']);
-      if (cpu != null) {
-        _put('cpuapp', '${cpu.round()} %', cpu);
-        cpuPct.value = cpu;
-      }
+    // ── Magnetometer ──
+    _d2(m['mx'], 'mx', (v) => '${v.toStringAsFixed(1)} µT');
+    _d2(m['my'], 'my', (v) => '${v.toStringAsFixed(1)} µT');
+    _d2(m['mz'], 'mz', (v) => '${v.toStringAsFixed(1)} µT');
+    _d2(m['bmag'], 'bmag', (v) => '${v.toStringAsFixed(1)} µT');
+    _d2(m['dip'], 'dip', (v) => '${v.toStringAsFixed(1)} °');
 
-      final used = _d(m['ramUsedMb']);
-      final total = _d(m['ramTotalMb']);
-      if (used != null && total != null && total > 0) {
-        final pct = used / total * 100.0;
-        _put('ramu', '${(used / 1024).toStringAsFixed(1)} GB', pct);
-        _put('dmem', '${(total / 1024).toStringAsFixed(0)} GB');
-        ramPct.value = pct;
-      }
+    // ── Orientation (fused rotation vector) ──
+    _d2(m['compass'], 'compass', (v) => '${v.toStringAsFixed(1)} °');
+    _s(m['cardinal'], 'cardinal');
+    _d2(m['pitch'], 'pitch', (v) => '${v.toStringAsFixed(1)} °');
+    _d2(m['roll'], 'roll', (v) => '${v.toStringAsFixed(1)} °');
+    _s(m['pose'], 'pose');
+    final r = m['rot'];
+    if (r is List && r.length == 9) {
+      rot.value = r.map((e) => (e as num).toDouble()).toList(growable: false);
+    }
 
-      final thermal = _i(m['thermal']);
-      if (thermal != null) _put('therm', _thermalLabel(thermal), thermal.toDouble());
-
-      final tC = _d(m['batteryTempC']);
-      if (tC != null) _put('batt', '${tC.toStringAsFixed(1)} °C', tC);
-      final mv = _d(m['batteryVoltageMv']);
-      if (mv != null) _put('batv', '${(mv / 1000).toStringAsFixed(2)} V', mv / 1000);
-      final ua = _d(m['batteryCurrentUa']);
-      if (ua != null) _put('batcur', '${(ua / 1000).round()} mA', ua / 1000);
-
-      final freeGb = _d(m['storageFreeGb']);
-      final totGb = _d(m['storageTotalGb']);
-      if (freeGb != null) {
-        final usedPct = (totGb != null && totGb > 0) ? (1 - freeGb / totGb) * 100 : null;
-        _put('storf', '${freeGb.toStringAsFixed(0)} GB', usedPct);
-      }
-
-      final up = _d(m['uptimeMs']);
-      if (up != null) _put('uptime', '${(up / 3600000).toStringAsFixed(1)} h');
-
-      _orientation(m);
-      _environment(m);
-    } catch (_) {}
-  }
-
-  void _orientation(Map<String, dynamic> m) {
-    final c = _d(m['compassDeg']);
-    if (c != null) _put('compass', '${c.round()} °', c);
-    final p = _d(m['pitchDeg']);
-    if (p != null) _put('tiltb', '${p.round()} °', p);
-    final r = _d(m['rollDeg']);
-    if (r != null) _put('tiltg', '${r.round()} °', r);
-  }
-
-  void _environment(Map<String, dynamic> m) {
-    final lux = _d(m['lightLux']);
-    if (lux != null) _put('lux', '${lux.round()} lux', lux);
-    final prox = _d(m['proximityCm']);
+    // ── Environment ──
+    _d2(m['lux'], 'lux', (v) => '${v.toStringAsFixed(0)} lux');
+    _s(m['lightcat'], 'lightcat');
+    final prox = _toD(m['prox']);
     if (prox != null) _put('prox', prox < 5 ? 'near' : 'far', prox < 5 ? 1 : 0);
-    final press = _d(m['pressureHpa']);
-    if (press != null) _put('press', '${press.round()} hPa', press);
+    _d2(m['press'], 'press', (v) => '${v.toStringAsFixed(2)} hPa');
+    _d2(m['alt'], 'alt', (v) => '${v.toStringAsFixed(1)} m');
+    _d2(m['vspeed'], 'vspeed', (v) => '${v.toStringAsFixed(2)} m/s');
+    _d2(m['floors'], 'floors', (v) => v.toStringAsFixed(1));
+    _s(m['ptrend'], 'ptrend');
+    _d2(m['atemp'], 'atemp', (v) => '${v.toStringAsFixed(1)} °C');
+    _d2(m['humid'], 'humid', (v) => '${v.toStringAsFixed(0)} %');
+    _s(m['hall'], 'hall');
+
+    // ── Fusion / inferred ──
+    _s(m['motionstate'], 'motionstate');
+    _int(m['steps'], 'steps', (v) => '$v steps');
+    _int(m['cadence'], 'cadence', (v) => '$v /min');
+    _int(m['shakes'], 'shakes', (v) => '$v');
+    _b(m['freefall'], 'freefall', 'FALLING', 'no');
+    _d2(m['vibhz'], 'vibhz', (v) => '${v.toStringAsFixed(1)} Hz');
+
+    // ── Compute ──
+    final cpu = _toD(m['appcpu']);
+    if (cpu != null) {
+      _put('cpuapp', '${cpu.toStringAsFixed(1)} %', cpu);
+      cpuPct.value = cpu;
+    }
+    final cores = _toI(m['cores']);
+    if (cores != null) {
+      coreCount = cores;
+      _put('cores', '$cores');
+    }
+    final cf = m['corefreq'];
+    if (cf is List) {
+      for (int i = 0; i < cf.length; i++) {
+        final v = cf[i];
+        final mhz = v is num ? v.toInt() : -1;
+        if (mhz >= 0) {
+          final ghz = mhz / 1000.0;
+          _put('core$i', '${ghz.toStringAsFixed(2)} GHz', mhz.toDouble());
+        }
+      }
+    }
+    final used = _toD(m['ramused']);
+    final total = _toD(m['ramtotal']);
+    final avail = _toD(m['ramavail']);
+    if (used != null && total != null && total > 0) {
+      final pct = used / total * 100.0;
+      _put('ramu', '${(used / 1024).toStringAsFixed(2)} GB', pct);
+      ramPct.value = pct;
+    }
+    if (total != null) _put('dmem', '${(total / 1024).toStringAsFixed(1)} GB');
+    if (avail != null) _put('ramfree', '${(avail / 1024).toStringAsFixed(2)} GB', avail);
+    _b(m['lowmem'], 'lowmem', 'LOW', 'ok');
+    _d2(m['apppss'], 'apppss', (v) => '${v.toStringAsFixed(0)} MB');
+    final sf = _toD(m['storfree']);
+    final stt = _toD(m['stortotal']);
+    if (sf != null) {
+      final usedPct = (stt != null && stt > 0) ? (1 - sf / stt) * 100 : null;
+      _put('storf', '${sf.toStringAsFixed(1)} GB free', usedPct ?? 0);
+    }
+    if (stt != null) _put('stort', '${stt.toStringAsFixed(0)} GB');
+    final up = _toD(m['uptime']);
+    if (up != null) _put('uptime', _dur(up));
+
+    // ── Power / thermal ──
+    final bp = _toI(m['batpct']);
+    if (bp != null) {
+      _put('batl', '$bp %', bp.toDouble());
+      batteryPct.value = bp;
+    }
+    _b(m['batcharging'], 'batc', 'charging', 'no');
+    _d2(m['battemp'], 'batt', (v) => '${v.toStringAsFixed(1)} °C');
+    _d2(m['batvolt'], 'batv', (v) => '${v.toStringAsFixed(3)} V');
+    final cur = _toD(m['batcur']);
+    if (cur != null) _put('batcur', '${(cur / 1000).toStringAsFixed(0)} mA', (cur / 1000).abs());
+    final cavg = _toD(m['batcuravg']);
+    if (cavg != null) _put('batcuravg', '${(cavg / 1000).toStringAsFixed(0)} mA', (cavg / 1000).abs());
+    _d2(m['batpower'], 'batpower', (v) => '${v.toStringAsFixed(3)} W');
+    _s(m['bathealth'], 'bathealth');
+    _s(m['battech'], 'battech');
+    _s(m['batplug'], 'batplug');
+    _d2(m['chargecounter'], 'chargecounter', (v) => '${v.toStringAsFixed(0)} mAh');
+    _d2(m['chargetime'], 'chargetime', (v) => '${v.toStringAsFixed(0)} min');
+    _int(m['batcycles'], 'batcycles', (v) => '$v');
+    final therm = _toI(m['thermstatus']);
+    if (therm != null) _put('therm', _thermalLabel(therm), therm.toDouble());
+    _d2(m['thermheadroom'], 'thermhr', (v) => '${(v * 100).toStringAsFixed(0)} %');
+    _d2(m['thermmax'], 'thermmax', (v) => '${v.toStringAsFixed(1)} °C');
+    _d2(m['thermcpu'], 'thermcpu', (v) => '${v.toStringAsFixed(1)} °C');
+    _d2(m['thermbatt'], 'thermbatt', (v) => '${v.toStringAsFixed(1)} °C');
+    _d2(m['thermskin'], 'thermskin', (v) => '${v.toStringAsFixed(1)} °C');
+    _d2(m['thermgpu'], 'thermgpu', (v) => '${v.toStringAsFixed(1)} °C');
+
+    // ── Network ──
+    _b(m['online'], 'online', 'online', 'offline');
+    _s(m['nettype'], 'ntype');
+    _b(m['metered'], 'metered', 'metered', 'unmetered');
+    _b(m['vpn'], 'vpn', 'active', 'off');
+    _int(m['linkdown'], 'linkdown', (v) => '${(v / 1000).toStringAsFixed(0)} Mbps');
+    _int(m['linkup'], 'linkup', (v) => '${(v / 1000).toStringAsFixed(0)} Mbps');
+    _d2(m['downkbs'], 'downkbs', (v) => '${v.toStringAsFixed(1)} KB/s');
+    _d2(m['upkbs'], 'upkbs', (v) => '${v.toStringAsFixed(1)} KB/s');
+    _d2(m['rxmb'], 'rxmb', (v) => '${v.toStringAsFixed(1)} MB');
+    _d2(m['txmb'], 'txmb', (v) => '${v.toStringAsFixed(1)} MB');
+
+    // ── Display / audio ──
+    _d2(m['refresh'], 'refresh', (v) => '${v.toStringAsFixed(0)} Hz');
+    final sw = _toI(m['screenw']);
+    final sh = _toI(m['screenh']);
+    if (sw != null && sh != null) _put('screen', '$sw×$sh');
+    _d2(m['density'], 'density', (v) => '${v.toStringAsFixed(1)}×');
+    _d2(m['volmedia'], 'volmedia', (v) => '${v.toStringAsFixed(0)} %');
+    _d2(m['volring'], 'volring', (v) => '${v.toStringAsFixed(0)} %');
+    _s(m['ringer'], 'ringer');
+    _b(m['musicactive'], 'music', 'playing', 'idle');
+
+    // ── Live graph histories ──
+    final am = _toD(m['amag']);
+    if (am != null) {
+      accelHist.add(am);
+      if (accelHist.length > _histLen) accelHist.removeAt(0);
+    }
+    final gm = _toD(m['gmag']);
+    if (gm != null) {
+      gyroHist.add(gm * _radToDeg);
+      if (gyroHist.length > _histLen) gyroHist.removeAt(0);
+    }
   }
 
-  void _applyConnectivity(dynamic result) {
-    final List<ConnectivityResult> list;
-    if (result is List<ConnectivityResult>) {
-      list = result;
-    } else if (result is ConnectivityResult) {
-      list = <ConnectivityResult>[result];
-    } else {
-      list = const <ConnectivityResult>[];
+  // ── typed put helpers ──
+  void _d2(dynamic v, String id, String Function(double) fmt) {
+    final d = _toD(v);
+    if (d != null) _put(id, fmt(d), d);
+  }
+
+  void _deg(dynamic v, String id) {
+    final d = _toD(v);
+    if (d != null) {
+      final deg = d * _radToDeg;
+      _put(id, '${deg.toStringAsFixed(2)} °/s', deg);
     }
-    final online = list.isNotEmpty && list.any((r) => r != ConnectivityResult.none);
-    _put('online', online ? 'online' : 'offline', online ? 1 : 0);
-    if (list.isNotEmpty) {
-      final t = list.first;
-      _put(
-          'ntype',
-          switch (t) {
-            ConnectivityResult.wifi => 'wifi',
-            ConnectivityResult.mobile => 'cellular',
-            ConnectivityResult.ethernet => 'ethernet',
-            ConnectivityResult.vpn => 'vpn',
-            ConnectivityResult.bluetooth => 'bluetooth',
-            ConnectivityResult.none => 'none',
-            _ => t.name,
-          });
-    }
+  }
+
+  void _int(dynamic v, String id, String Function(int) fmt) {
+    final i = _toI(v);
+    if (i != null) _put(id, fmt(i), i.toDouble());
+  }
+
+  void _s(dynamic v, String id) {
+    if (v is String && v.isNotEmpty) _put(id, v);
+  }
+
+  void _b(dynamic v, String id, String t, String f) {
+    if (v is bool) _put(id, v ? t : f, v ? 1 : 0);
+  }
+
+  String _dur(double ms) {
+    final s = ms / 1000;
+    final h = s ~/ 3600;
+    final mn = (s % 3600) ~/ 60;
+    if (h > 0) return '${h}h ${mn}m';
+    return '${mn}m';
   }
 
   static String _thermalLabel(int s) {
-    const labels = ['NONE', 'LIGHT', 'MODERATE', 'SEVERE', 'CRITICAL', 'EMERGENCY', 'SHUTDOWN'];
-    return (s >= 0 && s < labels.length) ? labels[s] : 'NONE';
+    const labels = ['none', 'light', 'moderate', 'severe', 'critical', 'emergency', 'shutdown'];
+    return (s >= 0 && s < labels.length) ? labels[s] : 'none';
   }
 
-  static double? _d(dynamic v) =>
+  static double? _toD(dynamic v) =>
       v is num ? v.toDouble() : (v is String ? double.tryParse(v) : null);
-  static int? _i(dynamic v) =>
+  static int? _toI(dynamic v) =>
       v is num ? v.toInt() : (v is String ? int.tryParse(v) : null);
 
   void stop() {
-    for (final s in _subs) {
-      s.cancel();
-    }
-    _subs.clear();
-    _pumpFast?.cancel();
-    _pumpFast = null;
-    _pumpSlow?.cancel();
-    _pumpSlow = null;
+    _sub?.cancel();
+    _sub = null;
     _running = false;
   }
 
