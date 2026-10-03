@@ -9,6 +9,7 @@ import '../services/wakelock_service.dart';
 import '../services/log_service.dart';
 import '../services/system_health_monitor.dart';
 import '../services/pipeline_status_service.dart';
+import '../services/sensor_service.dart';
 import '../core/params/parameters_service.dart';
 import '../controllers/chat_controller.dart';
 import '../controllers/model_controller.dart';
@@ -36,6 +37,8 @@ class AppBindings extends Bindings {
     Get.lazyPut(() => SystemHealthMonitor(), fenix: true);
     // Live system telemetry (phases/timer/progress) surfaced in the chat strip.
     Get.put(PipelineStatusService(), permanent: true);
+    // Native live sensor sampler for the Monitor tab.
+    Get.put(SensorService(), permanent: true);
     Get.lazyPut(() => ParametersService(), fenix: true);
 
     // ── Eidetic Dojo engine ──────────────────────────────────────

@@ -3,7 +3,7 @@ name: Build APK (Spanish Translation)
 on:
   workflow_dispatch:
   push:
-    branches: [ main, spanish-translation, traduccion-al-espanol ]
+    branches: [ main, spanish-translation, traduccion-al-espanol, claude/eidetic-local-ai-dojo-shdbx2 ]
 
 # Three independent jobs. `build` always uploads the shipping APK, so a flaky
 # emulator or a failing test never blocks getting an artifact. `test` and

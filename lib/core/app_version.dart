@@ -3,4 +3,4 @@
 /// Referenced by the Settings footer, the Autopilot self-test header, and the
 /// systems-check report, so a version bump is a one-line change here (keep it in
 /// step with `pubspec.yaml`).
-const String kAppVersion = '2.2.6';
+const String kAppVersion = '3.0.0 Beta';

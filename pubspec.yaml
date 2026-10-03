@@ -1,7 +1,7 @@
 name: portable_ai_flutter
 description: "Portable AI — Run uncensored local LLMs natively on any device."
 publish_to: 'none'
-version: 2.2.6+14
+version: 3.0.0-beta+19
 
 environment:
   sdk: ^3.11.4
@@ -46,6 +46,11 @@ dependencies:
   wakelock_plus: ^1.2.10             # Keep screen on during downloads
   flutter_foreground_task: ^9.2.2    # Foreground service for downloads/inference
   disable_battery_optimization: ^1.1.1 # Guide users to disable battery optimization
+
+  # ── Monitor tab: native live sensor suite (no-permission, reliable) ──
+  sensors_plus: ^6.1.1               # accelerometer + gyroscope (game-rate)
+  battery_plus: ^6.2.1               # battery level + charging state
+  connectivity_plus: ^6.1.0          # online state + transport type
 
 dev_dependencies:
   flutter_test:

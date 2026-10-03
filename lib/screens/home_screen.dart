@@ -14,6 +14,7 @@ import '../widgets/typing_indicator.dart';
 import '../widgets/pipeline_status_strip.dart';
 import 'model_library_screen.dart';
 import 'settings_screen.dart';
+import 'monitor_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -356,6 +357,8 @@ class _HomeScreenState extends State<HomeScreen> {
             const ModelLibraryScreen(embedded: true),
             // Tab 2: Settings
             const SettingsScreen(embedded: true),
+            // Tab 3: Monitor
+            const MonitorScreen(),
           ],
         ),
       ),
@@ -396,6 +399,14 @@ class _HomeScreenState extends State<HomeScreen> {
                 color: AppColors.accent,
               ),
               label: 'Settings',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.monitor_heart_outlined, color: context.textM),
+              selectedIcon: const Icon(
+                Icons.monitor_heart_rounded,
+                color: AppColors.accent,
+              ),
+              label: 'Monitor',
             ),
           ],
         ),
