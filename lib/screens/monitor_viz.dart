@@ -1721,3 +1721,174 @@ class EventLamps extends StatelessWidget {
     );
   }
 }
+
+// ════════════════════════ HEARING: MIC VU + WAVEFORM ════════════════════════
+
+/// Live microphone: scrolling waveform (real PCM, downsampled) over a VU meter
+/// (RMS dBFS with a peak-hold tick). Driven only when the mic socket is open.
+class VuWaveform extends StatelessWidget {
+  const VuWaveform({super.key, required this.wave, this.db, this.peak, this.height = 100});
+  final List<double> wave;
+  final double? db, peak;
+  final double height;
+  @override
+  Widget build(BuildContext context) => SizedBox(
+        height: height,
+        width: double.infinity,
+        child: CustomPaint(painter: _VuPainter(List<double>.of(wave), db, peak)),
+      );
+}
+
+class _VuPainter extends CustomPainter {
+  _VuPainter(this.wave, this.db, this.peak);
+  final List<double> wave;
+  final double? db, peak;
+  double _n(double d) => ((d + 60) / 60).clamp(0.0, 1.0).toDouble();
+  @override
+  void paint(Canvas canvas, Size size) {
+    final double waveH = size.height - 26;
+    final double midY = waveH / 2;
+    canvas.drawLine(Offset(0, midY), Offset(size.width, midY),
+        Paint()..color = const Color(0x14FFFFFF)..strokeWidth = 1);
+    if (wave.length >= 2) {
+      final path = Path();
+      for (int i = 0; i < wave.length; i++) {
+        final double x = size.width * i / (wave.length - 1);
+        final double y = midY - wave[i].clamp(-1.0, 1.0).toDouble() * (midY - 2);
+        if (i == 0) {
+          path.moveTo(x, y);
+        } else {
+          path.lineTo(x, y);
+        }
+      }
+      canvas.drawPath(
+          path,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1.5
+            ..strokeJoin = StrokeJoin.round
+            ..color = _green);
+    } else {
+      _tp(canvas, 'tap LIVE to open the mic', Offset(size.width / 2, midY), _textD, size: 11);
+    }
+    final double by = size.height - 9.0;
+    final double bw = size.width;
+    canvas.drawRRect(
+        RRect.fromRectAndRadius(Rect.fromLTWH(0, by - 7, bw, 14), const Radius.circular(7)),
+        Paint()..color = const Color(0x0DFFFFFF));
+    final d = db;
+    if (d != null) {
+      final double f = _n(d);
+      final Color col = d > -6 ? _red : (d > -20 ? _amber : _green);
+      canvas.drawRRect(
+          RRect.fromRectAndRadius(Rect.fromLTWH(0, by - 7, bw * f, 14), const Radius.circular(7)),
+          Paint()..color = col);
+      final p = peak;
+      if (p != null) {
+        final double px = (bw * _n(p)).clamp(0.0, bw).toDouble();
+        canvas.drawLine(Offset(px, by - 9), Offset(px, by + 9), Paint()..color = _red..strokeWidth = 2);
+      }
+      _tp(canvas, '${d.toStringAsFixed(0)} dBFS', Offset(42, by), _text, size: 9.5, w: FontWeight.w700);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_VuPainter old) => true;
+}
+
+// ════════════════════════ LOCATION: GNSS SKY PLOT ════════════════════════
+
+/// One satellite for the sky plot: azimuth/elevation (deg), C/N0 (dB-Hz),
+/// constellation type, and whether used in the fix.
+class SatDot {
+  final double az, el, cn0;
+  final int constType;
+  final bool used;
+  const SatDot(this.az, this.el, this.cn0, this.constType, this.used);
+}
+
+/// Polar sky plot of the live GNSS constellation — zenith at centre, horizon at
+/// the rim, azimuth clockwise from N. Dot colour is real signal strength (C/N0);
+/// filled = used in the position fix, ring = visible but unused.
+class SkyPlot extends StatelessWidget {
+  const SkyPlot({super.key, required this.sats, this.used = 0, this.seen = 0, this.height = 230});
+  final List<SatDot> sats;
+  final int used, seen;
+  final double height;
+  @override
+  Widget build(BuildContext context) => SizedBox(
+        height: height,
+        width: double.infinity,
+        child: CustomPaint(painter: _SkyPainter(sats, used, seen)),
+      );
+}
+
+class _SkyPainter extends CustomPainter {
+  _SkyPainter(this.sats, this.used, this.seen);
+  final List<SatDot> sats;
+  final int used, seen;
+  Color _cn0Color(double c) {
+    if (c >= 35) return _green;
+    if (c >= 25) return _amber;
+    if (c > 0) return _red;
+    return _textD;
+  }
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final c = Offset(size.width / 2, size.height / 2 + 4);
+    final double r = math.min(size.width, size.height) / 2 - 16;
+    final ring = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1
+      ..color = const Color(0x33FFFFFF);
+    for (final frac in const [1.0, 0.6667, 0.3333]) {
+      canvas.drawCircle(c, r * frac, ring);
+    }
+    final axis = Paint()..color = const Color(0x1AFFFFFF)..strokeWidth = 1;
+    canvas.drawLine(Offset(c.dx, c.dy - r), Offset(c.dx, c.dy + r), axis);
+    canvas.drawLine(Offset(c.dx - r, c.dy), Offset(c.dx + r, c.dy), axis);
+    const cardinals = <List<Object>>[
+      [0, 'N'],
+      [90, 'E'],
+      [180, 'S'],
+      [270, 'W'],
+    ];
+    for (final e in cardinals) {
+      final a = _deg2rad((e[0] as int) - 90);
+      final at = Offset(c.dx + math.cos(a) * (r + 9), c.dy + math.sin(a) * (r + 9));
+      _tp(canvas, e[1] as String, at, (e[0] as int) == 0 ? _red : _textM, size: 10, w: FontWeight.w700);
+    }
+    for (final s in sats) {
+      final double rr = ((90 - s.el) / 90).clamp(0.0, 1.0).toDouble() * r;
+      final a = _deg2rad(s.az - 90);
+      final p = Offset(c.dx + math.cos(a) * rr, c.dy + math.sin(a) * rr);
+      final col = _cn0Color(s.cn0);
+      if (s.used) {
+        canvas.drawCircle(p, 4.2, Paint()..color = col);
+        canvas.drawCircle(
+            p,
+            4.2,
+            Paint()
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 1.2
+              ..color = Colors.white.withValues(alpha: 0.8));
+      } else {
+        canvas.drawCircle(
+            p,
+            3.4,
+            Paint()
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 1.4
+              ..color = col);
+      }
+    }
+    _tp(canvas, '$used used · $seen in view', Offset(size.width / 2, 8), _textM, size: 10, w: FontWeight.w700);
+    if (sats.isEmpty) {
+      _tp(canvas, 'acquiring sky… (go near a window)', c, _textD, size: 11);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_SkyPainter old) => true;
+}

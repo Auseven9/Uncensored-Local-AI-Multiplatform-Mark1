@@ -258,6 +258,11 @@ class _MonitorScreenState extends State<MonitorScreen>
   late final AnimationController _pulse;
   final Set<String> _open = <String>{};
 
+  // Live-capability control state (on-demand streams + actuators).
+  bool _micLive = false;
+  bool _torchOn = false;
+  bool _revealGps = false;
+
   @override
   void initState() {
     super.initState();
@@ -271,6 +276,12 @@ class _MonitorScreenState extends State<MonitorScreen>
       _svc = null;
     }
     _svc?.start();
+    // Auto-open location once granted so the sky plot fills without a tap.
+    _svc?.refreshPerms().then((_) {
+      final s = _svc;
+      if (s != null && s.granted(SensorService.pLoc)) s.locStart();
+      if (mounted) setState(() {});
+    });
   }
 
   @override
@@ -726,6 +737,7 @@ class _MonitorScreenState extends State<MonitorScreen>
       detail = '$detail · currently off';
     }
     final permShort = c.perm.isEmpty ? '' : c.perm.split('.').last;
+    final body = _capBody(c, s);
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.fromLTRB(14, 12, 12, 12),
@@ -744,7 +756,7 @@ class _MonitorScreenState extends State<MonitorScreen>
                     style: const TextStyle(fontSize: 13, color: _text, fontWeight: FontWeight.w700)),
               ),
               const SizedBox(width: 8),
-              canEnable ? _enableBtn(c, s) : _statusPill(label, col),
+              canEnable ? _enableBtn(c, s) : (_capControl(c, s) ?? _statusPill(label, col)),
             ],
           ),
           if (detail.isNotEmpty) ...[
@@ -767,10 +779,152 @@ class _MonitorScreenState extends State<MonitorScreen>
                     style: const TextStyle(fontSize: 8.5, color: _textD)),
             ],
           ),
+          if (body != null) ...[const SizedBox(height: 12), body],
         ],
       ),
     );
   }
+
+  // Interactive control for a live capability (null → show the status pill).
+  Widget? _capControl(_Cap c, SensorService s) {
+    switch (c.id) {
+      case 'mic':
+        if (!s.granted(SensorService.pMic)) return null;
+        return _toggle('LIVE', _micLive, () async {
+          if (_micLive) {
+            await s.micStop();
+          } else {
+            await s.micStart();
+          }
+          if (mounted) setState(() => _micLive = !_micLive);
+        });
+      case 'torch':
+        return _toggle(_torchOn ? 'ON' : 'OFF', _torchOn, () async {
+          final ok = await s.torch(!_torchOn);
+          if (mounted) setState(() => _torchOn = ok ? !_torchOn : _torchOn);
+        });
+      case 'haptic':
+        return _tapBtn('BUZZ', _accent, () => s.buzz(30));
+      default:
+        return null;
+    }
+  }
+
+  // The live instrument rendered inside a capability card, when streaming.
+  Widget? _capBody(_Cap c, SensorService s) {
+    switch (c.id) {
+      case 'mic':
+        if (_micLive && (s.micWave.isNotEmpty || s.micDb != null)) {
+          return VuWaveform(wave: s.micWave, db: s.micDb, peak: s.micPeak);
+        }
+        return null;
+      case 'gnss':
+        if (!s.granted(SensorService.pLoc)) return null;
+        return SkyPlot(
+          sats: [for (final x in s.sats) SatDot(x.az, x.el, x.cn0, x.constType.toInt(), x.used)],
+          used: s.satUsed,
+          seen: s.satSeen,
+        );
+      case 'loc':
+        if (!s.granted(SensorService.pLoc)) return null;
+        return _gpsTiles(s);
+      default:
+        return null;
+    }
+  }
+
+  Widget _gpsTiles(SensorService s) {
+    final lat = s.numOf('lat');
+    final lon = s.numOf('lon');
+    String coord(double? v) {
+      if (v == null) return '—';
+      return _revealGps ? v.toStringAsFixed(5) : '${v.toStringAsFixed(2)}•••';
+    }
+
+    final tiles = <List<String>>[
+      ['Lat', coord(lat)],
+      ['Lon', coord(lon)],
+      ['Alt', s.readings['gpsAlt'] ?? '—'],
+      ['Speed', s.readings['gpsSpeed'] ?? '—'],
+      ['Bearing', s.readings['gpsBearing'] ?? '—'],
+      ['Accuracy', s.readings['gpsAcc'] ?? '—'],
+      ['Sats', '${s.satUsed}/${s.satSeen}'],
+      ['Source', s.readings['gpsProvider'] ?? '—'],
+    ];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        LayoutBuilder(builder: (context, cc) {
+          final w = (cc.maxWidth - 8) / 2;
+          return Wrap(spacing: 8, runSpacing: 8, children: [
+            for (final t in tiles)
+              SizedBox(
+                width: w,
+                child: Container(
+                  padding: const EdgeInsets.fromLTRB(10, 7, 10, 8),
+                  decoration: BoxDecoration(
+                    color: _sub,
+                    borderRadius: BorderRadius.circular(9),
+                    border: Border.all(color: _border),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(t[0], style: const TextStyle(fontSize: 9.5, color: _textM)),
+                      const SizedBox(height: 2),
+                      Text(t[1],
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 13, color: _text, fontWeight: FontWeight.w700)),
+                    ],
+                  ),
+                ),
+              ),
+          ]);
+        }),
+        const SizedBox(height: 8),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: _tapBtn(_revealGps ? 'HIDE COORDS' : 'REVEAL COORDS', _textM,
+              () => setState(() => _revealGps = !_revealGps)),
+        ),
+      ],
+    );
+  }
+
+  Widget _toggle(String label, bool on, VoidCallback onTap) => GestureDetector(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+          decoration: BoxDecoration(
+            color: Color.alphaBlend((on ? _green : _textM).withValues(alpha: on ? 0.18 : 0.10), _panel),
+            borderRadius: BorderRadius.circular(7),
+            border: Border.all(color: (on ? _green : _textM).withValues(alpha: 0.5)),
+          ),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            Icon(on ? Icons.radio_button_checked : Icons.radio_button_unchecked,
+                size: 11, color: on ? _green : _textM),
+            const SizedBox(width: 4),
+            Text(label,
+                style: TextStyle(
+                    fontSize: 9, color: on ? _green : _textM, fontWeight: FontWeight.w700, letterSpacing: 0.3)),
+          ]),
+        ),
+      );
+
+  Widget _tapBtn(String label, Color col, VoidCallback onTap) => GestureDetector(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+          decoration: BoxDecoration(
+            color: Color.alphaBlend(col.withValues(alpha: 0.14), _panel),
+            borderRadius: BorderRadius.circular(7),
+            border: Border.all(color: col.withValues(alpha: 0.5)),
+          ),
+          child: Text(label,
+              style: TextStyle(fontSize: 9, color: col, fontWeight: FontWeight.w700, letterSpacing: 0.3)),
+        ),
+      );
 
   Widget _statusPill(String label, Color col) => Container(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
@@ -789,6 +943,7 @@ class _MonitorScreenState extends State<MonitorScreen>
   Widget _enableBtn(_Cap c, SensorService s) => GestureDetector(
         onTap: () async {
           final ok = await s.requestPerm(c.perm);
+          if (ok && c.perm == SensorService.pLoc) await s.locStart();
           if (!mounted) return;
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
             content: Text(ok ? '${c.title}: socket captured' : '${c.title}: permission denied'),

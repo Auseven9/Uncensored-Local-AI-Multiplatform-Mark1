@@ -1,5 +1,6 @@
 package com.portableai.portable_ai_flutter
 
+import android.annotation.SuppressLint
 import android.app.ActivityManager
 import android.bluetooth.BluetoothManager
 import android.content.Context
@@ -19,9 +20,16 @@ import android.hardware.TriggerEventListener
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CameraMetadata
+import android.location.GnssStatus
+import android.location.Location
+import android.location.LocationListener
 import android.location.LocationManager
 import android.media.AudioDeviceInfo
+import android.media.AudioFormat
 import android.media.AudioManager
+import android.media.AudioRecord
+import android.media.MediaRecorder
+import android.os.VibrationEffect
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.TrafficStats
@@ -49,6 +57,8 @@ import java.io.RandomAccessFile
 import kotlin.math.abs
 import kotlin.math.acos
 import kotlin.math.atan2
+import kotlin.math.log10
+import kotlin.math.max
 import kotlin.math.sqrt
 
 /// Native sensor + telemetry hub. Registers every available sensor at the
@@ -95,6 +105,33 @@ class MainActivity : FlutterActivity(), SensorEventListener {
             // one-shot trigger sensors must be re-armed after each fire
             try { smSensor?.let { sm?.requestTriggerSensor(this, it) } } catch (_: Exception) {}
         }
+    }
+
+    // ── live control-channel streams (aether/ctl): mic · location/GNSS · torch · haptics ──
+    @Volatile private var micRunning = false
+    private var audioRecord: AudioRecord? = null
+    private var micThread: Thread? = null
+    @Volatile private var micDb = -120.0
+    @Volatile private var micPeak = -120.0
+    @Volatile private var micWave: FloatArray? = null
+
+    private var locRunning = false
+    private var lastFix: Location? = null
+    private var gnssCb: GnssStatus.Callback? = null
+    @Volatile private var satUsed = 0
+    @Volatile private var satSeen = 0
+    // per satellite: [azimuthDeg, elevationDeg, cn0DbHz, constellationType, usedInFix(0/1)]
+    @Volatile private var satArr: ArrayList<FloatArray>? = null
+
+    private var torchOn = false
+    private var torchCamId: String? = null
+
+    private val locListener = object : LocationListener {
+        override fun onLocationChanged(loc: Location) { lastFix = loc }
+        override fun onProviderEnabled(provider: String) {}
+        override fun onProviderDisabled(provider: String) {}
+        @Deprecated("deprecated in API 29")
+        override fun onStatusChanged(provider: String?, status: Int, extras: android.os.Bundle?) {}
     }
 
     // ── sensor health: name/liveness/accuracy per type ──
@@ -160,6 +197,8 @@ class MainActivity : FlutterActivity(), SensorEventListener {
                     handler.removeCallbacks(emitter)
                     try { sm?.unregisterListener(this@MainActivity) } catch (_: Exception) {}
                     try { smSensor?.let { sm?.cancelTriggerSensor(smTrigger, it) } } catch (_: Exception) {}
+                    stopMic()
+                    stopLoc()
                     sink = null
                 }
             })
@@ -212,6 +251,18 @@ class MainActivity : FlutterActivity(), SensorEventListener {
                                 true
                             } catch (_: Exception) { false })
                     }
+                    else -> result.notImplemented()
+                }
+            }
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "aether/ctl")
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "micStart" -> result.success(startMic())
+                    "micStop" -> { stopMic(); result.success(true) }
+                    "locStart" -> result.success(startLoc())
+                    "locStop" -> { stopLoc(); result.success(true) }
+                    "torch" -> result.success(setTorch(call.argument<Boolean>("on") ?: false))
+                    "buzz" -> { buzz(call.argument<Int>("ms") ?: 20); result.success(true) }
                     else -> result.notImplemented()
                 }
             }
@@ -463,6 +514,27 @@ class MainActivity : FlutterActivity(), SensorEventListener {
             ev[label] = listOf(eventArmed[label] ?: false, eventCount[label] ?: 0, age)
         }
         f["events"] = ev
+
+        // live control-channel streams (only when running / fixed — never faked)
+        if (micRunning) {
+            f["micDb"] = micDb
+            f["micPeak"] = micPeak
+            micWave?.let { w -> f["micWave"] = w.map { s -> s.toDouble() } }
+        }
+        lastFix?.let { loc ->
+            f["lat"] = loc.latitude
+            f["lon"] = loc.longitude
+            if (loc.hasAltitude()) f["gpsAlt"] = loc.altitude
+            if (loc.hasSpeed()) f["gpsSpeed"] = loc.speed.toDouble()
+            if (loc.hasBearing()) f["gpsBearing"] = loc.bearing.toDouble()
+            if (loc.hasAccuracy()) f["gpsAcc"] = loc.accuracy.toDouble()
+            f["gpsProvider"] = loc.provider ?: ""
+        }
+        if (locRunning) {
+            f["satUsed"] = satUsed
+            f["satSeen"] = satSeen
+            satArr?.let { arr -> f["sats"] = arr.map { s -> s.map { v -> v.toDouble() } } }
+        }
 
         // fusion
         f["steps"] = stepCount
@@ -775,6 +847,157 @@ class MainActivity : FlutterActivity(), SensorEventListener {
 
     private fun feat(f: String): Boolean =
         try { packageManager.hasSystemFeature(f) } catch (_: Exception) { false }
+
+    // ── live control-channel implementations ──
+    @SuppressLint("MissingPermission")
+    private fun startMic(): Boolean {
+        if (micRunning) return true
+        if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO)
+            != PackageManager.PERMISSION_GRANTED) return false
+        try {
+            val rate = 48000
+            val minBuf = AudioRecord.getMinBufferSize(rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+            if (minBuf <= 0) return false
+            val ar = AudioRecord(MediaRecorder.AudioSource.MIC, rate,
+                AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, max(minBuf, rate / 5))
+            if (ar.state != AudioRecord.STATE_INITIALIZED) { ar.release(); return false }
+            audioRecord = ar
+            micRunning = true
+            ar.startRecording()
+            val t = Thread {
+                val data = ShortArray(1024)
+                while (micRunning) {
+                    val n = try { ar.read(data, 0, data.size) } catch (_: Exception) { -1 }
+                    if (n <= 0) continue
+                    var sumSq = 0.0
+                    var peak = 0
+                    for (i in 0 until n) {
+                        val v = data[i].toInt()
+                        sumSq += (v.toDouble() * v)
+                        val a = abs(v)
+                        if (a > peak) peak = a
+                    }
+                    val rms = sqrt(sumSq / n)
+                    micDb = if (rms > 0) (20.0 * log10(rms / 32768.0)).coerceIn(-120.0, 0.0) else -120.0
+                    micPeak = if (peak > 0) (20.0 * log10(peak / 32768.0)).coerceIn(-120.0, 0.0) else -120.0
+                    val pts = 64
+                    val wave = FloatArray(pts)
+                    val step = max(1, n / pts)
+                    var wi = 0; var i = 0
+                    while (wi < pts && i < n) { wave[wi] = data[i].toInt() / 32768.0f; wi++; i += step }
+                    micWave = wave
+                }
+            }
+            micThread = t
+            t.isDaemon = true
+            t.start()
+            return true
+        } catch (_: Exception) {
+            micRunning = false
+            try { audioRecord?.release() } catch (_: Exception) {}
+            audioRecord = null
+            return false
+        }
+    }
+
+    private fun stopMic() {
+        micRunning = false
+        try { micThread?.join(200) } catch (_: Exception) {}
+        micThread = null
+        try { audioRecord?.stop() } catch (_: Exception) {}
+        try { audioRecord?.release() } catch (_: Exception) {}
+        audioRecord = null
+        micWave = null
+        micDb = -120.0; micPeak = -120.0
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startLoc(): Boolean {
+        if (locRunning) return true
+        if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_FINE_LOCATION)
+            != PackageManager.PERMISSION_GRANTED) return false
+        try {
+            val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+            try {
+                lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, locListener, Looper.getMainLooper())
+            } catch (_: Exception) {}
+            try {
+                lastFix = lm.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+                    ?: lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
+            } catch (_: Exception) {}
+            if (Build.VERSION.SDK_INT >= 24) {
+                val cb = object : GnssStatus.Callback() {
+                    override fun onSatelliteStatusChanged(status: GnssStatus) {
+                        try {
+                            val n = status.satelliteCount
+                            var used = 0
+                            val arr = ArrayList<FloatArray>(n)
+                            for (i in 0 until n) {
+                                val u = if (status.usedInFix(i)) 1f else 0f
+                                if (u > 0f) used++
+                                arr.add(floatArrayOf(
+                                    status.getAzimuthDegrees(i),
+                                    status.getElevationDegrees(i),
+                                    status.getCn0DbHz(i),
+                                    status.getConstellationType(i).toFloat(),
+                                    u))
+                            }
+                            satSeen = n; satUsed = used; satArr = arr
+                        } catch (_: Exception) {}
+                    }
+                }
+                gnssCb = cb
+                try { lm.registerGnssStatusCallback(cb, handler) } catch (_: Exception) {}
+            }
+            locRunning = true
+            return true
+        } catch (_: Exception) { return false }
+    }
+
+    private fun stopLoc() {
+        locRunning = false
+        try {
+            val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+            try { lm.removeUpdates(locListener) } catch (_: Exception) {}
+            if (Build.VERSION.SDK_INT >= 24) gnssCb?.let { cb ->
+                try { lm.unregisterGnssStatusCallback(cb) } catch (_: Exception) {}
+            }
+        } catch (_: Exception) {}
+        gnssCb = null
+        satArr = null; satSeen = 0; satUsed = 0
+    }
+
+    private fun setTorch(on: Boolean): Boolean {
+        try {
+            val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            if (torchCamId == null) {
+                for (id in cm.cameraIdList) {
+                    val c = cm.getCameraCharacteristics(id)
+                    val has = c.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+                    if (has) {
+                        torchCamId = id
+                        if (c.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK) break
+                    }
+                }
+            }
+            val id = torchCamId ?: return false
+            cm.setTorchMode(id, on)
+            torchOn = on
+            return true
+        } catch (_: Exception) { return false }
+    }
+
+    private fun buzz(ms: Int) {
+        try {
+            val v = getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+            val dur = ms.toLong().coerceIn(1L, 1000L)
+            if (Build.VERSION.SDK_INT >= 26) {
+                v.vibrate(VibrationEffect.createOneShot(dur, VibrationEffect.DEFAULT_AMPLITUDE))
+            } else {
+                @Suppress("DEPRECATION") v.vibrate(dur)
+            }
+        } catch (_: Exception) {}
+    }
 
     // Flat presence/feature probe — the single source of truth the Dart
     // capability registry reads to decide each card's state. Facts only; the
@@ -1120,6 +1343,9 @@ class MainActivity : FlutterActivity(), SensorEventListener {
     override fun onDestroy() {
         try { sm?.unregisterListener(this) } catch (_: Exception) {}
         try { smSensor?.let { sm?.cancelTriggerSensor(smTrigger, it) } } catch (_: Exception) {}
+        stopMic()
+        stopLoc()
+        try { setTorch(false) } catch (_: Exception) {}
         handler.removeCallbacks(emitter)
         super.onDestroy()
     }

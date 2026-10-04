@@ -105,6 +105,35 @@ class EventInfo {
   bool get firedRecently => ageMs >= 0 && ageMs < 700;
 }
 
+/// One GNSS satellite from the live sky, for the sky-plot. azimuth/elevation in
+/// degrees, C/N0 in dB-Hz (signal strength), constellation type, and whether it
+/// is currently used in the position fix. All real, from GnssStatus.
+class Sat {
+  final double az, el, cn0, constType;
+  final bool used;
+  const Sat({required this.az, required this.el, required this.cn0, required this.constType, required this.used});
+  String get constName {
+    switch (constType.toInt()) {
+      case 1:
+        return 'GPS';
+      case 2:
+        return 'SBAS';
+      case 3:
+        return 'GLO';
+      case 4:
+        return 'QZSS';
+      case 5:
+        return 'BDS';
+      case 6:
+        return 'GAL';
+      case 7:
+        return 'IRNSS';
+      default:
+        return '?';
+    }
+  }
+}
+
 class SensorService {
   static const double _radToDeg = 57.2957795131;
   static const EventChannel _stream = EventChannel('aether/stream');
@@ -169,6 +198,58 @@ class SensorService {
       return false;
     }
   }
+
+  // ── live control channel: start/stop on-demand streams + actuators ──
+  static const MethodChannel _ctl = MethodChannel('aether/ctl');
+  Future<bool> micStart() async {
+    try {
+      return (await _ctl.invokeMethod<bool>('micStart')) ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> micStop() async {
+    try {
+      await _ctl.invokeMethod('micStop');
+    } catch (_) {}
+  }
+
+  Future<bool> locStart() async {
+    try {
+      return (await _ctl.invokeMethod<bool>('locStart')) ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> locStop() async {
+    try {
+      await _ctl.invokeMethod('locStop');
+    } catch (_) {}
+  }
+
+  Future<bool> torch(bool on) async {
+    try {
+      return (await _ctl.invokeMethod<bool>('torch', {'on': on})) ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> buzz([int ms = 30]) async {
+    try {
+      await _ctl.invokeMethod('buzz', {'ms': ms});
+    } catch (_) {}
+  }
+
+  // ── live stream state (mic / GNSS), updated per frame while running ──
+  List<double> micWave = const <double>[];
+  double? micDb;
+  double? micPeak;
+  List<Sat> sats = const <Sat>[];
+  int satUsed = 0;
+  int satSeen = 0;
 
   /// One-shot probe of every subsystem/API — what we can tap and where.
   Future<List<IndexSection>> fetchIndex() async {
@@ -382,6 +463,59 @@ class SensorService {
           );
         }
       });
+    }
+
+    // ── Microphone (live) ──
+    final md = _toD(m['micDb']);
+    if (md != null) {
+      micDb = md;
+      micPeak = _toD(m['micPeak']);
+      _put('micDb', '${md.toStringAsFixed(1)} dBFS', md);
+      final mw = m['micWave'];
+      if (mw is List) micWave = mw.map((e) => (e as num).toDouble()).toList(growable: false);
+    } else {
+      micDb = null;
+      micPeak = null;
+      micWave = const <double>[];
+    }
+
+    // ── Location / GNSS (live) ──
+    _d2(m['lat'], 'lat', (v) => v.toStringAsFixed(5));
+    _d2(m['lon'], 'lon', (v) => v.toStringAsFixed(5));
+    _d2(m['gpsAlt'], 'gpsAlt', (v) => '${v.toStringAsFixed(1)} m');
+    _d2(m['gpsSpeed'], 'gpsSpeed', (v) => '${v.toStringAsFixed(1)} m/s');
+    _d2(m['gpsBearing'], 'gpsBearing', (v) => '${v.toStringAsFixed(0)} °');
+    _d2(m['gpsAcc'], 'gpsAcc', (v) => '± ${v.toStringAsFixed(0)} m');
+    _s(m['gpsProvider'], 'gpsProvider');
+    final su = _toI(m['satUsed']);
+    if (su != null) {
+      satUsed = su;
+      _put('satUsed', '$su', su.toDouble());
+    }
+    final ss = _toI(m['satSeen']);
+    if (ss != null) {
+      satSeen = ss;
+      _put('satSeen', '$ss', ss.toDouble());
+    }
+    final sr = m['sats'];
+    if (sr is List) {
+      final list = <Sat>[];
+      for (final e in sr) {
+        if (e is List && e.length >= 5) {
+          list.add(Sat(
+            az: (e[0] as num).toDouble(),
+            el: (e[1] as num).toDouble(),
+            cn0: (e[2] as num).toDouble(),
+            constType: (e[3] as num).toDouble(),
+            used: (e[4] as num) > 0,
+          ));
+        }
+      }
+      sats = list;
+    } else if (m['satSeen'] == null) {
+      sats = const <Sat>[];
+      satUsed = 0;
+      satSeen = 0;
     }
 
     // ── Fusion / inferred ──
