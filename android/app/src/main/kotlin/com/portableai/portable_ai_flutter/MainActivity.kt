@@ -129,6 +129,16 @@ class MainActivity : FlutterActivity(), SensorEventListener {
     @Volatile private var satArr: ArrayList<FloatArray>? = null
     private var qnh = Double.NaN // sea-level pressure (hPa) calibrated from the GPS altitude
 
+    // Dead reckoning (PDR): step × heading path — fully offline, no GPS/internet.
+    private var pdrX = 0.0
+    private var pdrY = 0.0
+    private var pdrSteps = 0
+    private var pdrDist = 0.0
+    private var lastHeadingRad = 0.0
+    private var lastPdrEmitSteps = -1
+    private val pdrStride = 0.72 // metres per step (honest estimate)
+    private val pdrPath = ArrayList<FloatArray>()
+
     private var torchOn = false
     private var torchCamId: String? = null
 
@@ -291,6 +301,11 @@ class MainActivity : FlutterActivity(), SensorEventListener {
                     "bleStop" -> { stopBle(); result.success(true) }
                     "torch" -> result.success(setTorch(call.argument<Boolean>("on") ?: false))
                     "buzz" -> { buzz(call.argument<Int>("ms") ?: 20); result.success(true) }
+                    "pdrReset" -> {
+                        pdrX = 0.0; pdrY = 0.0; pdrSteps = 0; pdrDist = 0.0
+                        pdrPath.clear(); lastPdrEmitSteps = -1
+                        result.success(true)
+                    }
                     else -> result.notImplemented()
                 }
             }
@@ -313,6 +328,16 @@ class MainActivity : FlutterActivity(), SensorEventListener {
     private fun bumpEvent(label: String) {
         eventCount[label] = (eventCount[label] ?: 0) + 1
         eventLast[label] = SystemClock.elapsedRealtime()
+    }
+
+    // One step → advance the dead-reckoning path along the current heading.
+    private fun advancePdr() {
+        pdrX += pdrStride * Math.sin(lastHeadingRad)
+        pdrY += pdrStride * Math.cos(lastHeadingRad)
+        pdrSteps++
+        pdrDist += pdrStride
+        pdrPath.add(floatArrayOf(pdrX.toFloat(), pdrY.toFloat()))
+        if (pdrPath.size > 400) pdrPath.removeAt(0)
     }
 
     private fun reg(type: Int, delay: Int) {
@@ -449,7 +474,7 @@ class MainActivity : FlutterActivity(), SensorEventListener {
                     st.contains("light_cct", true) -> cct = e.values.clone()
                     st.contains("light_ir", true) -> lightIr = e.values[0]
                     st.contains("tilt", true) -> bumpEvent("tilt")
-                    st.endsWith("step_detector", true) -> bumpEvent("stepdet")
+                    st.endsWith("step_detector", true) -> { bumpEvent("stepdet"); advancePdr() }
                 }
             }
         }
@@ -538,6 +563,9 @@ class MainActivity : FlutterActivity(), SensorEventListener {
                 val tru = (((az + declination) % 360) + 360) % 360
                 f["trueHeading"] = tru
                 f["cardinalTrue"] = cardinal(tru)
+                lastHeadingRad = Math.toRadians(tru)
+            } else {
+                lastHeadingRad = Math.toRadians(az)
             }
             f["pitch"] = Math.toDegrees(ori[1].toDouble())
             f["roll"] = Math.toDegrees(ori[2].toDouble())
@@ -592,6 +620,17 @@ class MainActivity : FlutterActivity(), SensorEventListener {
             ev[label] = listOf(eventArmed[label] ?: false, eventCount[label] ?: 0, age)
         }
         f["events"] = ev
+
+        // Dead reckoning: offline path from steps × heading (no GPS/internet).
+        f["pdrX"] = pdrX
+        f["pdrY"] = pdrY
+        f["pdrSteps"] = pdrSteps
+        f["pdrDist"] = pdrDist
+        f["pdrDisp"] = Math.sqrt(pdrX * pdrX + pdrY * pdrY)
+        if (pdrSteps != lastPdrEmitSteps) {
+            f["pdrPath"] = pdrPath.map { listOf(it[0].toDouble(), it[1].toDouble()) }
+            lastPdrEmitSteps = pdrSteps
+        }
 
         // live control-channel streams (only when running / fixed — never faked)
         if (micRunning) {

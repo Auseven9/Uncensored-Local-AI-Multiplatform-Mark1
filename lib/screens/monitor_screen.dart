@@ -203,6 +203,10 @@ class _MonitorScreenState extends State<MonitorScreen>
   // button for any runtime-gated one. Single source → no duplicate cards; these
   // subsystems are distinct from the streaming sensor groups above.
   static const List<_CapGroup> _capGroups = <_CapGroup>[
+    _CapGroup('Navigation', [
+      _Cap('pdr', 'Dead reckoning', 'StepDetector × heading · offline PDR',
+          detail: 'traces your path from steps + compass — no GPS, no internet'),
+    ]),
     _CapGroup('Hearing', [
       _Cap('mic', 'Microphone', 'AudioRecord · 48 kHz PCM',
           perm: SensorService.pMic, capKey: 'mic', detail: 'raw PCM — level, waveform, FFT'),
@@ -844,6 +848,26 @@ class _MonitorScreenState extends State<MonitorScreen>
   // The live instrument rendered inside a capability card, when streaming.
   Widget? _capBody(_Cap c, SensorService s) {
     switch (c.id) {
+      case 'pdr':
+        return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          DeadReckon(
+            path: s.pdrPath,
+            x: s.numOf('pdrX') ?? 0.0,
+            y: s.numOf('pdrY') ?? 0.0,
+            heading: s.numOf('trueHeading') ?? s.numOf('compass'),
+          ),
+          const SizedBox(height: 8),
+          Row(children: [
+            Expanded(
+              child: Text(
+                '${s.readings['pdrSteps'] ?? '0'} steps · ${s.readings['pdrDist'] ?? '0.0 m'} walked · '
+                '${s.readings['pdrDisp'] ?? '0.0 m'} from start',
+                style: const TextStyle(fontSize: 10, color: _textM),
+              ),
+            ),
+            _tapBtn('RESET', _textM, () => s.pdrReset()),
+          ]),
+        ]);
       case 'mic':
         if (_micLive && (s.micWave.isNotEmpty || s.micDb != null)) {
           return VuWaveform(wave: s.micWave, db: s.micDb, peak: s.micPeak);

@@ -2414,3 +2414,111 @@ class _TouchPainter extends CustomPainter {
   @override
   bool shouldRepaint(_TouchPainter old) => true;
 }
+
+// ════════════════════════ NAVIGATION: DEAD RECKONING ════════════════════════
+
+/// Pedestrian dead reckoning — the path traced from step events × heading, fully
+/// offline (no GPS, no internet). East = x (right), North = y (up). Stride is an
+/// estimate, so the trace is a shape-accurate sketch, not survey-grade.
+class DeadReckon extends StatelessWidget {
+  const DeadReckon({super.key, required this.path, this.x = 0, this.y = 0, this.heading, this.height = 250});
+  final List<List<double>> path;
+  final double x, y;
+  final double? heading;
+  final double height;
+  @override
+  Widget build(BuildContext context) => SizedBox(
+        height: height,
+        width: double.infinity,
+        child: CustomPaint(painter: _PdrPainter(path, x, y, heading)),
+      );
+}
+
+class _PdrPainter extends CustomPainter {
+  _PdrPainter(this.path, this.x, this.y, this.heading);
+  final List<List<double>> path;
+  final double x, y;
+  final double? heading;
+  @override
+  void paint(Canvas canvas, Size size) {
+    double minX = 0, maxX = 0, minY = 0, maxY = 0;
+    for (final p in path) {
+      if (p[0] < minX) minX = p[0];
+      if (p[0] > maxX) maxX = p[0];
+      if (p[1] < minY) minY = p[1];
+      if (p[1] > maxY) maxY = p[1];
+    }
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+    const double pad = 26;
+    double spanX = (maxX - minX).abs();
+    double spanY = (maxY - minY).abs();
+    if (spanX < 2) spanX = 2;
+    if (spanY < 2) spanY = 2;
+    final double s = math.min((size.width - pad * 2) / spanX, (size.height - pad * 2) / spanY);
+    final double midX = (minX + maxX) / 2;
+    final double midY = (minY + maxY) / 2;
+    final double cx = size.width / 2;
+    final double cy = size.height / 2;
+    Offset map(double mx, double my) => Offset(cx + (mx - midX) * s, cy - (my - midY) * s);
+
+    double gstep = 1;
+    while (gstep * s < 26) {
+      gstep *= 2;
+    }
+    final grid = Paint()..color = const Color(0x0DFFFFFF)..strokeWidth = 1;
+    for (double gx = (minX / gstep).floorToDouble() * gstep; gx <= maxX + gstep; gx += gstep) {
+      canvas.drawLine(map(gx, minY - gstep), map(gx, maxY + gstep), grid);
+    }
+    for (double gy = (minY / gstep).floorToDouble() * gstep; gy <= maxY + gstep; gy += gstep) {
+      canvas.drawLine(map(minX - gstep, gy), map(maxX + gstep, gy), grid);
+    }
+
+    if (path.length < 2) {
+      _tp(canvas, 'walk to trace your path', Offset(size.width / 2, size.height / 2 - 6), _textD, size: 11);
+      _tp(canvas, 'no GPS · no internet', Offset(size.width / 2, size.height / 2 + 10), _textD, size: 10);
+    } else {
+      final line = Path();
+      for (int i = 0; i < path.length; i++) {
+        final p = map(path[i][0], path[i][1]);
+        if (i == 0) {
+          line.moveTo(p.dx, p.dy);
+        } else {
+          line.lineTo(p.dx, p.dy);
+        }
+      }
+      canvas.drawPath(
+          line,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 2
+            ..strokeJoin = StrokeJoin.round
+            ..color = _cyan);
+    }
+
+    final o = map(0, 0);
+    canvas.drawCircle(o, 5, Paint()..color = _green);
+    _tp(canvas, 'start', Offset(o.dx, o.dy + 12), _textM, size: 8);
+
+    final cur = map(x, y);
+    canvas.drawCircle(cur, 5.5, Paint()..color = _accent);
+    final h = heading;
+    if (h != null) {
+      final hr = _deg2rad(h);
+      final tip = Offset(cur.dx + math.sin(hr) * 15, cur.dy - math.cos(hr) * 15);
+      canvas.drawLine(cur, tip, Paint()..color = _red..strokeWidth = 2..strokeCap = StrokeCap.round);
+    }
+
+    final double barLen = gstep * s;
+    final double bx = 10;
+    final double by = size.height - 10;
+    canvas.drawLine(Offset(bx, by), Offset(bx + barLen, by), Paint()..color = _textM..strokeWidth = 2);
+    _tp(canvas, '${gstep.toStringAsFixed(0)} m', Offset(bx + barLen / 2, by - 8), _textM, size: 9);
+    _tp(canvas, 'N', Offset(size.width - 12, 12), _red, size: 11, w: FontWeight.w700);
+  }
+
+  @override
+  bool shouldRepaint(_PdrPainter old) => true;
+}

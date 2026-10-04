@@ -272,6 +272,12 @@ class SensorService {
     } catch (_) {}
   }
 
+  Future<void> pdrReset() async {
+    try {
+      await _ctl.invokeMethod('pdrReset');
+    } catch (_) {}
+  }
+
   // ── live stream state (mic / GNSS), updated per frame while running ──
   List<double> micWave = const <double>[];
   double? micDb;
@@ -287,6 +293,9 @@ class SensorService {
   // Display-only smoothed heading (deg) for the twin/compass dials — the raw
   // heading is preserved in readings/sub-tiles; this just makes the dial glide.
   double? headingDisplay;
+
+  // Dead-reckoning path (metres, east=x / north=y, origin = start point).
+  List<List<double>> pdrPath = const <List<double>>[];
 
   /// One-shot probe of every subsystem/API — what we can tap and where.
   Future<List<IndexSection>> fetchIndex() async {
@@ -611,6 +620,23 @@ class SensorService {
     _s(m['envContext'], 'envContext');
     _d2(m['altCal'], 'altCal', (v) => '${v.toStringAsFixed(1)} m');
     _d2(m['seaLevel'], 'seaLevel', (v) => '${v.toStringAsFixed(1)} hPa');
+
+    // ── Dead reckoning (offline step × heading path) ──
+    _d2(m['pdrX'], 'pdrX', (v) => '${v.toStringAsFixed(1)} m');
+    _d2(m['pdrY'], 'pdrY', (v) => '${v.toStringAsFixed(1)} m');
+    _d2(m['pdrDist'], 'pdrDist', (v) => '${v.toStringAsFixed(1)} m');
+    _d2(m['pdrDisp'], 'pdrDisp', (v) => '${v.toStringAsFixed(1)} m');
+    _int(m['pdrSteps'], 'pdrSteps', (v) => '$v');
+    final pp = m['pdrPath'];
+    if (pp is List) {
+      final path = <List<double>>[];
+      for (final e in pp) {
+        if (e is List && e.length >= 2) {
+          path.add([(e[0] as num).toDouble(), (e[1] as num).toDouble()]);
+        }
+      }
+      pdrPath = path;
+    }
     _int(m['steps'], 'steps', (v) => '$v steps');
     _int(m['cadence'], 'cadence', (v) => '$v /min');
     _int(m['shakes'], 'shakes', (v) => '$v');
