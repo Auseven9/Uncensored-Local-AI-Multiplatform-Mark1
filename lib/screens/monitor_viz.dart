@@ -1892,3 +1892,473 @@ class _SkyPainter extends CustomPainter {
   @override
   bool shouldRepaint(_SkyPainter old) => true;
 }
+
+// ════════════════════════ RADIO & NEARBY ════════════════════════
+
+/// A radio emitter row for a signal list (Wi-Fi AP or BLE device).
+class SigItem {
+  final int rssi;
+  final String label;
+  final String tag;
+  const SigItem(this.rssi, this.label, this.tag);
+}
+
+/// A nearby emitter for the proximity radar.
+class RadarDot {
+  final int rssi;
+  final String kind; // 'wifi' | 'ble'
+  final String label;
+  const RadarDot(this.rssi, this.kind, this.label);
+}
+
+double _rssiFrac(int rssi) {
+  // -40 dBm (strong) → full bar, -95 dBm (weak) → empty.
+  return ((rssi + 95) / 55).clamp(0.0, 1.0).toDouble();
+}
+
+/// Cellular signal: level bars + dBm + network type.
+class CellSignal extends StatelessWidget {
+  const CellSignal({super.key, this.dbm, this.level, this.type, this.height = 72});
+  final double? dbm;
+  final int? level;
+  final String? type;
+  final double height;
+  @override
+  Widget build(BuildContext context) => SizedBox(
+        height: height,
+        width: double.infinity,
+        child: CustomPaint(painter: _CellPainter(dbm, level, type)),
+      );
+}
+
+class _CellPainter extends CustomPainter {
+  _CellPainter(this.dbm, this.level, this.type);
+  final double? dbm;
+  final int? level;
+  final String? type;
+  int _lvl(double? d) {
+    if (d == null) return 0;
+    if (d >= -85) return 4;
+    if (d >= -95) return 3;
+    if (d >= -105) return 2;
+    if (d >= -115) return 1;
+    return 0;
+  }
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    const n = 5;
+    final int lv = level ?? _lvl(dbm);
+    const double bw = 13;
+    const double gap = 7;
+    final double baseY = size.height - 18;
+    const double x0 = 6;
+    for (int i = 0; i < n; i++) {
+      final double h = 8 + i * ((baseY - 10) / n);
+      final double x = x0 + i * (bw + gap);
+      final bool on = i < lv;
+      final Color col = on
+          ? (lv >= 4 ? _green : (lv >= 2 ? _cyan : _amber))
+          : const Color(0x14FFFFFF);
+      canvas.drawRRect(
+          RRect.fromRectAndRadius(Rect.fromLTWH(x, baseY - h, bw, h), const Radius.circular(3)),
+          Paint()..color = col);
+    }
+    final double tx = x0 + n * (bw + gap) + 16;
+    _tp(canvas, type ?? '—', Offset(tx + 26, 16), _text, size: 15, w: FontWeight.w700, align: TextAlign.left);
+    _tp(canvas, dbm == null ? 'no signal (SIM?)' : '${dbm!.toStringAsFixed(0)} dBm',
+        Offset(tx + 34, 38), _textM, size: 11);
+  }
+
+  @override
+  bool shouldRepaint(_CellPainter old) => true;
+}
+
+/// Wi-Fi: connected RSSI meter + band/speed, then scanned AP bars.
+class WifiSignal extends StatelessWidget {
+  const WifiSignal({super.key, this.rssi, this.band, this.speed, required this.aps, this.height = 168});
+  final double? rssi;
+  final String? band, speed;
+  final List<SigItem> aps;
+  final double height;
+  @override
+  Widget build(BuildContext context) => SizedBox(
+        height: height,
+        width: double.infinity,
+        child: CustomPaint(painter: _WifiPainter(rssi, band, speed, aps)),
+      );
+}
+
+class _WifiPainter extends CustomPainter {
+  _WifiPainter(this.rssi, this.band, this.speed, this.aps);
+  final double? rssi;
+  final String? band, speed;
+  final List<SigItem> aps;
+  @override
+  void paint(Canvas canvas, Size size) {
+    // connected header
+    final double hy = 10;
+    if (rssi != null) {
+      final double f = _rssiFrac(rssi!.round());
+      canvas.drawRRect(RRect.fromRectAndRadius(Rect.fromLTWH(0, hy, size.width * 0.5, 10), const Radius.circular(5)),
+          Paint()..color = const Color(0x0DFFFFFF));
+      canvas.drawRRect(RRect.fromRectAndRadius(Rect.fromLTWH(0, hy, size.width * 0.5 * f, 10), const Radius.circular(5)),
+          Paint()..color = f > 0.6 ? _green : (f > 0.3 ? _amber : _red));
+      _tp(canvas, '${rssi!.toStringAsFixed(0)} dBm · ${band ?? ''} · ${speed ?? ''}',
+          Offset(size.width * 0.75, hy + 5), _textM, size: 10);
+    } else {
+      _tp(canvas, 'not connected', Offset(size.width / 2, hy + 5), _textD, size: 10);
+    }
+    // AP list
+    double y = 32;
+    final rows = aps.take(7).toList();
+    if (rows.isEmpty) {
+      _tp(canvas, 'enable Nearby Wi-Fi to scan', Offset(size.width / 2, y + 20), _textD, size: 11);
+      return;
+    }
+    for (final a in rows) {
+      final double f = _rssiFrac(a.rssi);
+      canvas.drawRRect(RRect.fromRectAndRadius(Rect.fromLTWH(0, y, size.width - 70, 8), const Radius.circular(4)),
+          Paint()..color = const Color(0x0DFFFFFF));
+      canvas.drawRRect(RRect.fromRectAndRadius(Rect.fromLTWH(0, y, (size.width - 70) * f, 8), const Radius.circular(4)),
+          Paint()..color = f > 0.6 ? _green : (f > 0.3 ? _amber : _red));
+      final name = a.label.length > 16 ? '${a.label.substring(0, 16)}…' : a.label;
+      _tp(canvas, name, Offset((size.width - 70) * 0.0 + _wtxt(name) / 2 + 2, y - 5), _textM, size: 8.5, align: TextAlign.left);
+      _tp(canvas, '${a.rssi} ${a.tag}', Offset(size.width - 30, y + 4), _textD, size: 8.5);
+      y += 18;
+    }
+  }
+
+  double _wtxt(String s) => s.length * 5.0;
+
+  @override
+  bool shouldRepaint(_WifiPainter old) => true;
+}
+
+/// BLE: nearby device bars by RSSI.
+class BleNearby extends StatelessWidget {
+  const BleNearby({super.key, required this.devices, this.height = 150});
+  final List<SigItem> devices;
+  final double height;
+  @override
+  Widget build(BuildContext context) => SizedBox(
+        height: height,
+        width: double.infinity,
+        child: CustomPaint(painter: _BlePainter(devices)),
+      );
+}
+
+class _BlePainter extends CustomPainter {
+  _BlePainter(this.devices);
+  final List<SigItem> devices;
+  @override
+  void paint(Canvas canvas, Size size) {
+    _tp(canvas, '${devices.length} nearby', Offset(size.width / 2, 8), _textM, size: 10, w: FontWeight.w700);
+    double y = 26;
+    final rows = devices.take(7).toList();
+    if (rows.isEmpty) {
+      _tp(canvas, 'scanning for BLE devices…', Offset(size.width / 2, y + 20), _textD, size: 11);
+      return;
+    }
+    for (final d in rows) {
+      final double f = _rssiFrac(d.rssi);
+      canvas.drawRRect(RRect.fromRectAndRadius(Rect.fromLTWH(0, y, size.width - 60, 8), const Radius.circular(4)),
+          Paint()..color = const Color(0x0DFFFFFF));
+      canvas.drawRRect(RRect.fromRectAndRadius(Rect.fromLTWH(0, y, (size.width - 60) * f, 8), const Radius.circular(4)),
+          Paint()..color = _accent);
+      final name = d.label.isEmpty ? '(unnamed)' : (d.label.length > 18 ? '${d.label.substring(0, 18)}…' : d.label);
+      _tp(canvas, name, Offset(_wtxt(name) / 2 + 2, y - 5), _textM, size: 8.5, align: TextAlign.left);
+      _tp(canvas, '${d.rssi}', Offset(size.width - 22, y + 4), _textD, size: 8.5);
+      y += 18;
+    }
+  }
+
+  double _wtxt(String s) => s.length * 5.0;
+
+  @override
+  bool shouldRepaint(_BlePainter old) => true;
+}
+
+/// Proximity radar / minimap. Radius = real signal strength (closer ring =
+/// stronger). Bearing is NOT measured without UWB, so angle is a stable layout
+/// slot, labelled honestly — never a faked direction. Wi-Fi = cyan, BLE = violet.
+class NearbyRadar extends StatelessWidget {
+  const NearbyRadar({super.key, required this.dots, this.height = 250});
+  final List<RadarDot> dots;
+  final double height;
+  @override
+  Widget build(BuildContext context) => SizedBox(
+        height: height,
+        width: double.infinity,
+        child: CustomPaint(painter: _RadarPainter(dots)),
+      );
+}
+
+class _RadarPainter extends CustomPainter {
+  _RadarPainter(this.dots);
+  final List<RadarDot> dots;
+  @override
+  void paint(Canvas canvas, Size size) {
+    final c = Offset(size.width / 2, size.height / 2);
+    final double rad = math.min(size.width, size.height) / 2 - 16;
+    final ring = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1
+      ..color = const Color(0x33FFFFFF);
+    for (final f in const [1.0, 0.66, 0.33]) {
+      canvas.drawCircle(c, rad * f, ring);
+    }
+    canvas.drawCircle(c, 4, Paint()..color = _text);
+    _tp(canvas, 'YOU', Offset(c.dx, c.dy + 14), _textM, size: 8);
+    for (final d in dots) {
+      final double rr = (1 - _rssiFrac(d.rssi)) * rad; // strong = near centre
+      final double a = ((d.label.hashCode & 0x7fffffff) % 360) * math.pi / 180.0;
+      final p = Offset(c.dx + math.cos(a) * rr, c.dy + math.sin(a) * rr);
+      final col = d.kind == 'wifi' ? _cyan : _accent;
+      canvas.drawCircle(p, 4.2, Paint()..color = col);
+      canvas.drawCircle(p, 8, Paint()..color = col.withValues(alpha: 0.12));
+    }
+    _tp(canvas, '${dots.length} emitters · radius = signal · bearing not sensed',
+        Offset(size.width / 2, size.height - 6), _textD, size: 9);
+    if (dots.isEmpty) {
+      _tp(canvas, 'enable Nearby Wi-Fi / BLE to populate', c.translate(0, -rad - 2), _textD, size: 10);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_RadarPainter old) => true;
+}
+
+/// Simple status line for NFC (no tag present → nothing to stream).
+class NfcStatus extends StatelessWidget {
+  const NfcStatus({super.key, required this.enabled, this.height = 48});
+  final bool enabled;
+  final double height;
+  @override
+  Widget build(BuildContext context) => SizedBox(
+        height: height,
+        child: Row(children: [
+          Icon(enabled ? Icons.nfc : Icons.block, size: 22, color: enabled ? _green : _amber),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(enabled ? 'NFC on — hold a tag to the top of the phone' : 'NFC is off — enable it in quick settings',
+                style: const TextStyle(fontSize: 11, color: _textM)),
+          ),
+        ]),
+      );
+}
+
+/// UWB idle radar — present but needs a cooperating peer to range.
+class UwbIdle extends StatelessWidget {
+  const UwbIdle({super.key, this.height = 150});
+  final double height;
+  @override
+  Widget build(BuildContext context) => SizedBox(
+        height: height,
+        width: double.infinity,
+        child: CustomPaint(painter: _UwbPainter()),
+      );
+}
+
+class _UwbPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final c = Offset(size.width / 2, size.height / 2);
+    final double rad = math.min(size.width, size.height) / 2 - 14;
+    final ring = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1
+      ..color = const Color(0x22FFFFFF);
+    for (final f in const [1.0, 0.6]) {
+      canvas.drawCircle(c, rad * f, ring);
+    }
+    canvas.drawCircle(c, 4, Paint()..color = _cyan);
+    _tp(canvas, 'needs a UWB peer to range', c.translate(0, rad - 4), _textD, size: 10);
+  }
+
+  @override
+  bool shouldRepaint(_UwbPainter old) => false;
+}
+
+// ════════════════════════ INPUT PADS (S-Pen · touch) ════════════════════════
+
+Widget _absorbScroll(double h, Widget child) => GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onVerticalDragDown: (_) {},
+      onVerticalDragStart: (_) {},
+      onVerticalDragUpdate: (_) {},
+      child: SizedBox(height: h, width: double.infinity, child: child),
+    );
+
+/// S-Pen / stylus pad: hover or press the pen here to see live position,
+/// pressure, tilt, button and tool — straight from the digitizer MotionEvents.
+class StylusPad extends StatefulWidget {
+  const StylusPad({super.key, this.height = 140});
+  final double height;
+  @override
+  State<StylusPad> createState() => _StylusPadState();
+}
+
+class _StylusPadState extends State<StylusPad> {
+  Offset? _pos;
+  double _pressure = 0;
+  double _tilt = 0;
+  bool _contact = false;
+  bool _hover = false;
+  int _buttons = 0;
+  PointerDeviceKind _kind = PointerDeviceKind.unknown;
+
+  void _set(PointerEvent e, {required bool contact, required bool hover}) {
+    setState(() {
+      _pos = e.localPosition;
+      _pressure = e.pressure;
+      _tilt = e.tilt;
+      _buttons = e.buttons;
+      _kind = e.kind;
+      _contact = contact;
+      _hover = hover;
+    });
+  }
+
+  void _clear() => setState(() {
+        _contact = false;
+        _hover = false;
+        _pos = null;
+        _pressure = 0;
+      });
+
+  @override
+  Widget build(BuildContext context) => _absorbScroll(
+        widget.height,
+        Listener(
+          onPointerHover: (e) => _set(e, contact: false, hover: true),
+          onPointerDown: (e) => _set(e, contact: true, hover: false),
+          onPointerMove: (e) => _set(e, contact: true, hover: false),
+          onPointerUp: (_) => _clear(),
+          onPointerCancel: (_) => _clear(),
+          child: CustomPaint(
+            painter: _StylusPainter(_pos, _pressure, _tilt, _contact, _hover, _buttons, _kind),
+            size: Size.infinite,
+          ),
+        ),
+      );
+}
+
+class _StylusPainter extends CustomPainter {
+  _StylusPainter(this.pos, this.pressure, this.tilt, this.contact, this.hover, this.buttons, this.kind);
+  final Offset? pos;
+  final double pressure, tilt;
+  final bool contact, hover;
+  final int buttons;
+  final PointerDeviceKind kind;
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.drawRRect(
+        RRect.fromRectAndRadius(Offset.zero & size, const Radius.circular(10)),
+        Paint()..color = const Color(0x08FFFFFF));
+    final grid = Paint()..color = const Color(0x0DFFFFFF)..strokeWidth = 1;
+    for (double x = 0; x < size.width; x += 24) {
+      canvas.drawLine(Offset(x, 0), Offset(x, size.height - 20), grid);
+    }
+    for (double y = 0; y < size.height - 20; y += 24) {
+      canvas.drawLine(Offset(0, y), Offset(size.width, y), grid);
+    }
+    final p = pos;
+    if (p != null) {
+      final col = contact ? _green : _cyan;
+      canvas.drawLine(Offset(p.dx, 0), Offset(p.dx, size.height - 20), Paint()..color = col.withValues(alpha: 0.4)..strokeWidth = 1);
+      canvas.drawLine(Offset(0, p.dy), Offset(size.width, p.dy), Paint()..color = col.withValues(alpha: 0.4)..strokeWidth = 1);
+      final double r = 6 + pressure.clamp(0.0, 1.0) * 26;
+      canvas.drawCircle(p, r, Paint()..color = col.withValues(alpha: 0.25));
+      canvas.drawCircle(p, 4, Paint()..color = col);
+    } else {
+      _tp(canvas, 'hover or draw with the S-Pen', Offset(size.width / 2, (size.height - 20) / 2), _textD, size: 11);
+    }
+    final kindStr = (kind == PointerDeviceKind.stylus || kind == PointerDeviceKind.invertedStylus)
+        ? 'stylus'
+        : (kind == PointerDeviceKind.touch ? 'touch' : '—');
+    final state = contact ? 'contact' : (hover ? 'hover' : 'lifted');
+    final btn = buttons != 0 ? ' · btn' : '';
+    _tp(canvas, '$kindStr · $state$btn · P ${(pressure).toStringAsFixed(2)} · tilt ${(tilt * 57.3).toStringAsFixed(0)}°',
+        Offset(size.width / 2, size.height - 9), _textM, size: 9.5, w: FontWeight.w600);
+  }
+
+  @override
+  bool shouldRepaint(_StylusPainter old) => true;
+}
+
+/// Multitouch pad: every finger down shows a circle sized by its pressure.
+class TouchPad extends StatefulWidget {
+  const TouchPad({super.key, this.height = 140});
+  final double height;
+  @override
+  State<TouchPad> createState() => _TouchPadState();
+}
+
+class _TouchPadState extends State<TouchPad> {
+  final Map<int, Offset> _pts = <int, Offset>{};
+  final Map<int, double> _press = <int, double>{};
+  void _down(PointerEvent e) => setState(() {
+        _pts[e.pointer] = e.localPosition;
+        _press[e.pointer] = e.pressure;
+      });
+  void _move(PointerEvent e) {
+    if (_pts.containsKey(e.pointer)) {
+      setState(() {
+        _pts[e.pointer] = e.localPosition;
+        _press[e.pointer] = e.pressure;
+      });
+    }
+  }
+
+  void _up(PointerEvent e) => setState(() {
+        _pts.remove(e.pointer);
+        _press.remove(e.pointer);
+      });
+
+  @override
+  Widget build(BuildContext context) => _absorbScroll(
+        widget.height,
+        Listener(
+          onPointerDown: _down,
+          onPointerMove: _move,
+          onPointerUp: _up,
+          onPointerCancel: _up,
+          child: CustomPaint(
+            painter: _TouchPainter(Map<int, Offset>.of(_pts), Map<int, double>.of(_press)),
+            size: Size.infinite,
+          ),
+        ),
+      );
+}
+
+class _TouchPainter extends CustomPainter {
+  _TouchPainter(this.pts, this.press);
+  final Map<int, Offset> pts;
+  final Map<int, double> press;
+  static const List<Color> _palette = [_cyan, _accent, _green, _amber, _red];
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.drawRRect(
+        RRect.fromRectAndRadius(Offset.zero & size, const Radius.circular(10)),
+        Paint()..color = const Color(0x08FFFFFF));
+    if (pts.isEmpty) {
+      _tp(canvas, 'touch here with up to 10 fingers', Offset(size.width / 2, size.height / 2), _textD, size: 11);
+      return;
+    }
+    int i = 0;
+    pts.forEach((id, p) {
+      final col = _palette[i % _palette.length];
+      final double pr = (press[id] ?? 0).clamp(0.0, 1.0).toDouble();
+      final double r = 14 + pr * 30;
+      canvas.drawCircle(p, r, Paint()..color = col.withValues(alpha: 0.18));
+      canvas.drawCircle(p, r, Paint()..style = PaintingStyle.stroke..strokeWidth = 1.5..color = col);
+      canvas.drawCircle(p, 3, Paint()..color = col);
+      i++;
+    });
+    _tp(canvas, '${pts.length} touch${pts.length == 1 ? '' : 'es'}', Offset(size.width / 2, 12), _textM, size: 10, w: FontWeight.w700);
+  }
+
+  @override
+  bool shouldRepaint(_TouchPainter old) => true;
+}

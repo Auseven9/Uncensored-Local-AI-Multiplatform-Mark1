@@ -134,6 +134,21 @@ class Sat {
   }
 }
 
+/// A scanned Wi-Fi access point: RSSI (dBm), frequency (MHz), SSID.
+class Ap {
+  final int rssi, freq;
+  final String ssid;
+  const Ap(this.rssi, this.freq, this.ssid);
+  String get band => freq >= 5955 ? '6G' : (freq >= 4900 ? '5G' : '2.4G');
+}
+
+/// A nearby Bluetooth-LE device: advertised RSSI (dBm) and name (if any).
+class BleDev {
+  final int rssi;
+  final String name;
+  const BleDev(this.rssi, this.name);
+}
+
 class SensorService {
   static const double _radToDeg = 57.2957795131;
   static const EventChannel _stream = EventChannel('aether/stream');
@@ -229,6 +244,20 @@ class SensorService {
     } catch (_) {}
   }
 
+  Future<bool> bleStart() async {
+    try {
+      return (await _ctl.invokeMethod<bool>('bleStart')) ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> bleStop() async {
+    try {
+      await _ctl.invokeMethod('bleStop');
+    } catch (_) {}
+  }
+
   Future<bool> torch(bool on) async {
     try {
       return (await _ctl.invokeMethod<bool>('torch', {'on': on})) ?? false;
@@ -250,6 +279,10 @@ class SensorService {
   List<Sat> sats = const <Sat>[];
   int satUsed = 0;
   int satSeen = 0;
+
+  // Radio & Nearby (live): scanned Wi-Fi APs + nearby BLE devices.
+  List<Ap> wifiAps = const <Ap>[];
+  List<BleDev> bleDevices = const <BleDev>[];
 
   /// One-shot probe of every subsystem/API — what we can tap and where.
   Future<List<IndexSection>> fetchIndex() async {
@@ -516,6 +549,35 @@ class SensorService {
       sats = const <Sat>[];
       satUsed = 0;
       satSeen = 0;
+    }
+
+    // ── Radio & Nearby (live; scans refresh ~1s, so keep last between frames) ──
+    _d2(m['wifiRssi'], 'wifiRssi', (v) => '${v.toStringAsFixed(0)} dBm');
+    _d2(m['wifiSpeed'], 'wifiSpeed', (v) => '${v.toStringAsFixed(0)} Mbps');
+    _s(m['wifiBand'], 'wifiBand');
+    _d2(m['cellDbm'], 'cellDbm', (v) => '${v.toStringAsFixed(0)} dBm');
+    _int(m['cellLevel'], 'cellLevel', (v) => '$v/4');
+    _s(m['cellType'], 'cellType');
+    _int(m['bleCount'], 'bleCount', (v) => '$v');
+    final ar = m['wifiAps'];
+    if (ar is List) {
+      final list = <Ap>[];
+      for (final e in ar) {
+        if (e is List && e.length >= 3) {
+          list.add(Ap((e[0] as num).toInt(), (e[1] as num).toInt(), e[2]?.toString() ?? ''));
+        }
+      }
+      wifiAps = list;
+    }
+    final br = m['bleList'];
+    if (br is List) {
+      final list = <BleDev>[];
+      for (final e in br) {
+        if (e is List && e.length >= 2) {
+          list.add(BleDev((e[0] as num).toInt(), e[1]?.toString() ?? ''));
+        }
+      }
+      bleDevices = list;
     }
 
     // ── Fusion / inferred ──

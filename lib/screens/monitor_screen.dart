@@ -209,6 +209,8 @@ class _MonitorScreenState extends State<MonitorScreen>
           perm: SensorService.pLoc, capKey: 'gps', detail: 'per-satellite C/N0 · pseudorange · constellation'),
     ]),
     _CapGroup('Radio & Nearby', [
+      _Cap('radar', 'Nearby radar', 'WifiManager.scanResults + BluetoothLeScanner',
+          capKey: 'wifi', detail: 'proximity minimap — radius = signal, bearing not sensed'),
       _Cap('wifiscan', 'Wi-Fi scan', 'WifiManager.scanResults',
           perm: SensorService.pWifi, capKey: 'wifi', detail: 'per-AP RSSI · channel · link speed'),
       _Cap('wifirtt', 'Wi-Fi RTT ranging', 'WifiRttManager',
@@ -280,6 +282,7 @@ class _MonitorScreenState extends State<MonitorScreen>
     _svc?.refreshPerms().then((_) {
       final s = _svc;
       if (s != null && s.granted(SensorService.pLoc)) s.locStart();
+      if (s != null && s.granted(SensorService.pBt)) s.bleStart();
       if (mounted) setState(() {});
     });
   }
@@ -828,6 +831,35 @@ class _MonitorScreenState extends State<MonitorScreen>
       case 'loc':
         if (!s.granted(SensorService.pLoc)) return null;
         return _gpsTiles(s);
+      case 'cell':
+        if (!s.granted(SensorService.pPhone)) return null;
+        return CellSignal(
+            dbm: s.numOf('cellDbm'), level: s.numOf('cellLevel')?.toInt(), type: s.readings['cellType']);
+      case 'wifiscan':
+        if (!s.granted(SensorService.pWifi)) return null;
+        return WifiSignal(
+          rssi: s.numOf('wifiRssi'),
+          band: s.readings['wifiBand'],
+          speed: s.readings['wifiSpeed'],
+          aps: [for (final a in s.wifiAps) SigItem(a.rssi, a.ssid, a.band)],
+        );
+      case 'ble':
+        if (!s.granted(SensorService.pBt)) return null;
+        return BleNearby(devices: [for (final d in s.bleDevices) SigItem(d.rssi, d.name, '')]);
+      case 'radar':
+        return NearbyRadar(dots: [
+          for (final a in s.wifiAps) RadarDot(a.rssi, 'wifi', a.ssid),
+          for (final d in s.bleDevices) RadarDot(d.rssi, 'ble', d.name.isEmpty ? 'ble' : d.name),
+        ]);
+      case 'uwb':
+        return const UwbIdle();
+      case 'nfc':
+        return NfcStatus(enabled: s.caps['nfcEnabled'] == true);
+      case 'spen':
+        if (!s.capPresent('stylus')) return null;
+        return const StylusPad();
+      case 'touch':
+        return const TouchPad();
       default:
         return null;
     }
@@ -944,6 +976,7 @@ class _MonitorScreenState extends State<MonitorScreen>
         onTap: () async {
           final ok = await s.requestPerm(c.perm);
           if (ok && c.perm == SensorService.pLoc) await s.locStart();
+          if (ok && c.perm == SensorService.pBt) await s.bleStart();
           if (!mounted) return;
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
             content: Text(ok ? '${c.title}: socket captured' : '${c.title}: permission denied'),

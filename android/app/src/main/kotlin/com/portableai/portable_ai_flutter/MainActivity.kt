@@ -3,6 +3,9 @@ package com.portableai.portable_ai_flutter
 import android.annotation.SuppressLint
 import android.app.ActivityManager
 import android.bluetooth.BluetoothManager
+import android.bluetooth.le.BluetoothLeScanner
+import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanResult
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -126,6 +129,23 @@ class MainActivity : FlutterActivity(), SensorEventListener {
     private var torchOn = false
     private var torchCamId: String? = null
 
+    // BLE nearby scanner: addr -> [rssi, lastSeenMs]; names from advertisements.
+    private var bleRunning = false
+    private var bleScanner: BluetoothLeScanner? = null
+    private val bleSeen = HashMap<String, FloatArray>()
+    private val bleName = HashMap<String, String>()
+    private val bleScanCb = object : ScanCallback() {
+        override fun onScanResult(callbackType: Int, result: ScanResult?) {
+            val r = result ?: return
+            try {
+                val addr = r.device?.address ?: return
+                bleSeen[addr] = floatArrayOf(r.rssi.toFloat(), SystemClock.elapsedRealtime().toFloat())
+                val nm = (try { r.scanRecord?.deviceName } catch (_: Exception) { null }) ?: ""
+                if (nm.isNotEmpty()) bleName[addr] = nm
+            } catch (_: Exception) {}
+        }
+    }
+
     private val locListener = object : LocationListener {
         override fun onLocationChanged(loc: Location) { lastFix = loc }
         override fun onProviderEnabled(provider: String) {}
@@ -199,6 +219,7 @@ class MainActivity : FlutterActivity(), SensorEventListener {
                     try { smSensor?.let { sm?.cancelTriggerSensor(smTrigger, it) } } catch (_: Exception) {}
                     stopMic()
                     stopLoc()
+                    stopBle()
                     sink = null
                 }
             })
@@ -261,6 +282,8 @@ class MainActivity : FlutterActivity(), SensorEventListener {
                     "micStop" -> { stopMic(); result.success(true) }
                     "locStart" -> result.success(startLoc())
                     "locStop" -> { stopLoc(); result.success(true) }
+                    "bleStart" -> result.success(startBle())
+                    "bleStop" -> { stopBle(); result.success(true) }
                     "torch" -> result.success(setTorch(call.argument<Boolean>("on") ?: false))
                     "buzz" -> { buzz(call.argument<Int>("ms") ?: 20); result.success(true) }
                     else -> result.notImplemented()
@@ -733,6 +756,66 @@ class MainActivity : FlutterActivity(), SensorEventListener {
             if (rx >= 0) m["rxmb"] = rx / 1048576.0
             if (tx >= 0) m["txmb"] = tx / 1048576.0
         } catch (_: Exception) {}
+        // Radio & Nearby: Wi-Fi (connected + scan), cellular signal, BLE devices
+        try {
+            val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            @Suppress("DEPRECATION") val info = wm.connectionInfo
+            if (info != null) {
+                val rssi = info.rssi
+                if (rssi in -100..0) {
+                    m["wifiRssi"] = rssi
+                    m["wifiSpeed"] = info.linkSpeed
+                    val freq = info.frequency
+                    m["wifiFreq"] = freq
+                    m["wifiBand"] = if (freq >= 5955) "6 GHz" else if (freq >= 4900) "5 GHz" else "2.4 GHz"
+                }
+            }
+            if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.NEARBY_WIFI_DEVICES)
+                == PackageManager.PERMISSION_GRANTED) {
+                try {
+                    @Suppress("DEPRECATION") val res = wm.scanResults
+                    val aps = ArrayList<List<Any>>()
+                    for (r in res.sortedByDescending { it.level }.take(16)) {
+                        val ssid = try { r.SSID ?: "" } catch (_: Exception) { "" }
+                        aps.add(listOf(r.level, r.frequency, if (ssid.isEmpty()) "(hidden)" else ssid))
+                    }
+                    m["wifiAps"] = aps
+                    try { @Suppress("DEPRECATION") wm.startScan() } catch (_: Exception) {}
+                } catch (_: Exception) {}
+            }
+        } catch (_: Exception) {}
+        try {
+            if (Build.VERSION.SDK_INT >= 29 &&
+                ContextCompat.checkSelfPermission(this, android.Manifest.permission.READ_PHONE_STATE)
+                == PackageManager.PERMISSION_GRANTED) {
+                val tm = getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+                val ss = tm.signalStrength
+                if (ss != null) {
+                    val cs = ss.cellSignalStrengths
+                    if (cs.isNotEmpty()) {
+                        m["cellDbm"] = cs[0].dbm
+                        m["cellLevel"] = cs[0].level
+                    }
+                }
+                m["cellType"] = cellTypeName(tm.dataNetworkType)
+            }
+        } catch (_: Exception) {}
+        try {
+            if (bleRunning) {
+                val now = SystemClock.elapsedRealtime()
+                val list = ArrayList<List<Any>>()
+                val iter = bleSeen.entries.iterator()
+                while (iter.hasNext()) {
+                    val e = iter.next()
+                    val age = now - e.value[1].toLong()
+                    if (age > 12000) { iter.remove(); continue }
+                    list.add(listOf(e.value[0].toInt(), bleName[e.key] ?: ""))
+                }
+                list.sortByDescending { it[0] as Int }
+                m["bleList"] = ArrayList(list.take(20))
+                m["bleCount"] = list.size
+            }
+        } catch (_: Exception) {}
         // Display
         try {
             val d = windowManager.defaultDisplay
@@ -965,6 +1048,46 @@ class MainActivity : FlutterActivity(), SensorEventListener {
         } catch (_: Exception) {}
         gnssCb = null
         satArr = null; satSeen = 0; satUsed = 0
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startBle(): Boolean {
+        if (bleRunning) return true
+        if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.BLUETOOTH_SCAN)
+            != PackageManager.PERMISSION_GRANTED) return false
+        try {
+            val bm = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+            val ad = bm.adapter ?: return false
+            if (!ad.isEnabled) return false
+            val sc = ad.bluetoothLeScanner ?: return false
+            bleScanner = sc
+            bleRunning = true
+            sc.startScan(bleScanCb)
+            return true
+        } catch (_: Exception) {
+            bleRunning = false
+            return false
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun stopBle() {
+        if (!bleRunning && bleScanner == null) return
+        bleRunning = false
+        try { bleScanner?.stopScan(bleScanCb) } catch (_: Exception) {}
+        bleScanner = null
+        bleSeen.clear()
+        bleName.clear()
+    }
+
+    private fun cellTypeName(t: Int): String = when (t) {
+        TelephonyManager.NETWORK_TYPE_NR -> "5G NR"
+        TelephonyManager.NETWORK_TYPE_LTE -> "LTE"
+        TelephonyManager.NETWORK_TYPE_HSPAP, TelephonyManager.NETWORK_TYPE_HSPA,
+        TelephonyManager.NETWORK_TYPE_HSDPA, TelephonyManager.NETWORK_TYPE_UMTS -> "3G"
+        TelephonyManager.NETWORK_TYPE_EDGE, TelephonyManager.NETWORK_TYPE_GPRS -> "2G"
+        TelephonyManager.NETWORK_TYPE_UNKNOWN -> "none"
+        else -> "cell"
     }
 
     private fun setTorch(on: Boolean): Boolean {
@@ -1345,6 +1468,7 @@ class MainActivity : FlutterActivity(), SensorEventListener {
         try { smSensor?.let { sm?.cancelTriggerSensor(smTrigger, it) } } catch (_: Exception) {}
         stopMic()
         stopLoc()
+        stopBle()
         try { setTorch(false) } catch (_: Exception) {}
         handler.removeCallbacks(emitter)
         super.onDestroy()
