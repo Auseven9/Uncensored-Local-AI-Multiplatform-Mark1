@@ -14,6 +14,7 @@ import android.net.Uri
 import android.provider.Settings
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import android.hardware.GeomagneticField
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
@@ -125,6 +126,7 @@ class MainActivity : FlutterActivity(), SensorEventListener {
     @Volatile private var satSeen = 0
     // per satellite: [azimuthDeg, elevationDeg, cn0DbHz, constellationType, usedInFix(0/1)]
     @Volatile private var satArr: ArrayList<FloatArray>? = null
+    private var qnh = Double.NaN // sea-level pressure (hPa) calibrated from the GPS altitude
 
     private var torchOn = false
     private var torchCamId: String? = null
@@ -456,6 +458,26 @@ class MainActivity : FlutterActivity(), SensorEventListener {
     private fun frame(): HashMap<String, Any> {
         val f = HashMap<String, Any>()
 
+        // Geomagnetic model (needs a GPS fix): declination for TRUE north, plus
+        // the local field strength + inclination for the magnetometer / detector.
+        var declination = 0.0
+        var geoFieldUt = 0.0
+        var haveGeo = false
+        lastFix?.let { loc ->
+            try {
+                val gf = GeomagneticField(
+                    loc.latitude.toFloat(), loc.longitude.toFloat(),
+                    (if (loc.hasAltitude()) loc.altitude else 0.0).toFloat(),
+                    System.currentTimeMillis())
+                declination = gf.declination.toDouble()
+                geoFieldUt = gf.fieldStrength.toDouble() / 1000.0 // nT → µT
+                f["geoDecl"] = declination
+                f["geoField"] = geoFieldUt
+                f["geoIncl"] = gf.inclination.toDouble()
+                haveGeo = true
+            } catch (_: Exception) {}
+        }
+
         accel?.let {
             f["ax"] = it[0].toDouble(); f["ay"] = it[1].toDouble(); f["az"] = it[2].toDouble()
             f["amag"] = mag3(it); f["jerk"] = jerk
@@ -477,6 +499,15 @@ class MainActivity : FlutterActivity(), SensorEventListener {
         mag?.let { b ->
             f["mx"] = b[0].toDouble(); f["my"] = b[1].toDouble(); f["mz"] = b[2].toDouble()
             f["bmag"] = mag3(b)
+            // Cross-check measured field against the geomagnetic model: a large
+            // deviation = local ferrous/magnetic interference distorting the heading.
+            if (haveGeo && geoFieldUt > 0) {
+                val meas = mag3(b)
+                val devPct = abs(meas - geoFieldUt) / geoFieldUt * 100.0
+                f["magDev"] = meas - geoFieldUt
+                f["magDevPct"] = devPct
+                f["headingTrust"] = if (devPct < 12) "good" else if (devPct < 30) "fair" else "poor"
+            }
             gravity?.let { g ->
                 // magnetic dip = angle between field and horizontal plane
                 val dot = (b[0] * g[0] + b[1] * g[1] + b[2] * g[2]).toDouble()
@@ -496,6 +527,11 @@ class MainActivity : FlutterActivity(), SensorEventListener {
             var az = Math.toDegrees(atan2(he.toDouble(), hn.toDouble())); if (az < 0) az += 360.0
             f["compass"] = az
             f["cardinal"] = cardinal(az)
+            if (haveGeo) {
+                val tru = (((az + declination) % 360) + 360) % 360
+                f["trueHeading"] = tru
+                f["cardinalTrue"] = cardinal(tru)
+            }
             f["pitch"] = Math.toDegrees(ori[1].toDouble())
             f["roll"] = Math.toDegrees(ori[2].toDouble())
         }
@@ -505,6 +541,18 @@ class MainActivity : FlutterActivity(), SensorEventListener {
             f["press"] = p.toDouble()
             val alt = SensorManager.getAltitude(SensorManager.PRESSURE_STANDARD_ATMOSPHERE, p).toDouble()
             f["alt"] = alt
+            // GPS-anchored altitude: solve sea-level pressure (QNH) from a good GPS
+            // fix, then take barometric altitude against it — absolute-accurate AND
+            // baro-fast/stable, instead of the 1013.25 hPa standard-atmosphere guess.
+            lastFix?.let { loc ->
+                if (loc.hasAltitude() && (!loc.hasAccuracy() || loc.accuracy < 40f)) {
+                    qnh = p.toDouble() / Math.pow(1.0 - loc.altitude / 44330.0, 5.255)
+                }
+            }
+            if (!qnh.isNaN()) {
+                f["seaLevel"] = qnh
+                f["altCal"] = 44330.0 * (1.0 - Math.pow(p.toDouble() / qnh, 1.0 / 5.255))
+            }
             val now = SystemClock.elapsedRealtime()
             if (!lastAlt.isNaN() && lastAltT > 0) {
                 val dt = (now - lastAltT) / 1000.0
@@ -557,6 +605,11 @@ class MainActivity : FlutterActivity(), SensorEventListener {
             f["satUsed"] = satUsed
             f["satSeen"] = satSeen
             satArr?.let { arr -> f["sats"] = arr.map { s -> s.map { v -> v.toDouble() } } }
+            // Indoor/outdoor inference (GNSS × optical). An inference, labeled so.
+            val acc = lastFix?.accuracy ?: 999f
+            val outdoor = satUsed >= 5 || acc < 15f
+            val dim = (light ?: 1000f) < 30f
+            f["envContext"] = if (outdoor) "outdoor" else if (dim && satUsed < 3) "indoor" else "transition"
         }
 
         // fusion

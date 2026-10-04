@@ -123,6 +123,9 @@ class _MonitorScreenState extends State<MonitorScreen>
         _Tile('mz', 'Z', min: 0, max: 120, abs: true, color: _accent),
         _Tile('bmag', 'Field |B|', min: 0, max: 120, color: _accent),
         _Tile('dip', 'Dip angle', min: -90, max: 90, color: _cyan),
+        _Tile('geoField', 'Local field (model)', min: 0, max: 120, color: _accent),
+        _Tile('magDev', 'Field anomaly Δ', min: 0, max: 50, abs: true, color: _accent),
+        _Tile('magDevPct', 'Anomaly %', min: 0, max: 100, color: _accent),
       ]),
     ]),
     _Group('Orientation', [
@@ -132,6 +135,11 @@ class _MonitorScreenState extends State<MonitorScreen>
         _Tile('pitch', 'Pitch (f/b)', min: -180, max: 180, color: _cyan),
         _Tile('roll', 'Roll (l/r)', min: -180, max: 180, color: _cyan),
         _Tile('pose', 'Pose'),
+        _Tile('trueHeading', 'True heading', min: 0, max: 360, color: _cyan),
+        _Tile('cardinalTrue', 'True cardinal'),
+        _Tile('geoDecl', 'Declination (GPS)'),
+        _Tile('geoIncl', 'Mag inclination'),
+        _Tile('headingTrust', 'Heading trust'),
       ]),
     ]),
     _Group('Environment', [
@@ -141,6 +149,8 @@ class _MonitorScreenState extends State<MonitorScreen>
         _Tile('vspeed', 'Vertical speed', min: 0, max: 5, abs: true, color: _amber),
         _Tile('floors', 'Floors climbed', min: 0, max: 50, color: _amber),
         _Tile('ptrend', 'Trend'),
+        _Tile('altCal', 'Altitude (GPS-cal)', min: -100, max: 3000, color: _amber),
+        _Tile('seaLevel', 'Sea-level QNH', min: 950, max: 1050, color: _amber),
       ]),
       _Parent('lux', 'Optical', min: 0, max: 1000, color: _amber, sensorKey: 'light', children: [
         _Tile('lux', 'Illuminance', min: 0, max: 2000, color: _amber),
@@ -154,6 +164,7 @@ class _MonitorScreenState extends State<MonitorScreen>
         _Tile('atemp', 'Temperature', min: 0, max: 50, color: _amber),
         _Tile('humid', 'Humidity', min: 0, max: 100, color: _amber),
         _Tile('hall', 'Hall sensor'),
+        _Tile('envContext', 'Context (GNSS×light)'),
       ]),
     ]),
     _Group('Network', [
@@ -492,20 +503,24 @@ class _MonitorScreenState extends State<MonitorScreen>
   }
 
   // ── Hero: the device twin, under the gauge rings ──
-  Widget _hero(SensorService s) => DeviceTwin(
-        grx: s.numOf('grx'),
-        gry: s.numOf('gry'),
-        grz: s.numOf('grz'),
-        compass: s.numOf('compass'),
-        cardinal: s.readings['cardinal'],
-        lax: s.numOf('lax'),
-        lay: s.numOf('lay'),
-        pitch: s.numOf('pitch'),
-        roll: s.numOf('roll'),
-        pose: s.readings['pose'],
-        thermMax: s.numOf('thermmax'),
-        badge: _badge(s, 'rot'),
-      );
+  Widget _hero(SensorService s) {
+    final trueH = s.numOf('trueHeading');
+    return DeviceTwin(
+      grx: s.numOf('grx'),
+      gry: s.numOf('gry'),
+      grz: s.numOf('grz'),
+      compass: trueH ?? s.numOf('compass'),
+      cardinal: trueH != null ? s.readings['cardinalTrue'] : s.readings['cardinal'],
+      trueNorth: trueH != null,
+      lax: s.numOf('lax'),
+      lay: s.numOf('lay'),
+      pitch: s.numOf('pitch'),
+      roll: s.numOf('roll'),
+      pose: s.readings['pose'],
+      thermMax: s.numOf('thermmax'),
+      badge: _badge(s, 'rot'),
+    );
+  }
 
   // ── Sensor verifier badge for a given hardware sensor key ──
   Widget _badge(SensorService s, String key) {
@@ -576,12 +591,22 @@ class _MonitorScreenState extends State<MonitorScreen>
             ]),
         ];
       case 'Orientation':
+        final trueH = s.numOf('trueHeading');
         return [
-          CompassRose(heading: s.numOf('compass'), cardinal: s.readings['cardinal']),
+          CompassRose(
+            heading: trueH ?? s.numOf('compass'),
+            cardinal: trueH != null ? s.readings['cardinalTrue'] : s.readings['cardinal'],
+            trueNorth: trueH != null,
+          ),
         ];
       case 'Environment':
         return [
-          Altimeter(alt: s.numOf('alt'), vspeed: s.numOf('vspeed'), trend: s.readings['ptrend']),
+          Altimeter(
+            alt: s.numOf('altCal') ?? s.numOf('alt'),
+            vspeed: s.numOf('vspeed'),
+            trend: s.readings['ptrend'],
+            calibrated: s.numOf('altCal') != null,
+          ),
           LightBar(lux: s.numOf('lux'), cat: s.readings['lightcat']),
         ];
       case 'Network':
@@ -703,7 +728,8 @@ class _MonitorScreenState extends State<MonitorScreen>
   List<Widget> _bottomViz(String title, SensorService s) {
     if (title == 'Magnetic') {
       return [
-        MetalDetector(field: s.numOf('bmag'), mx: s.numOf('mx'), my: s.numOf('my')),
+        MetalDetector(
+            field: s.numOf('bmag'), mx: s.numOf('mx'), my: s.numOf('my'), earthField: s.numOf('geoField')),
       ];
     }
     return const [];

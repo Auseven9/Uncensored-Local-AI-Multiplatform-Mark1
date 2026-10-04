@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 /// Native data visualizations for the Monitor tab.
@@ -197,11 +198,13 @@ class DeviceTwin extends StatelessWidget {
     this.pose,
     this.thermMax,
     this.badge,
+    this.trueNorth = false,
   });
 
   final double? grx, gry, grz, compass, lax, lay, pitch, roll, thermMax;
   final String? cardinal, pose;
   final Widget? badge;
+  final bool trueNorth;
 
   @override
   Widget build(BuildContext context) {
@@ -260,7 +263,7 @@ class DeviceTwin extends StatelessWidget {
           const SizedBox(height: 6),
           Row(
             children: [
-              _twinStat('HEADING',
+              _twinStat(trueNorth ? 'HEADING ·T' : 'HEADING ·M',
                   compass == null ? '—' : '${compass!.toStringAsFixed(0)}° ${cardinal ?? ''}', _cyan),
               _twinStat('PITCH', pitch == null ? '—' : '${pitch!.toStringAsFixed(0)}°', _accent),
               _twinStat('ROLL', roll == null ? '—' : '${roll!.toStringAsFixed(0)}°', _accent),
@@ -933,8 +936,9 @@ class _ImpactPainter extends CustomPainter {
 /// A sensitivity control sets the Δ full-scale. Ferrous only (not aluminium /
 /// copper). Values are raw — baseline subtraction is a reference, not smoothing.
 class MetalDetector extends StatefulWidget {
-  const MetalDetector({super.key, this.field, this.mx, this.my});
+  const MetalDetector({super.key, this.field, this.mx, this.my, this.earthField});
   final double? field, mx, my; // µT
+  final double? earthField; // expected local field from the geomagnetic model
   @override
   State<MetalDetector> createState() => _MetalDetectorState();
 }
@@ -993,7 +997,7 @@ class _MetalDetectorState extends State<MetalDetector> {
             child: f == null
                 ? _noSocket(120)
                 : CustomPaint(
-                    painter: _MetalPainter(f, _baseline, scale, widget.mx, widget.my),
+                    painter: _MetalPainter(f, _baseline, scale, widget.mx, widget.my, widget.earthField),
                     size: Size.infinite),
           ),
           const SizedBox(height: 10),
@@ -1030,9 +1034,9 @@ class _MetalDetectorState extends State<MetalDetector> {
 }
 
 class _MetalPainter extends CustomPainter {
-  _MetalPainter(this.field, this.baseline, this.scale, this.mx, this.my);
+  _MetalPainter(this.field, this.baseline, this.scale, this.mx, this.my, this.earthField);
   final double field, scale;
-  final double? baseline, mx, my;
+  final double? baseline, mx, my, earthField;
 
   void _needle(Canvas canvas, Offset c, double rad, double a, Color col) {
     final tip = Offset(c.dx + math.cos(a) * rad, c.dy + math.sin(a) * rad);
@@ -1049,8 +1053,10 @@ class _MetalPainter extends CustomPainter {
     final up = start + sweep * 0.5; // straight up = zero deflection
 
     if (baseline == null) {
-      // absolute mode: 0..150 µT with earth/elevated/metal bands
-      const maxS = 150.0;
+      // absolute mode: bands centred on the real local earth field when known
+      // (from the geomagnetic model), otherwise the generic 0..150 µT scale.
+      final ef = earthField;
+      final double maxS = (ef != null && ef > 0) ? (ef * 2.6).clamp(80.0, 400.0).toDouble() : 150.0;
       void band(double a, double b, Color col) {
         final s = start + (a / maxS) * sweep;
         final e = start + (b / maxS) * sweep;
@@ -1058,14 +1064,21 @@ class _MetalPainter extends CustomPainter {
             Paint()..style = PaintingStyle.stroke..strokeWidth = 8..color = col.withValues(alpha: 0.7));
       }
 
-      band(0, 65, _green);
-      band(65, 110, _amber);
-      band(110, maxS, _red);
+      if (ef != null && ef > 0) {
+        band(0, ef * 1.25, _green);
+        band(ef * 1.25, ef * 1.8, _amber);
+        band(ef * 1.8, maxS, _red);
+      } else {
+        band(0, 65, _green);
+        band(65, 110, _amber);
+        band(110, maxS, _red);
+      }
       final frac = (field / maxS).clamp(0.0, 1.0).toDouble();
       _needle(canvas, c, rad, start + frac * sweep, _text);
       _tp(canvas, '${field.toStringAsFixed(0)} µT', Offset(c.dx, c.dy - rad * 0.45), _text,
           size: 15, w: FontWeight.w700);
-      _tp(canvas, 'tap ZERO to calibrate', Offset(c.dx, c.dy - rad * 0.45 + 18), _textM, size: 10);
+      _tp(canvas, ef != null && ef > 0 ? 'local field ${ef.toStringAsFixed(0)} µT · tap ZERO' : 'tap ZERO to calibrate',
+          Offset(c.dx, c.dy - rad * 0.45 + 18), _textM, size: 10);
       return;
     }
 
@@ -1112,13 +1125,14 @@ class _MetalPainter extends CustomPainter {
 /// metal detector). The rose rotates to true heading; the fixed top marker is
 /// the device's own forward direction.
 class CompassRose extends StatelessWidget {
-  const CompassRose({super.key, this.heading, this.cardinal});
+  const CompassRose({super.key, this.heading, this.cardinal, this.trueNorth = false});
   final double? heading;
   final String? cardinal;
+  final bool trueNorth;
   @override
   Widget build(BuildContext context) {
     return VizCard(
-      title: 'Compass',
+      title: trueNorth ? 'Compass · true N' : 'Compass · magnetic',
       height: 140,
       live: heading != null,
       trailing: heading == null ? null : '${heading!.toStringAsFixed(0)}° ${cardinal ?? ''}',
@@ -1178,13 +1192,14 @@ class _RosePainter extends CustomPainter {
 // ════════════════════════ ENVIRONMENT ════════════════════════
 
 class Altimeter extends StatelessWidget {
-  const Altimeter({super.key, this.alt, this.vspeed, this.trend});
+  const Altimeter({super.key, this.alt, this.vspeed, this.trend, this.calibrated = false});
   final double? alt, vspeed;
   final String? trend;
+  final bool calibrated;
   @override
   Widget build(BuildContext context) {
     return VizCard(
-      title: 'Altimeter',
+      title: calibrated ? 'Altimeter · GPS-cal' : 'Altimeter · standard',
       height: 130,
       live: alt != null,
       trailing: alt == null ? null : '${alt!.toStringAsFixed(1)} m',

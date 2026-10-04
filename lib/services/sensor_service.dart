@@ -453,6 +453,9 @@ class SensorService {
     _d2(m['mz'], 'mz', (v) => '${v.toStringAsFixed(1)} µT');
     _d2(m['bmag'], 'bmag', (v) => '${v.toStringAsFixed(1)} µT');
     _d2(m['dip'], 'dip', (v) => '${v.toStringAsFixed(1)} °');
+    _d2(m['magDev'], 'magDev', (v) => '${v >= 0 ? '+' : ''}${v.toStringAsFixed(1)} µT');
+    _d2(m['magDevPct'], 'magDevPct', (v) => '${v.toStringAsFixed(0)} %');
+    _s(m['headingTrust'], 'headingTrust');
 
     // ── Orientation (fused rotation vector) ──
     _d2(m['compass'], 'compass', (v) => '${v.toStringAsFixed(1)} °');
@@ -460,6 +463,12 @@ class SensorService {
     _d2(m['pitch'], 'pitch', (v) => '${v.toStringAsFixed(1)} °');
     _d2(m['roll'], 'roll', (v) => '${v.toStringAsFixed(1)} °');
     _s(m['pose'], 'pose');
+    // Geomagnetic corrections (from the GPS fix): true heading + local field.
+    _d2(m['trueHeading'], 'trueHeading', (v) => '${v.toStringAsFixed(1)} °');
+    _s(m['cardinalTrue'], 'cardinalTrue');
+    _d2(m['geoDecl'], 'geoDecl', (v) => '${v >= 0 ? '+' : ''}${v.toStringAsFixed(1)} °');
+    _d2(m['geoField'], 'geoField', (v) => '${v.toStringAsFixed(1)} µT');
+    _d2(m['geoIncl'], 'geoIncl', (v) => '${v.toStringAsFixed(1)} °');
     final r = m['rot'];
     if (r is List && r.length == 9) {
       rot.value = r.map((e) => (e as num).toDouble()).toList(growable: false);
@@ -582,6 +591,9 @@ class SensorService {
 
     // ── Fusion / inferred ──
     _s(m['motionstate'], 'motionstate');
+    _s(m['envContext'], 'envContext');
+    _d2(m['altCal'], 'altCal', (v) => '${v.toStringAsFixed(1)} m');
+    _d2(m['seaLevel'], 'seaLevel', (v) => '${v.toStringAsFixed(1)} hPa');
     _int(m['steps'], 'steps', (v) => '$v steps');
     _int(m['cadence'], 'cadence', (v) => '$v /min');
     _int(m['shakes'], 'shakes', (v) => '$v');
