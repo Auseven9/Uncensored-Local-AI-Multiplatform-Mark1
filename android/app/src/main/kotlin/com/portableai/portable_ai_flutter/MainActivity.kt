@@ -6,6 +6,10 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.net.Uri
+import android.provider.Settings
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
@@ -55,6 +59,10 @@ import kotlin.math.sqrt
 class MainActivity : FlutterActivity(), SensorEventListener {
     private val streamName = "aether/stream"
     private var sink: EventChannel.EventSink? = null
+
+    // Runtime-permission request bridge (aether/perms). One request in flight.
+    private var pendingPerm: MethodChannel.Result? = null
+    private val permCode = 9017
 
     private var sm: SensorManager? = null
     private val handler = Handler(Looper.getMainLooper())
@@ -157,16 +165,70 @@ class MainActivity : FlutterActivity(), SensorEventListener {
             })
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "aether/index")
             .setMethodCallHandler { call, result ->
-                if (call.method == "full") {
-                    try {
-                        result.success(buildIndex())
-                    } catch (e: Exception) {
-                        result.error("INDEX", e.message, null)
-                    }
-                } else {
-                    result.notImplemented()
+                when (call.method) {
+                    "full" -> try { result.success(buildIndex()) } catch (e: Exception) { result.error("INDEX", e.message, null) }
+                    "caps" -> try { result.success(buildCaps()) } catch (e: Exception) { result.error("CAPS", e.message, null) }
+                    else -> result.notImplemented()
                 }
             }
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "aether/perms")
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "status" -> {
+                        val perms = call.argument<List<String>>("perms") ?: emptyList()
+                        val m = HashMap<String, Boolean>()
+                        for (p in perms) {
+                            m[p] = try {
+                                ContextCompat.checkSelfPermission(this, p) == PackageManager.PERMISSION_GRANTED
+                            } catch (_: Exception) { false }
+                        }
+                        result.success(m)
+                    }
+                    "request" -> {
+                        val perms = (call.argument<List<String>>("perms") ?: emptyList()).toTypedArray()
+                        if (perms.isEmpty()) { result.success(HashMap<String, Boolean>()); return@setMethodCallHandler }
+                        if (pendingPerm != null) {
+                            // a request is already in flight — just report current status
+                            val m = HashMap<String, Boolean>()
+                            for (p in perms) m[p] = try {
+                                ContextCompat.checkSelfPermission(this, p) == PackageManager.PERMISSION_GRANTED
+                            } catch (_: Exception) { false }
+                            result.success(m); return@setMethodCallHandler
+                        }
+                        pendingPerm = result
+                        try {
+                            ActivityCompat.requestPermissions(this, perms, permCode)
+                        } catch (e: Exception) {
+                            pendingPerm = null
+                            result.error("PERM", e.message, null)
+                        }
+                    }
+                    "openSettings" -> {
+                        result.success(
+                            try {
+                                startActivity(
+                                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))
+                                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                                true
+                            } catch (_: Exception) { false })
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int, permissions: Array<out String>, grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == permCode) {
+            val m = HashMap<String, Boolean>()
+            for (i in permissions.indices) {
+                m[permissions[i]] = grantResults.getOrNull(i) == PackageManager.PERMISSION_GRANTED
+            }
+            pendingPerm?.success(m)
+            pendingPerm = null
+        }
     }
 
     private fun bumpEvent(label: String) {
@@ -713,6 +775,74 @@ class MainActivity : FlutterActivity(), SensorEventListener {
 
     private fun feat(f: String): Boolean =
         try { packageManager.hasSystemFeature(f) } catch (_: Exception) { false }
+
+    // Flat presence/feature probe — the single source of truth the Dart
+    // capability registry reads to decide each card's state. Facts only; the
+    // Dart side merges these with live permission status and live stream health.
+    private fun buildCaps(): HashMap<String, Any> {
+        val c = HashMap<String, Any>()
+        c["mic"] = feat("android.hardware.microphone")
+        try {
+            val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            c["cameraCount"] = cm.cameraIdList.size
+            var back = 0; var front = 0
+            for (id in cm.cameraIdList) {
+                when (cm.getCameraCharacteristics(id).get(CameraCharacteristics.LENS_FACING)) {
+                    CameraCharacteristics.LENS_FACING_BACK -> back++
+                    CameraCharacteristics.LENS_FACING_FRONT -> front++
+                }
+            }
+            c["cameraBack"] = back; c["cameraFront"] = front
+        } catch (_: Exception) {}
+        c["torch"] = feat("android.hardware.camera.flash")
+        try {
+            val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+            c["gps"] = lm.allProviders.contains(LocationManager.GPS_PROVIDER)
+            c["locationProviders"] = lm.allProviders.joinToString(",")
+            if (Build.VERSION.SDK_INT >= 28) c["gnssYear"] = lm.gnssYearOfHardware
+        } catch (_: Exception) {}
+        c["wifiRtt"] = feat("android.hardware.wifi.rtt")
+        c["wifiAware"] = feat("android.hardware.wifi.aware")
+        try {
+            val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            c["wifi"] = true
+            c["wifi5"] = wm.is5GHzBandSupported
+            if (Build.VERSION.SDK_INT >= 30) c["wifi6"] = wm.is6GHzBandSupported
+        } catch (_: Exception) {}
+        c["cell"] = feat("android.hardware.telephony")
+        try {
+            val tm = getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+            c["simState"] = tm.simState
+        } catch (_: Exception) {}
+        c["ble"] = feat("android.hardware.bluetooth_le")
+        c["uwb"] = feat("android.hardware.uwb")
+        try {
+            val nfc = NfcAdapter.getDefaultAdapter(this)
+            c["nfc"] = nfc != null
+            c["nfcEnabled"] = nfc?.isEnabled ?: false
+        } catch (_: Exception) {}
+        c["nfcHce"] = feat("android.hardware.nfc.hce")
+        try {
+            val v = getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+            c["vibrator"] = v.hasVibrator()
+            c["vibAmplitude"] = v.hasAmplitudeControl()
+        } catch (_: Exception) {}
+        c["bioFace"] = feat("android.hardware.biometrics.face")
+        c["bioFingerprint"] = feat("android.hardware.fingerprint")
+        c["bioIris"] = feat("android.hardware.biometrics.iris")
+        try {
+            var stylus = false
+            for (id in InputDevice.getDeviceIds()) {
+                val d = InputDevice.getDevice(id) ?: continue
+                if ((d.sources and InputDevice.SOURCE_STYLUS) == InputDevice.SOURCE_STYLUS) { stylus = true; break }
+            }
+            c["stylus"] = stylus
+        } catch (_: Exception) {}
+        c["multitouch"] = feat("android.hardware.touchscreen.multitouch.jazzhand")
+        c["vulkan"] = feat("android.hardware.vulkan.level")
+        try { c["displayModes"] = windowManager.defaultDisplay.supportedModes.size } catch (_: Exception) {}
+        return c
+    }
 
     private fun buildIndex(): ArrayList<HashMap<String, Any>> {
         val out = ArrayList<HashMap<String, Any>>()

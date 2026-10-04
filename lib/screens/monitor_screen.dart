@@ -185,6 +185,75 @@ class _MonitorScreenState extends State<MonitorScreen>
     ]),
   ];
 
+  // ── Capability registry ──────────────────────────────────────────────
+  // Every reachable socket/call/command the AI can use gets a card here — even
+  // those with no live value stream yet. The card shows a CAPTURED indicator
+  // (real endpoint reachable), the exact endpoint the AI invokes, and an Enable
+  // button for any runtime-gated one. Single source → no duplicate cards; these
+  // subsystems are distinct from the streaming sensor groups above.
+  static const List<_CapGroup> _capGroups = <_CapGroup>[
+    _CapGroup('Hearing', [
+      _Cap('mic', 'Microphone', 'AudioRecord · 48 kHz PCM',
+          perm: SensorService.pMic, capKey: 'mic', detail: 'raw PCM — level, waveform, FFT'),
+    ]),
+    _CapGroup('Vision', [
+      _Cap('cam', 'Cameras', 'Camera2 · openCamera',
+          perm: SensorService.pCam, capKey: 'cameraCount', detail: 'live preview · RAW/MANUAL'),
+      _Cap('torch', 'Flashlight / torch', 'CameraManager.setTorchMode',
+          capKey: 'torch', detail: 'on/off + strength (API 33+)'),
+    ]),
+    _CapGroup('Location', [
+      _Cap('loc', 'Fused location', 'FusedLocationProvider',
+          perm: SensorService.pLoc, capKey: 'gps', detail: 'lat/lon/alt · speed · bearing · accuracy'),
+      _Cap('gnss', 'GNSS raw', 'GnssMeasurementsEvent',
+          perm: SensorService.pLoc, capKey: 'gps', detail: 'per-satellite C/N0 · pseudorange · constellation'),
+    ]),
+    _CapGroup('Radio & Nearby', [
+      _Cap('wifiscan', 'Wi-Fi scan', 'WifiManager.scanResults',
+          perm: SensorService.pWifi, capKey: 'wifi', detail: 'per-AP RSSI · channel · link speed'),
+      _Cap('wifirtt', 'Wi-Fi RTT ranging', 'WifiRttManager',
+          perm: SensorService.pWifi, capKey: 'wifiRtt', detail: 'fine-timing distance (m)'),
+      _Cap('wifiaware', 'Wi-Fi Aware', 'WifiAwareManager',
+          perm: SensorService.pWifi, capKey: 'wifiAware', detail: 'NAN peer discovery'),
+      _Cap('cell', 'Cellular signal', 'CellInfo / SignalStrength',
+          perm: SensorService.pPhone, capKey: 'cell', detail: 'dBm · band · cell id · network type'),
+      _Cap('ble', 'BLE scan', 'BluetoothLeScanner',
+          perm: SensorService.pBt, capKey: 'ble', detail: 'nearby device RSSI / beacons'),
+      _Cap('uwb', 'Ultra-wideband', 'UwbManager',
+          perm: SensorService.pUwb, capKey: 'uwb', detail: 'range + angle-of-arrival (needs a peer)'),
+      _Cap('nfc', 'NFC', 'NfcAdapter',
+          capKey: 'nfc', detail: 'tag read / HCE — toggle NFC on in quick settings'),
+    ]),
+    _CapGroup('Input', [
+      _Cap('spen', 'S-Pen / stylus', 'InputDevice · SOURCE_STYLUS',
+          capKey: 'stylus', detail: 'hover · pressure · button'),
+      _Cap('touch', 'Touch digitizer', 'MotionEvent', detail: '10-point · pressure · size · tool'),
+    ]),
+    _CapGroup('Actuators', [
+      _Cap('haptic', 'Haptics', 'Vibrator', capKey: 'vibrator', detail: 'amplitude-controlled actuation'),
+    ]),
+    _CapGroup('Identity', [
+      _Cap('finger', 'Fingerprint', 'BiometricPrompt', capKey: 'bioFingerprint', detail: 'auth only — no raw image'),
+      _Cap('face', 'Face unlock', 'BiometricPrompt', capKey: 'bioFace', detail: 'auth only'),
+    ]),
+    _CapGroup('Compute', [
+      _Cap('gpu', 'GPU — Vulkan / GLES', 'Vulkan · OpenGL ES', capKey: 'vulkan', detail: 'compute + render'),
+      _Cap('npu', 'NPU / DSP', 'NNAPI / TFLite', detail: 'AI accel — drive-only, no utilisation readout'),
+    ]),
+  ];
+
+  // Runtime permissions the gated cards request, for the Permissions screen.
+  static const List<(String, String, String)> _permMeta = <(String, String, String)>[
+    (SensorService.pMic, 'Microphone', 'Hearing — mic level, waveform, FFT'),
+    (SensorService.pCam, 'Camera', 'Vision — live preview'),
+    (SensorService.pLoc, 'Location (precise)', 'GPS + GNSS sky, speed, bearing'),
+    (SensorService.pWifi, 'Nearby Wi-Fi', 'Wi-Fi scan · RTT · Aware'),
+    (SensorService.pPhone, 'Phone state', 'Cellular signal / band / cell id'),
+    (SensorService.pBt, 'Bluetooth scan', 'BLE nearby device RSSI'),
+    (SensorService.pUwb, 'Ultra-wideband', 'UWB range + angle'),
+    (SensorService.pAct, 'Physical activity', 'Hardware step detector / counter'),
+  ];
+
   SensorService? _svc;
   late final AnimationController _pulse;
   final Set<String> _open = <String>{};
@@ -271,6 +340,8 @@ class _MonitorScreenState extends State<MonitorScreen>
                       const SizedBox(height: 16),
                       _hero(svc),
                       for (final g in _groups) ..._group(g, svc, now),
+                      for (final cg in _capGroups) ..._capSection(cg, svc),
+                      const SizedBox(height: 8),
                     ],
                   );
                 },
@@ -300,7 +371,7 @@ class _MonitorScreenState extends State<MonitorScreen>
             const Text('Monitor',
                 style: TextStyle(fontSize: 24, fontWeight: FontWeight.w700, color: _text)),
             const Spacer(),
-            _indexButton(s),
+            _headerActions(s),
           ],
         ),
         const SizedBox(height: 2),
@@ -526,33 +597,75 @@ class _MonitorScreenState extends State<MonitorScreen>
     }
   }
 
-  // ── Full device sensor inventory (how deep we can reach) ──
-  // INDEX button in the Monitor header — opens the full device capability index.
-  Widget _indexButton(SensorService s) => Material(
+  // ── Header actions: INDEX (catalog) · CHECK (verify) · PERMS (unlock) ──
+  Widget _headerActions(SensorService s) => Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _pill(Icons.format_list_numbered_rounded, 'INDEX', _accent, () => _openIndex(s)),
+          const SizedBox(width: 6),
+          _pill(Icons.verified_outlined, 'CHECK', _green, () => _openCheck(s)),
+          const SizedBox(width: 6),
+          _pill(Icons.lock_open_rounded, 'PERMS', _amber, () => _openPerms(s)),
+        ],
+      );
+
+  Widget _pill(IconData icon, String label, Color c, VoidCallback onTap) => Material(
         color: Colors.transparent,
         child: InkWell(
           borderRadius: BorderRadius.circular(9),
-          onTap: () => _openIndex(s),
+          onTap: onTap,
           child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+            padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
             decoration: BoxDecoration(
-              color: Color.alphaBlend(_accent.withValues(alpha: 0.14), _bg),
+              color: Color.alphaBlend(c.withValues(alpha: 0.14), _bg),
               borderRadius: BorderRadius.circular(9),
-              border: Border.all(color: _accent.withValues(alpha: 0.5)),
+              border: Border.all(color: c.withValues(alpha: 0.5)),
             ),
-            child: const Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(Icons.format_list_numbered_rounded, size: 15, color: _accent),
-                SizedBox(width: 6),
-                Text('INDEX',
-                    style: TextStyle(
-                        fontSize: 11, color: _accent, fontWeight: FontWeight.w700, letterSpacing: 0.6)),
-              ],
-            ),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              Icon(icon, size: 13, color: c),
+              const SizedBox(width: 4),
+              Text(label,
+                  style: TextStyle(fontSize: 10, color: c, fontWeight: FontWeight.w700, letterSpacing: 0.4)),
+            ]),
           ),
         ),
       );
+
+  void _openPerms(SensorService s) {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: _bg,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
+      builder: (ctx) => DraggableScrollableSheet(
+        initialChildSize: 0.9,
+        minChildSize: 0.5,
+        maxChildSize: 0.96,
+        expand: false,
+        builder: (ctx, scrollCtl) =>
+            _PermsSheet(service: s, permMeta: _permMeta, scrollController: scrollCtl),
+      ),
+    );
+  }
+
+  void _openCheck(SensorService s) {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: _bg,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
+      builder: (ctx) => DraggableScrollableSheet(
+        initialChildSize: 0.92,
+        minChildSize: 0.5,
+        maxChildSize: 0.96,
+        expand: false,
+        builder: (ctx, scrollCtl) => _CheckSheet(
+            service: s, capGroups: _capGroups, scrollController: scrollCtl),
+      ),
+    );
+  }
 
   void _openIndex(SensorService s) {
     showModalBottomSheet<void>(
@@ -581,6 +694,125 @@ class _MonitorScreenState extends State<MonitorScreen>
     }
     return const [];
   }
+
+  // ── Capability cards: one per reachable socket/call/command ──
+  List<Widget> _capSection(_CapGroup g, SensorService s) => [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(2, 22, 2, 10),
+          child: Text(g.title.toUpperCase(),
+              style: const TextStyle(
+                  fontSize: 11, letterSpacing: 1.2, color: _textM, fontWeight: FontWeight.w700)),
+        ),
+        for (final c in g.caps) _capCard(c, s),
+      ];
+
+  // (label, colour, canEnable) for a capability's current state.
+  (String, Color, bool) _capStatus(_Cap c, SensorService s) {
+    final present = c.capKey.isEmpty ? true : s.capPresent(c.capKey);
+    final gated = c.perm.isNotEmpty;
+    final grantedP = !gated || s.granted(c.perm);
+    if (!present) return ('SEALED', _textD, false);
+    if (gated && !grantedP) return ('ENABLE', _amber, true);
+    return ('CAPTURED', _green, false);
+  }
+
+  Widget _capCard(_Cap c, SensorService s) {
+    final st = _capStatus(c, s);
+    final label = st.$1;
+    final col = st.$2;
+    final canEnable = st.$3;
+    var detail = c.detail;
+    if (c.id == 'nfc' && label == 'CAPTURED' && s.caps['nfcEnabled'] != true) {
+      detail = '$detail · currently off';
+    }
+    final permShort = c.perm.isEmpty ? '' : c.perm.split('.').last;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.fromLTRB(14, 12, 12, 12),
+      decoration: BoxDecoration(
+        color: _panel,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: _border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(c.title,
+                    style: const TextStyle(fontSize: 13, color: _text, fontWeight: FontWeight.w700)),
+              ),
+              const SizedBox(width: 8),
+              canEnable ? _enableBtn(c, s) : _statusPill(label, col),
+            ],
+          ),
+          if (detail.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(detail, style: const TextStyle(fontSize: 10.5, color: _textM)),
+          ],
+          const SizedBox(height: 9),
+          Row(
+            children: [
+              const Icon(Icons.cable_rounded, size: 11, color: _textD),
+              const SizedBox(width: 5),
+              Expanded(
+                child: Text(c.endpoint,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 9.5, color: _textD, fontWeight: FontWeight.w600)),
+              ),
+              if (permShort.isNotEmpty)
+                Text(permShort,
+                    style: const TextStyle(fontSize: 8.5, color: _textD)),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _statusPill(String label, Color col) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(
+          color: Color.alphaBlend(col.withValues(alpha: 0.12), _panel),
+          borderRadius: BorderRadius.circular(7),
+          border: Border.all(color: col.withValues(alpha: 0.45)),
+        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Icon(label == 'CAPTURED' ? Icons.check_circle_outline : Icons.block, size: 10, color: col),
+          const SizedBox(width: 4),
+          Text(label, style: TextStyle(fontSize: 9, color: col, fontWeight: FontWeight.w700, letterSpacing: 0.3)),
+        ]),
+      );
+
+  Widget _enableBtn(_Cap c, SensorService s) => GestureDetector(
+        onTap: () async {
+          final ok = await s.requestPerm(c.perm);
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(ok ? '${c.title}: socket captured' : '${c.title}: permission denied'),
+            duration: const Duration(seconds: 2),
+            behavior: SnackBarBehavior.floating,
+            backgroundColor: _panel,
+          ));
+          setState(() {});
+        },
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+          decoration: BoxDecoration(
+            color: Color.alphaBlend(_amber.withValues(alpha: 0.16), _panel),
+            borderRadius: BorderRadius.circular(7),
+            border: Border.all(color: _amber.withValues(alpha: 0.55)),
+          ),
+          child: const Row(mainAxisSize: MainAxisSize.min, children: [
+            Icon(Icons.bolt_rounded, size: 11, color: _amber),
+            SizedBox(width: 3),
+            Text('ENABLE',
+                style: TextStyle(fontSize: 9, color: _amber, fontWeight: FontWeight.w700, letterSpacing: 0.3)),
+          ]),
+        ),
+      );
 
   Widget _parentCard(_Parent p, SensorService s, int now) {
     final st = _state(s, p.id, now);
@@ -943,6 +1175,24 @@ class _Tile {
       {this.min = 0, this.max = 0, this.abs = false, this.color = const Color(0xFF818CF8)});
 }
 
+/// A reachable device capability (socket/call/command the AI can invoke).
+class _Cap {
+  final String id;
+  final String title;
+  final String endpoint; // the actual API the AI calls
+  final String perm; // runtime permission (Android constant), '' if none
+  final String capKey; // native caps presence key, '' = always present
+  final String detail;
+  const _Cap(this.id, this.title, this.endpoint,
+      {this.perm = '', this.capKey = '', this.detail = ''});
+}
+
+class _CapGroup {
+  final String title;
+  final List<_Cap> caps;
+  const _CapGroup(this.title, this.caps);
+}
+
 /// Full-screen device capability index — every subsystem/API probed for what we
 /// can tap and where, with a COPY button that puts the whole catalog on the
 /// clipboard.
@@ -1168,4 +1418,329 @@ class _IndexSheetState extends State<_IndexSheet> {
         const SizedBox(width: 4),
         Text(label, style: TextStyle(fontSize: 9, color: c, fontWeight: FontWeight.w600)),
       ]);
+}
+
+/// Permissions screen — every runtime permission a gated socket needs, its live
+/// grant status, a one-tap request, and how to unlock it manually if Android
+/// has stopped re-prompting. Requests go through the native bridge, no plugin.
+class _PermsSheet extends StatefulWidget {
+  const _PermsSheet({required this.service, required this.permMeta, required this.scrollController});
+  final SensorService service;
+  final List<(String, String, String)> permMeta;
+  final ScrollController scrollController;
+  @override
+  State<_PermsSheet> createState() => _PermsSheetState();
+}
+
+class _PermsSheetState extends State<_PermsSheet> {
+  static const Color _bg = Color(0xFF0D1117);
+  static const Color _panel = Color(0xFF161B22);
+  static const Color _border = Color(0x1AFFFFFF);
+  static const Color _text = Color(0xFFE6EDF3);
+  static const Color _textM = Color(0xFF8B949E);
+  static const Color _textD = Color(0xFF484F58);
+  static const Color _green = Color(0xFF3FB950);
+  static const Color _amber = Color(0xFFE3B341);
+  static const Color _accent = Color(0xFF818CF8);
+
+  bool _busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.service.refreshPerms().then((_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  Future<void> _request(String perm) async {
+    setState(() => _busy = true);
+    final ok = await widget.service.requestPerm(perm);
+    if (!mounted) return;
+    setState(() => _busy = false);
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(ok ? 'Granted' : 'Denied — try Open App Settings below'),
+      duration: const Duration(seconds: 2),
+      behavior: SnackBarBehavior.floating,
+      backgroundColor: _panel,
+    ));
+  }
+
+  Future<void> _requestAll() async {
+    setState(() => _busy = true);
+    for (final p in widget.permMeta) {
+      if (!widget.service.granted(p.$1)) await widget.service.requestPerm(p.$1);
+    }
+    if (mounted) setState(() => _busy = false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final granted = widget.permMeta.where((p) => widget.service.granted(p.$1)).length;
+    return Column(
+      children: [
+        const SizedBox(height: 10),
+        Container(width: 38, height: 4, decoration: BoxDecoration(color: _textD, borderRadius: BorderRadius.circular(2))),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 8, 6),
+          child: Row(children: [
+            const Text('Permissions', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: _text)),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text('$granted/${widget.permMeta.length} granted',
+                  style: const TextStyle(fontSize: 11, color: _textM)),
+            ),
+            IconButton(
+              icon: const Icon(Icons.close_rounded, color: _textM, size: 22),
+              onPressed: () => Navigator.of(context).pop(),
+            ),
+          ]),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+          child: Row(children: [
+            _btn('Request all', _accent, _busy ? null : _requestAll),
+            const SizedBox(width: 8),
+            _btn('Open App Settings', _textM, () => widget.service.openAppSettings()),
+          ]),
+        ),
+        Expanded(
+          child: ListView(
+            controller: widget.scrollController,
+            padding: const EdgeInsets.fromLTRB(14, 4, 14, 28),
+            children: [
+              for (final p in widget.permMeta) _permRow(p),
+              const SizedBox(height: 10),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: _panel,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: _border),
+                ),
+                child: const Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text('How to unlock', style: TextStyle(fontSize: 12, color: _text, fontWeight: FontWeight.w700)),
+                  SizedBox(height: 6),
+                  Text('1 · Tap a permission\'s Request to prompt the system dialog, then Allow.\n'
+                      '2 · Android stops re-prompting after two denials. If Request does nothing, tap '
+                      'Open App Settings → Permissions and enable it there.\n'
+                      '3 · Nearby Wi-Fi, Bluetooth and Precise location may each ask once; grant all for '
+                      'the Radio & Nearby cards.\n'
+                      '4 · Nothing streams until you grant it — a denied socket just stays dark, never faked.',
+                      style: TextStyle(fontSize: 10.5, color: _textM, height: 1.5)),
+                ]),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _permRow((String, String, String) p) {
+    final ok = widget.service.granted(p.$1);
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.fromLTRB(12, 10, 10, 10),
+      decoration: BoxDecoration(
+        color: _panel,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: _border),
+      ),
+      child: Row(children: [
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(p.$2, style: const TextStyle(fontSize: 13, color: _text, fontWeight: FontWeight.w700)),
+            const SizedBox(height: 2),
+            Text(p.$3, style: const TextStyle(fontSize: 10, color: _textM)),
+          ]),
+        ),
+        const SizedBox(width: 8),
+        ok
+            ? Row(mainAxisSize: MainAxisSize.min, children: const [
+                Icon(Icons.check_circle, size: 14, color: _green),
+                SizedBox(width: 4),
+                Text('granted', style: TextStyle(fontSize: 11, color: _green, fontWeight: FontWeight.w700)),
+              ])
+            : _btn('Request', _amber, _busy ? null : () => _request(p.$1)),
+      ]),
+    );
+  }
+
+  Widget _btn(String label, Color col, VoidCallback? onTap) => GestureDetector(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+          decoration: BoxDecoration(
+            color: Color.alphaBlend(col.withValues(alpha: onTap == null ? 0.05 : 0.14), _bg),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: col.withValues(alpha: onTap == null ? 0.2 : 0.5)),
+          ),
+          child: Text(label,
+              style: TextStyle(
+                  fontSize: 11, color: onTap == null ? _textD : col, fontWeight: FontWeight.w700)),
+        ),
+      );
+}
+
+/// Check-Index — re-probes presence + permissions and verifies every channel's
+/// state (CAPTURED / ENABLE / SEALED) plus the streaming sensors' armed/lost
+/// health, so you can confirm at a glance that the sockets are actually open.
+class _CheckSheet extends StatefulWidget {
+  const _CheckSheet({required this.service, required this.capGroups, required this.scrollController});
+  final SensorService service;
+  final List<_CapGroup> capGroups;
+  final ScrollController scrollController;
+  @override
+  State<_CheckSheet> createState() => _CheckSheetState();
+}
+
+class _CheckSheetState extends State<_CheckSheet> {
+  static const Color _panel = Color(0xFF161B22);
+  static const Color _border = Color(0x1AFFFFFF);
+  static const Color _text = Color(0xFFE6EDF3);
+  static const Color _textM = Color(0xFF8B949E);
+  static const Color _textD = Color(0xFF484F58);
+  static const Color _green = Color(0xFF3FB950);
+  static const Color _amber = Color(0xFFE3B341);
+  static const Color _red = Color(0xFFF85149);
+
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _run();
+  }
+
+  Future<void> _run() async {
+    setState(() => _loading = true);
+    await widget.service.recheck();
+    if (mounted) setState(() => _loading = false);
+  }
+
+  (String, Color) _status(_Cap c) {
+    final s = widget.service;
+    final present = c.capKey.isEmpty ? true : s.capPresent(c.capKey);
+    final gated = c.perm.isNotEmpty;
+    final grantedP = !gated || s.granted(c.perm);
+    if (!present) return ('SEALED', _textD);
+    if (gated && !grantedP) return ('ENABLE', _amber);
+    return ('CAPTURED', _green);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = widget.service;
+    int captured = 0, enable = 0, sealed = 0, total = 0;
+    for (final g in widget.capGroups) {
+      for (final c in g.caps) {
+        total++;
+        switch (_status(c).$1) {
+          case 'CAPTURED':
+            captured++;
+          case 'ENABLE':
+            enable++;
+          default:
+            sealed++;
+        }
+      }
+    }
+    final sensors = s.health.values.where((h) => h.present).toList();
+    final armed = sensors.where((h) => h.alive).length;
+    return Column(
+      children: [
+        const SizedBox(height: 10),
+        Container(width: 38, height: 4, decoration: BoxDecoration(color: _textD, borderRadius: BorderRadius.circular(2))),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 8, 6),
+          child: Row(children: [
+            const Text('Channel check', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: _text)),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                  _loading ? 'verifying…' : '$captured captured · $enable to enable · $armed/${sensors.length} sensors armed',
+                  style: const TextStyle(fontSize: 11, color: _textM)),
+            ),
+            IconButton(
+              icon: const Icon(Icons.refresh_rounded, color: _textM, size: 20),
+              onPressed: _loading ? null : _run,
+            ),
+            IconButton(
+              icon: const Icon(Icons.close_rounded, color: _textM, size: 22),
+              onPressed: () => Navigator.of(context).pop(),
+            ),
+          ]),
+        ),
+        Expanded(
+          child: ListView(
+            controller: widget.scrollController,
+            padding: const EdgeInsets.fromLTRB(14, 4, 14, 28),
+            children: [
+              _sectionLabel('STREAMING SENSORS'),
+              for (final h in sensors)
+                _row(_sensorShort(h.name), h.alive ? 'ARMED' : 'LOST', h.alive ? _green : _red),
+              for (final g in widget.capGroups) ...[
+                _sectionLabel(g.title.toUpperCase()),
+                for (final c in g.caps)
+                  () {
+                    final st = _status(c);
+                    return _row(c.title, st.$1, st.$2, endpoint: c.endpoint);
+                  }(),
+              ],
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  static String _sensorShort(String n) {
+    if (n.isEmpty) return 'sensor';
+    final t = n.replaceAll(' Non-wakeup', '').replaceAll(' Wakeup', '');
+    return t.length > 26 ? t.substring(0, 26) : t;
+  }
+
+  Widget _sectionLabel(String s) => Padding(
+        padding: const EdgeInsets.fromLTRB(2, 14, 2, 6),
+        child: Text(s,
+            style: const TextStyle(fontSize: 10, letterSpacing: 1.1, color: _textM, fontWeight: FontWeight.w700)),
+      );
+
+  Widget _row(String name, String status, Color col, {String endpoint = ''}) => Container(
+        margin: const EdgeInsets.only(bottom: 6),
+        padding: const EdgeInsets.fromLTRB(12, 9, 10, 9),
+        decoration: BoxDecoration(
+          color: _panel,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: _border),
+        ),
+        child: Row(children: [
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 12, color: _text, fontWeight: FontWeight.w600)),
+              if (endpoint.isNotEmpty) ...[
+                const SizedBox(height: 1),
+                Text(endpoint,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 9, color: _textD)),
+              ],
+            ]),
+          ),
+          const SizedBox(width: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+            decoration: BoxDecoration(
+              color: Color.alphaBlend(col.withValues(alpha: 0.12), _panel),
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: col.withValues(alpha: 0.4)),
+            ),
+            child: Text(status, style: TextStyle(fontSize: 8.5, color: col, fontWeight: FontWeight.w700)),
+          ),
+        ]),
+      );
 }

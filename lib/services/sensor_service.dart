@@ -109,6 +109,66 @@ class SensorService {
   static const double _radToDeg = 57.2957795131;
   static const EventChannel _stream = EventChannel('aether/stream');
   static const MethodChannel _index = MethodChannel('aether/index');
+  static const MethodChannel _perms = MethodChannel('aether/perms');
+
+  // Runtime permissions each gated capability needs (Android constant strings).
+  static const String pMic = 'android.permission.RECORD_AUDIO';
+  static const String pCam = 'android.permission.CAMERA';
+  static const String pLoc = 'android.permission.ACCESS_FINE_LOCATION';
+  static const String pWifi = 'android.permission.NEARBY_WIFI_DEVICES';
+  static const String pPhone = 'android.permission.READ_PHONE_STATE';
+  static const String pBt = 'android.permission.BLUETOOTH_SCAN';
+  static const String pUwb = 'android.permission.UWB_RANGING';
+  static const String pAct = 'android.permission.ACTIVITY_RECOGNITION';
+  static const List<String> allPerms = [pMic, pCam, pLoc, pWifi, pPhone, pBt, pUwb, pAct];
+
+  // Hardware presence/feature facts (from native buildCaps), and live grant
+  // status per runtime permission. The capability board reads both to decide
+  // each card's CAPTURED / ENABLE / SEALED state — no fabricated availability.
+  Map<String, dynamic> caps = <String, dynamic>{};
+  final Map<String, bool> permGranted = <String, bool>{};
+  bool granted(String perm) => permGranted[perm] == true;
+
+  /// Presence of a capability by its native caps key (bool / count / string).
+  bool capPresent(String key) {
+    final v = caps[key];
+    if (v is bool) return v;
+    if (v is num) return v > 0;
+    if (v is String) return v.isNotEmpty;
+    return false;
+  }
+
+  Future<void> refreshCaps() async {
+    try {
+      final r = await _index.invokeMethod<Map>('caps');
+      if (r != null) caps = r.map((k, v) => MapEntry(k.toString(), v));
+    } catch (_) {}
+  }
+
+  Future<void> refreshPerms([List<String>? perms]) async {
+    try {
+      final r = await _perms.invokeMethod<Map>('status', {'perms': perms ?? allPerms});
+      if (r != null) r.forEach((k, v) => permGranted[k.toString()] = v == true);
+    } catch (_) {}
+  }
+
+  /// Request a single runtime permission; returns true if granted.
+  Future<bool> requestPerm(String perm) async {
+    try {
+      final r = await _perms.invokeMethod<Map>('request', {'perms': [perm]});
+      if (r != null) r.forEach((k, v) => permGranted[k.toString()] = v == true);
+    } catch (_) {}
+    return granted(perm);
+  }
+
+  /// Open this app's system settings page (manual permission unlock fallback).
+  Future<bool> openAppSettings() async {
+    try {
+      return (await _perms.invokeMethod<bool>('openSettings')) ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
 
   /// One-shot probe of every subsystem/API — what we can tap and where.
   Future<List<IndexSection>> fetchIndex() async {
@@ -235,6 +295,16 @@ class SensorService {
     } catch (_) {
       _running = false;
     }
+    // Probe hardware presence + current permission grants for the capability
+    // board (fire-and-forget; the board picks up the maps on the next frame).
+    refreshCaps();
+    refreshPerms();
+  }
+
+  /// Re-probe presence + permissions (used by the Check-Index verification).
+  Future<void> recheck() async {
+    await refreshCaps();
+    await refreshPerms();
   }
 
   void _apply(Map<dynamic, dynamic> raw) {
