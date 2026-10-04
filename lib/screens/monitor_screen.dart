@@ -104,14 +104,15 @@ class _MonitorScreenState extends State<MonitorScreen>
         _Tile('gz', 'Z', min: 0, max: 720, abs: true, color: _cyan),
         _Tile('gmag', '|ω| magnitude', min: 0, max: 720, color: _cyan),
       ]),
-      _Parent('motionstate', 'Motion fusion', children: [
-        _Tile('motionstate', 'Activity'),
-        _Tile('steps', 'Steps', min: 0, max: 5000, color: _accent),
-        _Tile('cadence', 'Cadence', min: 0, max: 200, color: _accent),
-        _Tile('shakes', 'Shakes'),
+      _Parent('motionstate', 'Motion & impact', children: [
+        _Tile('motionstate', 'State'),
+        _Tile('jolt', 'Jolt (peak)', min: 0, max: 30, color: _accent),
         _Tile('freefall', 'Free-fall'),
-        _Tile('vibhz', 'Vibration', min: 0, max: 30, color: _accent),
+        _Tile('shakes', 'Shakes'),
         _Tile('menergy', 'Motion energy', min: 0, max: 10, color: _accent),
+        _Tile('vibhz', 'Vibration', min: 0, max: 30, color: _accent),
+        _Tile('steps', 'Steps (est)', min: 0, max: 5000, color: _accent),
+        _Tile('cadence', 'Cadence (est)', min: 0, max: 200, color: _accent),
       ]),
     ]),
     _Group('Magnetic', [
@@ -382,21 +383,17 @@ class _MonitorScreenState extends State<MonitorScreen>
 
   // ── Hero: the device twin, under the gauge rings ──
   Widget _hero(SensorService s) => DeviceTwin(
-        rot: s.rot.value,
-        lax: s.numOf('lax'),
-        lay: s.numOf('lay'),
-        laz: s.numOf('laz'),
-        lmag: s.numOf('lmag'),
-        thermCpu: s.numOf('thermcpu'),
-        thermGpu: s.numOf('thermgpu'),
-        thermBatt: s.numOf('thermbatt'),
-        thermSkin: s.numOf('thermskin'),
-        thermMax: s.numOf('thermmax'),
-        pose: s.readings['pose'],
+        grx: s.numOf('grx'),
+        gry: s.numOf('gry'),
+        grz: s.numOf('grz'),
         compass: s.numOf('compass'),
         cardinal: s.readings['cardinal'],
+        lax: s.numOf('lax'),
+        lay: s.numOf('lay'),
         pitch: s.numOf('pitch'),
         roll: s.numOf('roll'),
+        pose: s.readings['pose'],
+        thermMax: s.numOf('thermmax'),
       );
 
   // ── Per-section visualizations above the cards ──
@@ -425,6 +422,12 @@ class _MonitorScreenState extends State<MonitorScreen>
         ];
       case 'Motion':
         return [
+          ImpactMeter(
+            now: s.numOf('lmag'),
+            peak: s.numOf('jolt'),
+            state: s.readings['motionstate'],
+            freefall: s.readings['freefall'] == 'FALLING',
+          ),
           _accelGyroGraph(s),
           SpiritLevel(gx: s.numOf('grx'), gy: s.numOf('gry'), gz: s.numOf('grz')),
           GyroRates(x: s.numOf('gx'), y: s.numOf('gy'), z: s.numOf('gz')),

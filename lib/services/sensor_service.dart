@@ -148,6 +148,7 @@ class SensorService {
     _int(m['shakes'], 'shakes', (v) => '$v');
     _b(m['freefall'], 'freefall', 'FALLING', 'no');
     _d2(m['vibhz'], 'vibhz', (v) => '${v.toStringAsFixed(1)} Hz');
+    _d2(m['jolt'], 'jolt', (v) => '${v.toStringAsFixed(1)} m/s²');
 
     // ── Compute ──
     final cpu = _toD(m['appcpu']);

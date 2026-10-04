@@ -110,39 +110,36 @@ Widget _noSocket(double h) => SizedBox(
 
 // ════════════════════════ HERO: DEVICE TWIN ════════════════════════
 
-/// The hero: a live 3D phone over a fixed ground reference frame, with a
-/// device-axis tripod, thermal hot-spots on the body, and (when moving) the
-/// linear-acceleration vector. Driven by the raw rotation matrix — no
-/// smoothing — so what you see is the exact sensor state.
+/// The hero: a top-down "device twin".
+///
+/// The phone is pinned pointing up and tips in perspective to show its attitude;
+/// its tilt is derived directly from the raw GRAVITY vector (the downhill edge
+/// drops — physically exact, no Euler sign ambiguity). The compass dial rotates
+/// around it with heading (N in red). Live linear-acceleration jitters the phone
+/// in its cradle. Grid is the static background. Everything is a real reading,
+/// unsmoothed.
 class DeviceTwin extends StatelessWidget {
   const DeviceTwin({
     super.key,
-    required this.rot,
-    this.lax,
-    this.lay,
-    this.laz,
-    this.lmag,
-    this.thermCpu,
-    this.thermGpu,
-    this.thermBatt,
-    this.thermSkin,
-    this.thermMax,
-    this.pose,
+    this.grx,
+    this.gry,
+    this.grz,
     this.compass,
     this.cardinal,
+    this.lax,
+    this.lay,
     this.pitch,
     this.roll,
+    this.pose,
+    this.thermMax,
   });
 
-  final List<double>? rot;
-  final double? lax, lay, laz, lmag;
-  final double? thermCpu, thermGpu, thermBatt, thermSkin, thermMax;
-  final String? pose, cardinal;
-  final double? compass, pitch, roll;
+  final double? grx, gry, grz, compass, lax, lay, pitch, roll, thermMax;
+  final String? cardinal, pose;
 
   @override
   Widget build(BuildContext context) {
-    final r = rot;
+    final live = grx != null || compass != null;
     return Container(
       margin: const EdgeInsets.only(bottom: 16),
       padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
@@ -167,7 +164,7 @@ class DeviceTwin extends StatelessWidget {
                 width: 7,
                 height: 7,
                 decoration: BoxDecoration(
-                    color: r == null ? _textD : _green, shape: BoxShape.circle),
+                    color: live ? _green : _textD, shape: BoxShape.circle),
               ),
               const Spacer(),
               Text(pose ?? '',
@@ -178,19 +175,17 @@ class DeviceTwin extends StatelessWidget {
           SizedBox(
             height: 250,
             width: double.infinity,
-            child: r == null
+            child: !live
                 ? _noSocket(250)
                 : CustomPaint(
                     painter: _TwinPainter(
-                      r: r,
-                      lax: lax,
-                      lay: lay,
-                      laz: laz,
-                      lmag: lmag,
-                      tCpu: thermCpu,
-                      tGpu: thermGpu,
-                      tBatt: thermBatt,
-                      tSkin: thermSkin,
+                      gvx: grx ?? 0.0,
+                      gvy: gry ?? 0.0,
+                      gvz: grz ?? 0.0,
+                      hasGravity: grx != null,
+                      heading: compass,
+                      ax: lax ?? 0.0,
+                      ay: lay ?? 0.0,
                     ),
                     size: Size.infinite,
                   ),
@@ -227,183 +222,168 @@ class DeviceTwin extends StatelessWidget {
 
 class _TwinPainter extends CustomPainter {
   _TwinPainter({
-    required this.r,
-    this.lax,
-    this.lay,
-    this.laz,
-    this.lmag,
-    this.tCpu,
-    this.tGpu,
-    this.tBatt,
-    this.tSkin,
+    required this.gvx,
+    required this.gvy,
+    required this.gvz,
+    required this.hasGravity,
+    required this.heading,
+    required this.ax,
+    required this.ay,
   });
-  final List<double> r;
-  final double? lax, lay, laz, lmag;
-  final double? tCpu, tGpu, tBatt, tSkin;
+  final double gvx, gvy, gvz, ax, ay;
+  final bool hasGravity;
+  final double? heading;
 
-  static const double _phi = 0.46; // fixed view elevation (locked reference)
-  late double _cx, _cy, _scale;
+  // top-down perspective camera
+  static const double _H = 4.5, _f = 3.0, _tiltK = 0.85, _G = 9.81;
+  late double _cx, _cy, _pscale, _jx, _jy;
+  late double _w, _h, _th;
 
-  List<double> _toWorld(double x, double y, double z) {
-    if (r.length < 9) return [x, y, z];
-    return [
-      r[0] * x + r[1] * y + r[2] * z,
-      r[3] * x + r[4] * y + r[5] * z,
-      r[6] * x + r[7] * y + r[8] * z,
-    ];
+  double _z(double x, double y) {
+    if (!hasGravity) return 0;
+    return (-(x * gvx + y * gvy) / _G * _tiltK).clamp(-1.4, 1.4).toDouble();
   }
 
-  double _depthWorld(double ex, double no, double up) =>
-      -up * math.sin(_phi) + no * math.cos(_phi);
-
-  Offset _projWorld(double ex, double no, double up) {
-    final vy = up * math.cos(_phi) + no * math.sin(_phi);
-    final vd = _depthWorld(ex, no, up);
-    final s = 5.0 / (7.0 - vd);
-    return Offset(_cx + ex * s * _scale, _cy - vy * s * _scale);
-  }
-
-  Offset _projDevice(double x, double y, double z) {
-    final w = _toWorld(x, y, z);
-    return _projWorld(w[0], w[1], w[2]);
-  }
-
-  double _depthDevice(double x, double y, double z) {
-    final w = _toWorld(x, y, z);
-    return _depthWorld(w[0], w[1], w[2]);
+  Offset _proj(double x, double y, double z) {
+    final s = _f / (_H - z);
+    return Offset(_cx + x * s * _pscale + _jx, _cy - y * s * _pscale + _jy);
   }
 
   @override
   void paint(Canvas canvas, Size size) {
     _cx = size.width / 2;
-    _cy = size.height / 2 + 8;
-    _scale = math.min(size.width, size.height) * 0.30;
+    _cy = size.height / 2;
+    final rad = math.min(size.width, size.height) / 2 - 6;
+    _pscale = rad * 0.70;
+    // jitter from live linear acceleration (real, unsmoothed)
+    _jx = (ax * 1.2).clamp(-7.0, 7.0).toDouble();
+    _jy = (-ay * 1.2).clamp(-7.0, 7.0).toDouble();
+    _w = 0.58;
+    _h = 1.0;
+    _th = 0.05;
 
-    _drawGround(canvas);
+    _drawGrid(canvas, rad);
+    _drawDial(canvas, rad);
     _drawPhone(canvas);
-    _drawTripod(canvas);
-    _drawAccel(canvas);
   }
 
-  void _drawGround(Canvas canvas) {
-    const gz = -1.35; // ground plane sits just below the phone
+  void _drawGrid(Canvas canvas, double rad) {
+    final inner = rad * 0.66;
+    canvas.save();
+    canvas.clipPath(Path()..addOval(Rect.fromCircle(center: Offset(_cx, _cy), radius: inner)));
     final grid = Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1
-      ..color = const Color(0x14FFFFFF);
-    const ext = 2.2;
-    for (double i = -ext; i <= ext + 0.01; i += 0.55) {
-      final a = _projWorld(i, -ext, gz);
-      final b = _projWorld(i, ext, gz);
-      canvas.drawLine(a, b, grid);
-      final c = _projWorld(-ext, i, gz);
-      final d = _projWorld(ext, i, gz);
-      canvas.drawLine(c, d, grid);
+      ..color = const Color(0x12FFFFFF);
+    const step = 22.0;
+    for (double d = -inner; d <= inner; d += step) {
+      canvas.drawLine(Offset(_cx + d, _cy - inner), Offset(_cx + d, _cy + inner), grid);
+      canvas.drawLine(Offset(_cx - inner, _cy + d), Offset(_cx + inner, _cy + d), grid);
     }
-    // cardinal markers fixed to the world frame (N = +North, E = +East)
-    _tp(canvas, 'N', _projWorld(0, ext + 0.25, gz), _cyan, size: 11, w: FontWeight.w700);
-    _tp(canvas, 'S', _projWorld(0, -ext - 0.25, gz), _textM, size: 10);
-    _tp(canvas, 'E', _projWorld(ext + 0.25, 0, gz), _textM, size: 10);
-    _tp(canvas, 'W', _projWorld(-ext - 0.25, 0, gz), _textM, size: 10);
+    canvas.restore();
+  }
+
+  void _drawDial(Canvas canvas, double rad) {
+    final center = Offset(_cx, _cy);
+    final ring = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.4
+      ..color = const Color(0x33FFFFFF);
+    canvas.drawCircle(center, rad, ring);
+    canvas.drawCircle(center, rad * 0.84, ring..color = const Color(0x1FFFFFFF));
+
+    final h = heading ?? 0;
+    canvas.save();
+    canvas.translate(_cx, _cy);
+    canvas.rotate(_deg2rad(-h)); // dial rotates so N points to true north
+    for (int d = 0; d < 360; d += 15) {
+      final a = _deg2rad(d - 90); // 0° (N) at top
+      final major = d % 90 == 0;
+      final r1 = rad - (major ? 13 : 7);
+      canvas.drawLine(
+        Offset(math.cos(a) * r1, math.sin(a) * r1),
+        Offset(math.cos(a) * rad, math.sin(a) * rad),
+        Paint()
+          ..color = major ? const Color(0x99FFFFFF) : const Color(0x44FFFFFF)
+          ..strokeWidth = major ? 2 : 1,
+      );
+    }
+    const labels = {0: 'N', 90: 'E', 180: 'S', 270: 'W'};
+    labels.forEach((d, s) {
+      final a = _deg2rad(d - 90);
+      final at = Offset(math.cos(a) * (rad - 26), math.sin(a) * (rad - 26));
+      _tp(canvas, s, at, s == 'N' ? _red : (heading == null ? _textD : _text),
+          size: 13, w: FontWeight.w700);
+    });
+    canvas.restore();
   }
 
   void _drawPhone(Canvas canvas) {
-    const w = 0.82, h = 1.6, t = 0.11;
-    final v = <List<double>>[
-      [-w, -h, -t], [w, -h, -t], [w, h, -t], [-w, h, -t],
-      [-w, -h, t], [w, -h, t], [w, h, t], [-w, h, t],
+    final faceDown = gvz < -2;
+    // device-local footprint corners (x,y); +y is the phone's forward/top edge
+    final fc = <List<double>>[
+      [-_w, -_h], [_w, -_h], [_w, _h], [-_w, _h],
     ];
-    final pts = [for (final p in v) _projDevice(p[0], p[1], p[2])];
-    final faces = <List<int>>[
-      [4, 5, 6, 7], // screen (+z)
-      [0, 1, 2, 3], // back
-      [3, 2, 6, 7], // top (+y)
-      [0, 1, 5, 4], // bottom
-      [1, 2, 6, 5], // right (+x)
-      [0, 3, 7, 4], // left
-    ];
-    final fd = [
-      for (final f in faces)
-        f.map((i) => _depthDevice(v[i][0], v[i][1], v[i][2])).reduce((a, b) => a + b) / f.length
-    ];
-    final order = List<int>.generate(faces.length, (i) => i)
-      ..sort((a, b) => fd[a].compareTo(fd[b]));
+    final top = [for (final c in fc) _proj(c[0], c[1], _z(c[0], c[1]) + _th)];
+    final bot = [for (final c in fc) _proj(c[0], c[1], _z(c[0], c[1]) - _th)];
+    final zc = [for (final c in fc) _z(c[0], c[1])];
 
-    final body = Paint()..color = const Color(0xFF2A3240);
-    final screen = Paint()..color = const Color(0xFF1A2733);
+    final bodyDark = Paint()..color = const Color(0xFF20272F);
+    final bodyMid = Paint()..color = const Color(0xFF2A3340);
+    final topCol = Paint()..color = faceDown ? const Color(0xFF232B35) : const Color(0xFF16222C);
     final edge = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.5
+      ..strokeWidth = 1.4
       ..color = const Color(0xDDE6EDF3);
 
-    for (final fi in order) {
-      final f = faces[fi];
-      final path = Path()..moveTo(pts[f[0]].dx, pts[f[0]].dy);
-      for (int k = 1; k < f.length; k++) {
-        path.lineTo(pts[f[k]].dx, pts[f[k]].dy);
+    void quad(List<Offset> p, Paint fill) {
+      final path = Path()..moveTo(p[0].dx, p[0].dy);
+      for (int i = 1; i < p.length; i++) {
+        path.lineTo(p[i].dx, p[i].dy);
       }
       path.close();
-      canvas.drawPath(path, fi == 0 ? screen : body);
+      canvas.drawPath(path, fill);
       canvas.drawPath(path, edge);
-      // thermal hot-spots overlaid on the visible screen face only
-      if (fi == 0) _drawThermal(canvas);
-    }
-    // front-camera dot near top of screen
-    canvas.drawCircle(_projDevice(0, h * 0.8, t), 3, Paint()..color = const Color(0xFF0D1117));
-  }
-
-  void _drawThermal(Canvas canvas) {
-    void spot(double? temp, double lx, double ly) {
-      if (temp == null) return;
-      final c = _projDevice(lx, ly, 0.12);
-      final col = _tempColor(temp);
-      canvas.drawCircle(
-        c,
-        26,
-        Paint()
-          ..shader = RadialGradient(colors: [col.withValues(alpha: 0.6), col.withValues(alpha: 0.0)])
-              .createShader(Rect.fromCircle(center: c, radius: 26)),
-      );
     }
 
-    spot(tCpu, 0.0, 0.55); // SoC upper-middle
-    spot(tGpu, -0.35, 0.35); // GPU
-    spot(tBatt, 0.0, -0.6); // battery lower
-    spot(tSkin, 0.3, -0.05); // skin/ambient
-  }
-
-  void _drawTripod(Canvas canvas) {
-    const len = 1.15;
-    final origin = _projDevice(0, 0, 0);
-    void axis(double x, double y, double z, Color col, String tag) {
-      final end = _projDevice(x * len, y * len, z * len);
-      final p = Paint()
-        ..color = col
-        ..strokeWidth = 2.2
-        ..strokeCap = StrokeCap.round;
-      canvas.drawLine(origin, end, p);
-      canvas.drawCircle(end, 2.6, Paint()..color = col);
-      _tp(canvas, tag, end + (end - origin) * 0.12, col, size: 9, w: FontWeight.w700);
+    // build faces with an average height for painter ordering
+    final faces = <MapEntry<double, List<Offset>>>[];
+    faces.add(MapEntry((zc[0] + zc[1] + zc[2] + zc[3]) / 4 + _th, top));
+    faces.add(MapEntry((zc[0] + zc[1] + zc[2] + zc[3]) / 4 - _th, bot));
+    for (int i = 0; i < 4; i++) {
+      final j = (i + 1) % 4;
+      final avg = (zc[i] + zc[j]) / 2;
+      faces.add(MapEntry(avg, [top[i], top[j], bot[j], bot[i]]));
+    }
+    faces.sort((a, b) => a.key.compareTo(b.key)); // far (low) first
+    for (final fentry in faces) {
+      final isTop = identical(fentry.value, top);
+      final isBot = identical(fentry.value, bot);
+      quad(fentry.value, isTop ? topCol : (isBot ? bodyDark : bodyMid));
     }
 
-    axis(1, 0, 0, _red, 'X');
-    axis(0, 1, 0, _green, 'Y');
-    axis(0, 0, 1, _cyan, 'Z');
-  }
+    // screen tint + camera dot only when face-up
+    if (!faceDown) {
+      final path = Path()..moveTo(top[0].dx, top[0].dy);
+      for (int i = 1; i < 4; i++) {
+        path.lineTo(top[i].dx, top[i].dy);
+      }
+      path.close();
+      canvas.drawPath(path, Paint()..color = const Color(0x2222D3EE));
+      canvas.drawCircle(_proj(0, _h * 0.82, _z(0, _h * 0.82) + _th), 2.6,
+          Paint()..color = const Color(0xFF0D1117));
+    }
 
-  void _drawAccel(Canvas canvas) {
-    final m = lmag;
-    if (m == null || m < 0.4 || lax == null || lay == null || laz == null) return;
-    final n = math.max(m, 0.0001);
-    final len = (m / 12.0).clamp(0.0, 1.0) * 1.5;
-    final origin = _projDevice(0, 0, 0);
-    final end = _projDevice(lax! / n * len, lay! / n * len, laz! / n * len);
-    final p = Paint()
-      ..color = _amber
-      ..strokeWidth = 2.6
-      ..strokeCap = StrokeCap.round;
-    canvas.drawLine(origin, end, p);
-    canvas.drawCircle(end, 3.2, Paint()..color = _amber);
+    // red forward arrow at the nose (+y)
+    final tip = _proj(0, _h + 0.22, _z(0, _h) + _th);
+    final bl = _proj(-0.17, _h + 0.02, _z(0, _h) + _th);
+    final br = _proj(0.17, _h + 0.02, _z(0, _h) + _th);
+    final arrow = Path()
+      ..moveTo(tip.dx, tip.dy)
+      ..lineTo(bl.dx, bl.dy)
+      ..lineTo(br.dx, br.dy)
+      ..close();
+    canvas.drawPath(arrow, Paint()..color = _red);
   }
 
   @override
@@ -691,13 +671,26 @@ class _LevelPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final c = Offset(size.width / 2, size.height / 2);
     final rad = math.min(size.width, size.height) / 2 - 6;
-    final ring = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.4
-      ..color = const Color(0x33FFFFFF);
-    canvas.drawCircle(c, rad, ring);
-    canvas.drawCircle(c, rad * 0.5, ring..color = const Color(0x22FFFFFF));
-    // center target
+    // concentric stepped rings; inner rings shift toward the downhill side for
+    // a parallax "bowl" that tilts with gravity (bubble floats the other way)
+    const g2 = 9.81;
+    final lowDir = Offset(
+        (gx / g2).clamp(-1.0, 1.0).toDouble(), (-gy / g2).clamp(-1.0, 1.0).toDouble());
+    final parallax = rad * 0.16;
+    const n = 5;
+    for (int i = 0; i < n; i++) {
+      final rr = rad * (1.0 - i * 0.2);
+      final depth = i / (n - 1);
+      final rc = Offset(c.dx + lowDir.dx * parallax * depth, c.dy + lowDir.dy * parallax * depth);
+      canvas.drawCircle(
+          rc,
+          rr,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = i == 0 ? 1.4 : 1.0
+            ..color = Color.fromRGBO(255, 255, 255, 0.05 + 0.03 * (n - i)));
+    }
+    // center target (true level point, fixed)
     final cross = Paint()
       ..color = const Color(0x55FFFFFF)
       ..strokeWidth = 1;
@@ -779,78 +772,234 @@ class _GyroPainter extends CustomPainter {
   bool shouldRepaint(_GyroPainter old) => true;
 }
 
-// ════════════════════════ MAGNETIC ════════════════════════
-
-/// Metal detector: a |B| field-strength gauge that spikes near metal, plus a
-/// small horizontal field-direction indicator. Separate from the heading
-/// compass in Orientation — this one reads magnitude, not bearing.
-class MetalDetector extends StatelessWidget {
-  const MetalDetector({super.key, this.field, this.mx, this.my});
-  final double? field, mx, my; // µT
+/// Motion & impact — an honest high-energy / jolt instrument. Live linear-accel
+/// magnitude fills the bar; a peak-hold tick marks the strongest recent jolt.
+/// (This is what the sensor is genuinely good at — not gait classification.)
+class ImpactMeter extends StatelessWidget {
+  const ImpactMeter({super.key, this.now, this.peak, this.state, this.freefall});
+  final double? now, peak;
+  final String? state;
+  final bool? freefall;
   @override
   Widget build(BuildContext context) {
-    final f = field;
-    final elevated = f != null && f > 70;
+    final ok = now != null;
+    final hot = freefall == true || state == 'impact';
     return VizCard(
-      title: 'Metal detector',
-      height: 128,
-      live: f != null,
-      trailing: f == null ? null : '${f.toStringAsFixed(1)} µT',
-      trailingColor: elevated ? _red : _green,
-      child: f == null
-          ? _noSocket(128)
-          : CustomPaint(painter: _MetalPainter(f, mx, my), size: Size.infinite),
+      title: 'Motion & impact',
+      height: 56,
+      live: ok,
+      trailing: freefall == true ? 'FREE-FALL' : state,
+      trailingColor: hot ? _red : (state == 'still' ? _textM : _cyan),
+      child: ok
+          ? CustomPaint(painter: _ImpactPainter(now!, peak ?? now!), size: Size.infinite)
+          : _noSocket(56),
     );
   }
 }
 
-class _MetalPainter extends CustomPainter {
-  _MetalPainter(this.field, this.mx, this.my);
-  final double field;
-  final double? mx, my;
+class _ImpactPainter extends CustomPainter {
+  _ImpactPainter(this.now, this.peak);
+  final double now, peak;
+  static const double _max = 30; // m/s² full scale (linear accel)
   @override
   void paint(Canvas canvas, Size size) {
-    final c = Offset(size.width / 2, size.height - 8);
-    final rad = math.min(size.width / 2 - 10, size.height - 24);
-    // scale 0..150 µT across a top semicircle (π .. 2π)
-    const maxS = 150.0;
-    const start = math.pi;
-    const sweep = math.pi;
-    // colored bands: earth (green) 0-65, elevated (amber) 65-110, metal (red) >110
-    void band(double a, double b, Color col) {
-      final s = start + (a / maxS) * sweep;
-      final e = start + (b / maxS) * sweep;
-      canvas.drawArc(Rect.fromCircle(center: c, radius: rad), s, e - s, false,
-          Paint()..style = PaintingStyle.stroke..strokeWidth = 8..color = col.withValues(alpha: 0.75)..strokeCap = StrokeCap.butt);
-    }
+    final y = size.height - 14;
+    final bw = size.width;
+    canvas.drawRRect(
+        RRect.fromRectAndRadius(Rect.fromLTWH(0, y - 7, bw, 14), const Radius.circular(7)),
+        Paint()..color = const Color(0x0DFFFFFF));
+    final nf = (now / _max).clamp(0.0, 1.0).toDouble();
+    final col = now > 18 ? _red : (now > 6 ? _amber : _cyan);
+    canvas.drawRRect(
+        RRect.fromRectAndRadius(Rect.fromLTWH(0, y - 7, bw * nf, 14), const Radius.circular(7)),
+        Paint()..color = col);
+    final pf = (peak / _max).clamp(0.0, 1.0).toDouble();
+    final px = bw * pf;
+    canvas.drawLine(Offset(px, y - 10), Offset(px, y + 10), Paint()..color = _red..strokeWidth = 2.5);
+    _tp(canvas, '${now.toStringAsFixed(1)} m/s²', Offset(40, 8), _textM, size: 9.5);
+    _tp(canvas, 'peak ${peak.toStringAsFixed(1)}', Offset(size.width - 46, 8), _red, size: 9.5);
+  }
 
-    band(0, 65, _green);
-    band(65, 110, _amber);
-    band(110, maxS, _red);
+  @override
+  bool shouldRepaint(_ImpactPainter old) => true;
+}
 
-    // needle
-    final frac = (field / maxS).clamp(0.0, 1.0);
-    final a = start + frac * sweep;
+// ════════════════════════ MAGNETIC ════════════════════════
+
+/// Metal detector. The magnetometer reads the ambient magnetic field (µT);
+/// ferromagnetic metal and magnets distort it. Tap ZERO to capture the local
+/// earth-field baseline, then the gauge shows deviation Δ|B| from that zero —
+/// the way a real detector works, far more sensitive than the absolute field.
+/// A sensitivity control sets the Δ full-scale. Ferrous only (not aluminium /
+/// copper). Values are raw — baseline subtraction is a reference, not smoothing.
+class MetalDetector extends StatefulWidget {
+  const MetalDetector({super.key, this.field, this.mx, this.my});
+  final double? field, mx, my; // µT
+  @override
+  State<MetalDetector> createState() => _MetalDetectorState();
+}
+
+class _MetalDetectorState extends State<MetalDetector> {
+  double? _baseline;
+  int _sensIndex = 1;
+  static const List<double> _scales = [15, 40, 100];
+
+  @override
+  Widget build(BuildContext context) {
+    final f = widget.field;
+    final scale = _scales[_sensIndex];
+    final delta = (_baseline != null && f != null) ? f - _baseline! : null;
+    final elevated =
+        delta != null ? delta.abs() > scale * 0.6 : (f != null && f > 70);
+    final trailing = _baseline == null
+        ? (f == null ? null : '${f.toStringAsFixed(1)} µT')
+        : (delta == null ? null : 'Δ ${delta >= 0 ? '+' : ''}${delta.toStringAsFixed(1)} µT');
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+      decoration: BoxDecoration(
+        color: _panel,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: _border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Text('Metal detector',
+                  style: TextStyle(fontSize: 12, color: _textM, fontWeight: FontWeight.w600)),
+              const SizedBox(width: 6),
+              Container(
+                width: 7,
+                height: 7,
+                decoration: BoxDecoration(
+                    color: f == null ? _textD : (elevated ? _red : _green),
+                    shape: BoxShape.circle),
+              ),
+              const Spacer(),
+              if (trailing != null)
+                Text(trailing,
+                    style: TextStyle(
+                        fontSize: 12,
+                        color: elevated ? _red : _cyan,
+                        fontWeight: FontWeight.w700)),
+            ],
+          ),
+          const SizedBox(height: 10),
+          SizedBox(
+            height: 120,
+            width: double.infinity,
+            child: f == null
+                ? _noSocket(120)
+                : CustomPaint(
+                    painter: _MetalPainter(f, _baseline, scale, widget.mx, widget.my),
+                    size: Size.infinite),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              _btn(_baseline == null ? 'ZERO' : 'RE-ZERO', _cyan,
+                  () => setState(() => _baseline = widget.field)),
+              if (_baseline != null) const SizedBox(width: 8),
+              if (_baseline != null)
+                _btn('CLEAR', _textM, () => setState(() => _baseline = null)),
+              const Spacer(),
+              _btn('±${scale.toStringAsFixed(0)} µT', _accent,
+                  () => setState(() => _sensIndex = (_sensIndex + 1) % _scales.length)),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _btn(String label, Color col, VoidCallback onTap) => GestureDetector(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+          decoration: BoxDecoration(
+            color: Color.alphaBlend(col.withValues(alpha: 0.12), _panel),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: col.withValues(alpha: 0.5)),
+          ),
+          child: Text(label,
+              style: TextStyle(fontSize: 11, color: col, fontWeight: FontWeight.w700)),
+        ),
+      );
+}
+
+class _MetalPainter extends CustomPainter {
+  _MetalPainter(this.field, this.baseline, this.scale, this.mx, this.my);
+  final double field, scale;
+  final double? baseline, mx, my;
+
+  void _needle(Canvas canvas, Offset c, double rad, double a, Color col) {
     final tip = Offset(c.dx + math.cos(a) * rad, c.dy + math.sin(a) * rad);
-    canvas.drawLine(c, tip,
-        Paint()..color = _text..strokeWidth = 2.4..strokeCap = StrokeCap.round);
-    canvas.drawCircle(c, 4, Paint()..color = _text);
-    _tp(canvas, '${field.toStringAsFixed(0)} µT', Offset(c.dx, c.dy - rad * 0.5), _text,
-        size: 15, w: FontWeight.w700);
-    _tp(canvas, field > 70 ? 'elevated field' : 'earth field',
-        Offset(c.dx, c.dy - rad * 0.5 + 18), field > 70 ? _red : _textM, size: 10);
+    canvas.drawLine(
+        c, tip, Paint()..color = col..strokeWidth = 2.4..strokeCap = StrokeCap.round);
+    canvas.drawCircle(c, 4, Paint()..color = col);
+  }
 
-    // horizontal field direction dot (mx,my)
-    if (mx != null && my != null) {
-      final h = math.sqrt(mx! * mx! + my! * my!);
-      if (h > 0.001) {
-        final dr = 14.0;
-        final dot = Offset(c.dx + (mx! / h) * dr, (c.dy - rad * 0.5 + 40) + (my! / h) * dr);
-        canvas.drawCircle(Offset(c.dx, c.dy - rad * 0.5 + 40), dr,
-            Paint()..style = PaintingStyle.stroke..strokeWidth = 1..color = const Color(0x33FFFFFF));
-        canvas.drawCircle(dot, 2.6, Paint()..color = _cyan);
+  @override
+  void paint(Canvas canvas, Size size) {
+    final c = Offset(size.width / 2, size.height - 18);
+    final rad = math.min(size.width / 2 - 10, size.height - 34);
+    const start = math.pi, sweep = math.pi;
+    final up = start + sweep * 0.5; // straight up = zero deflection
+
+    if (baseline == null) {
+      // absolute mode: 0..150 µT with earth/elevated/metal bands
+      const maxS = 150.0;
+      void band(double a, double b, Color col) {
+        final s = start + (a / maxS) * sweep;
+        final e = start + (b / maxS) * sweep;
+        canvas.drawArc(Rect.fromCircle(center: c, radius: rad), s, e - s, false,
+            Paint()..style = PaintingStyle.stroke..strokeWidth = 8..color = col.withValues(alpha: 0.7));
       }
+
+      band(0, 65, _green);
+      band(65, 110, _amber);
+      band(110, maxS, _red);
+      final frac = (field / maxS).clamp(0.0, 1.0).toDouble();
+      _needle(canvas, c, rad, start + frac * sweep, _text);
+      _tp(canvas, '${field.toStringAsFixed(0)} µT', Offset(c.dx, c.dy - rad * 0.45), _text,
+          size: 15, w: FontWeight.w700);
+      _tp(canvas, 'tap ZERO to calibrate', Offset(c.dx, c.dy - rad * 0.45 + 18), _textM, size: 10);
+      return;
     }
+
+    // deviation mode: Δ|B| centered, ±scale full-deflection
+    final delta = field - baseline!;
+    final frac = (delta / scale).clamp(-1.0, 1.0).toDouble();
+    final mag = delta.abs();
+    final defCol = mag > scale * 0.6 ? _red : (mag > scale * 0.25 ? _amber : _green);
+    canvas.drawArc(Rect.fromCircle(center: c, radius: rad), start, sweep, false,
+        Paint()..style = PaintingStyle.stroke..strokeWidth = 8..color = const Color(0x22FFFFFF));
+    canvas.drawArc(Rect.fromCircle(center: c, radius: rad), up, frac * sweep * 0.5, false,
+        Paint()..style = PaintingStyle.stroke..strokeWidth = 8..color = defCol..strokeCap = StrokeCap.round);
+    // zero tick at top
+    canvas.drawLine(
+        Offset(c.dx + math.cos(up) * (rad - 12), c.dy + math.sin(up) * (rad - 12)),
+        Offset(c.dx + math.cos(up) * rad, c.dy + math.sin(up) * rad),
+        Paint()..color = _textM..strokeWidth = 1.5);
+    _needle(canvas, c, rad, up + frac * sweep * 0.5, _text);
+    _tp(canvas, 'Δ ${delta >= 0 ? '+' : ''}${delta.toStringAsFixed(1)} µT',
+        Offset(c.dx, c.dy - rad * 0.45), defCol, size: 15, w: FontWeight.w700);
+    _tp(canvas, mag > scale * 0.6 ? 'METAL' : (mag > scale * 0.25 ? 'near' : 'clear'),
+        Offset(c.dx, c.dy - rad * 0.45 + 18), mag > scale * 0.6 ? _red : _textM,
+        size: 10, w: FontWeight.w700);
+    // proximity bar
+    final pf = (mag / scale).clamp(0.0, 1.0).toDouble();
+    final bw = size.width * 0.6;
+    final bx = c.dx - bw / 2;
+    final by = size.height - 4.0;
+    canvas.drawRRect(
+        RRect.fromRectAndRadius(Rect.fromLTWH(bx, by - 4, bw, 5), const Radius.circular(3)),
+        Paint()..color = const Color(0x0DFFFFFF));
+    canvas.drawRRect(
+        RRect.fromRectAndRadius(Rect.fromLTWH(bx, by - 4, bw * pf, 5), const Radius.circular(3)),
+        Paint()..color = defCol);
   }
 
   @override

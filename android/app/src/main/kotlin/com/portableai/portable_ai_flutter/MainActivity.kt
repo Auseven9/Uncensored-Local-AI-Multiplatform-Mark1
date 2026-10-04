@@ -73,6 +73,7 @@ class MainActivity : FlutterActivity(), SensorEventListener {
     private var aboveThresh = false
     private val cadenceStamps = ArrayDeque<Long>()
     private var shakes = 0
+    private var jolt = 0.0
     private var motionEnergy = 0.0
     private var zc = 0
     private var lastZcWindow = 0L
@@ -171,6 +172,7 @@ class MainActivity : FlutterActivity(), SensorEventListener {
                 linear = e.values.clone()
                 val lm = mag3(e.values)
                 motionEnergy = motionEnergy * 0.9 + lm * 0.1
+                jolt = if (lm > jolt) lm else jolt * 0.92 // peak-hold with decay
                 val now = SystemClock.elapsedRealtime()
                 // self pedometer: peak detection on linear-accel magnitude
                 if (lm > 2.2 && !aboveThresh && now - lastPeakT > 300) {
@@ -279,6 +281,7 @@ class MainActivity : FlutterActivity(), SensorEventListener {
         f["shakes"] = shakes
         if (accel != null) f["freefall"] = (f["amag"] as? Double ?: 9.81) < 2.0
         f["vibhz"] = vibHz
+        f["jolt"] = jolt
 
         // heavy telemetry (recomputed ~1s, cached)
         val now = SystemClock.elapsedRealtime()
@@ -306,14 +309,16 @@ class MainActivity : FlutterActivity(), SensorEventListener {
         l < 10 -> "dark"; l < 50 -> "dim"; l < 300 -> "indoor"; l < 1000 -> "bright"; l < 10000 -> "overcast"; else -> "sunlight"
     }
 
+    // Honest motion-energy tiers. This is a motion-intensity / jolt classifier,
+    // not a gait classifier — it reports how much energy is in the movement,
+    // never a fabricated "walking/running" it can't actually distinguish.
     private fun motionState(): String {
         val e = motionEnergy
-        val cad = cadenceStamps.size * 6
         return when {
             e < 0.3 -> "still"
-            cad > 140 || e > 6 -> "running"
-            e > 0.6 -> "walking"
-            else -> "moving"
+            e < 2.0 -> "moving"
+            e < 6.0 -> "active"
+            else -> "impact"
         }
     }
 
