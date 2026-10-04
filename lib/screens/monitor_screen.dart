@@ -83,7 +83,7 @@ class _MonitorScreenState extends State<MonitorScreen>
       ]),
     ]),
     _Group('Motion', [
-      _Parent('amag', 'Accelerometer', min: 0, max: 25, color: _accent, children: [
+      _Parent('amag', 'Accelerometer', min: 0, max: 25, color: _accent, sensorKey: 'accel', children: [
         _Tile('ax', 'X', min: 0, max: 20, abs: true, color: _accent),
         _Tile('ay', 'Y', min: 0, max: 20, abs: true, color: _accent),
         _Tile('az', 'Z', min: 0, max: 20, abs: true, color: _accent),
@@ -98,13 +98,13 @@ class _MonitorScreenState extends State<MonitorScreen>
         _Tile('jerk', 'Jerk', min: 0, max: 50, color: _accent),
         _Tile('incl', 'Inclination', min: 0, max: 180, color: _cyan),
       ]),
-      _Parent('gmag', 'Gyroscope', min: 0, max: 720, color: _cyan, children: [
+      _Parent('gmag', 'Gyroscope', min: 0, max: 720, color: _cyan, sensorKey: 'gyro', children: [
         _Tile('gx', 'X', min: 0, max: 720, abs: true, color: _cyan),
         _Tile('gy', 'Y', min: 0, max: 720, abs: true, color: _cyan),
         _Tile('gz', 'Z', min: 0, max: 720, abs: true, color: _cyan),
         _Tile('gmag', '|ω| magnitude', min: 0, max: 720, color: _cyan),
       ]),
-      _Parent('motionstate', 'Motion & impact', children: [
+      _Parent('motionstate', 'Motion & impact', sensorKey: 'lin', children: [
         _Tile('motionstate', 'State'),
         _Tile('jolt', 'Jolt (peak)', min: 0, max: 30, color: _accent),
         _Tile('freefall', 'Free-fall'),
@@ -116,7 +116,7 @@ class _MonitorScreenState extends State<MonitorScreen>
       ]),
     ]),
     _Group('Magnetic', [
-      _Parent('bmag', 'Magnetometer', min: 0, max: 120, color: _accent, children: [
+      _Parent('bmag', 'Magnetometer', min: 0, max: 120, color: _accent, sensorKey: 'mag', children: [
         _Tile('mx', 'X', min: 0, max: 120, abs: true, color: _accent),
         _Tile('my', 'Y', min: 0, max: 120, abs: true, color: _accent),
         _Tile('mz', 'Z', min: 0, max: 120, abs: true, color: _accent),
@@ -125,7 +125,7 @@ class _MonitorScreenState extends State<MonitorScreen>
       ]),
     ]),
     _Group('Orientation', [
-      _Parent('compass', 'Orientation', min: 0, max: 360, color: _cyan, children: [
+      _Parent('compass', 'Orientation', min: 0, max: 360, color: _cyan, sensorKey: 'rot', children: [
         _Tile('compass', 'Heading', min: 0, max: 360, color: _cyan),
         _Tile('cardinal', 'Cardinal'),
         _Tile('pitch', 'Pitch (f/b)', min: -180, max: 180, color: _cyan),
@@ -134,19 +134,19 @@ class _MonitorScreenState extends State<MonitorScreen>
       ]),
     ]),
     _Group('Environment', [
-      _Parent('press', 'Barometer', min: 950, max: 1050, color: _amber, children: [
+      _Parent('press', 'Barometer', min: 950, max: 1050, color: _amber, sensorKey: 'press', children: [
         _Tile('press', 'Pressure', min: 950, max: 1050, color: _amber),
         _Tile('alt', 'Altitude', min: -100, max: 3000, color: _amber),
         _Tile('vspeed', 'Vertical speed', min: 0, max: 5, abs: true, color: _amber),
         _Tile('floors', 'Floors climbed', min: 0, max: 50, color: _amber),
         _Tile('ptrend', 'Trend'),
       ]),
-      _Parent('lux', 'Optical', min: 0, max: 1000, color: _amber, children: [
+      _Parent('lux', 'Optical', min: 0, max: 1000, color: _amber, sensorKey: 'light', children: [
         _Tile('lux', 'Illuminance', min: 0, max: 2000, color: _amber),
         _Tile('lightcat', 'Category'),
         _Tile('prox', 'Proximity', min: 0, max: 1, color: _amber),
       ]),
-      _Parent('atemp', 'Ambient', min: 0, max: 50, color: _amber, children: [
+      _Parent('atemp', 'Ambient', min: 0, max: 50, color: _amber, sensorKey: 'temp', children: [
         _Tile('atemp', 'Temperature', min: 0, max: 50, color: _amber),
         _Tile('humid', 'Humidity', min: 0, max: 100, color: _amber),
         _Tile('hall', 'Hall sensor'),
@@ -394,7 +394,34 @@ class _MonitorScreenState extends State<MonitorScreen>
         roll: s.numOf('roll'),
         pose: s.readings['pose'],
         thermMax: s.numOf('thermmax'),
+        badge: _badge(s, 'rot'),
       );
+
+  // ── Sensor verifier badge for a given hardware sensor key ──
+  Widget _badge(SensorService s, String key) {
+    final h = s.healthOf(key);
+    return SensorBadge(
+      name: _shortSensor(h?.name ?? ''),
+      present: h?.present ?? false,
+      alive: h?.alive ?? false,
+      accuracy: h?.accuracy ?? -1,
+    );
+  }
+
+  // Trim vendor sensor names to a compact identifier for the badge.
+  static String _shortSensor(String n) {
+    if (n.isEmpty) return '';
+    var s = n.trim();
+    for (final w in const [
+      ' Non-wakeup',
+      ' Wakeup',
+      ' Uncalibrated',
+      ' Sensor',
+    ]) {
+      s = s.replaceAll(w, '');
+    }
+    return s.length > 22 ? s.substring(0, 22) : s;
+  }
 
   // ── Per-section visualizations above the cards ──
   List<Widget> _topViz(String title, SensorService s) {
@@ -544,6 +571,10 @@ class _MonitorScreenState extends State<MonitorScreen>
                                         fontWeight: FontWeight.w600)),
                                 const SizedBox(width: 6),
                                 _Dot(color: dot, pulse: st == 2 ? _pulse : null),
+                                if (p.sensorKey != null) ...[
+                                  const SizedBox(width: 8),
+                                  Flexible(child: _badge(s, p.sensorKey!)),
+                                ],
                               ],
                             ),
                             const SizedBox(height: 3),
@@ -807,12 +838,14 @@ class _Parent {
   final bool abs;
   final Color color;
   final List<_Tile> children;
+  final String? sensorKey; // hardware sensor health key, for the verifier badge
   const _Parent(this.id, this.label,
       {this.min = 0,
       this.max = 0,
       this.abs = false,
       this.color = const Color(0xFF818CF8),
-      this.children = const <_Tile>[]});
+      this.children = const <_Tile>[],
+      this.sensorKey});
 }
 
 class _Tile {

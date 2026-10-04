@@ -29,6 +29,7 @@ import java.io.File
 import java.io.RandomAccessFile
 import kotlin.math.abs
 import kotlin.math.acos
+import kotlin.math.atan2
 import kotlin.math.sqrt
 
 /// Native sensor + telemetry hub. Registers every available sensor at the
@@ -57,6 +58,11 @@ class MainActivity : FlutterActivity(), SensorEventListener {
     private var hall: Float? = null
     private val rotM = FloatArray(9)
     private val ori = FloatArray(3)
+
+    // ── sensor health: name/liveness/accuracy per type ──
+    private val sensorNames = HashMap<Int, String>()
+    private val lastSeen = HashMap<Int, Long>()
+    private val accuracyMap = HashMap<Int, Int>()
     private var haveRot = false
 
     // ── derivation state ──
@@ -117,7 +123,13 @@ class MainActivity : FlutterActivity(), SensorEventListener {
     }
 
     private fun reg(type: Int, delay: Int) {
-        try { sm?.getDefaultSensor(type)?.let { sm?.registerListener(this, it, delay) } } catch (_: Exception) {}
+        try {
+            val sensor = sm?.getDefaultSensor(type)
+            if (sensor != null) {
+                sensorNames[type] = sensor.name
+                sm?.registerListener(this, sensor, delay)
+            }
+        } catch (_: Exception) {}
     }
 
     private fun registerSensors() {
@@ -145,9 +157,12 @@ class MainActivity : FlutterActivity(), SensorEventListener {
         } catch (_: Exception) {}
     }
 
-    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
+        if (sensor != null) accuracyMap[sensor.type] = accuracy
+    }
 
     override fun onSensorChanged(e: SensorEvent) {
+        lastSeen[e.sensor.type] = SystemClock.elapsedRealtime()
         when (e.sensor.type) {
             Sensor.TYPE_ACCELEROMETER -> {
                 accel = e.values.clone()
@@ -240,16 +255,19 @@ class MainActivity : FlutterActivity(), SensorEventListener {
             }
         }
         if (haveRot) {
-            var az = Math.toDegrees(ori[0].toDouble()); if (az < 0) az += 360.0
+            // Tilt-compensated heading that does NOT pole-flip when vertical.
+            // world = R · device (world is East-North-Up). Pick whichever device
+            // axis — top edge (+Y) or back/camera (−Z) — is most horizontal, and
+            // take its compass bearing. This stays continuous through vertical.
+            val topE = rotM[1]; val topN = rotM[4]; val topU = rotM[7]
+            val backE = -rotM[2]; val backN = -rotM[5]; val backU = -rotM[8]
+            val he: Float; val hn: Float
+            if (abs(topU) <= abs(backU)) { he = topE; hn = topN } else { he = backE; hn = backN }
+            var az = Math.toDegrees(atan2(he.toDouble(), hn.toDouble())); if (az < 0) az += 360.0
             f["compass"] = az
             f["cardinal"] = cardinal(az)
             f["pitch"] = Math.toDegrees(ori[1].toDouble())
             f["roll"] = Math.toDegrees(ori[2].toDouble())
-            f["rot"] = listOf(
-                rotM[0].toDouble(), rotM[1].toDouble(), rotM[2].toDouble(),
-                rotM[3].toDouble(), rotM[4].toDouble(), rotM[5].toDouble(),
-                rotM[6].toDouble(), rotM[7].toDouble(), rotM[8].toDouble()
-            )
         }
         light?.let { f["lux"] = it.toDouble(); f["lightcat"] = lightCat(it) }
         prox?.let { f["prox"] = it.toDouble() }
@@ -502,6 +520,29 @@ class MainActivity : FlutterActivity(), SensorEventListener {
                 au.isWiredHeadsetOn -> "wired"
                 else -> "speaker"
             }
+        } catch (_: Exception) {}
+        // Sensor health: [name, present, ageMs since last event, accuracy -1..3]
+        try {
+            val now = SystemClock.elapsedRealtime()
+            val sh = HashMap<String, Any>()
+            fun put(key: String, type: Int) {
+                val nm = sensorNames[type]
+                val present = nm != null
+                val age = if (present) now - (lastSeen[type] ?: 0L) else -1L
+                sh[key] = listOf(nm ?: "", present, age, accuracyMap[type] ?: -1)
+            }
+            put("accel", Sensor.TYPE_ACCELEROMETER)
+            put("lin", Sensor.TYPE_LINEAR_ACCELERATION)
+            put("grav", Sensor.TYPE_GRAVITY)
+            put("gyro", Sensor.TYPE_GYROSCOPE)
+            put("mag", Sensor.TYPE_MAGNETIC_FIELD)
+            put("rot", Sensor.TYPE_ROTATION_VECTOR)
+            put("light", Sensor.TYPE_LIGHT)
+            put("prox", Sensor.TYPE_PROXIMITY)
+            put("press", Sensor.TYPE_PRESSURE)
+            put("temp", Sensor.TYPE_AMBIENT_TEMPERATURE)
+            put("humid", Sensor.TYPE_RELATIVE_HUMIDITY)
+            m["sensors"] = sh
         } catch (_: Exception) {}
         return m
     }

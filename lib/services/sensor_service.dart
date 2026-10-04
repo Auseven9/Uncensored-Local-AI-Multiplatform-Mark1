@@ -20,9 +20,32 @@ import 'package:flutter/services.dart';
 /// For each tile it publishes a formatted display string in [readings], a raw
 /// numeric in [nums] (so cards can draw a meter), and a timestamp in [_stamps]
 /// (so the UI can verify each sensor is actively operating).
+/// Liveness/identity of a single hardware sensor, for the on-card verifier.
+class SensorHealth {
+  final String name; // vendor model string, e.g. "LSM6DSO Accelerometer"
+  final bool present; // hardware exists on this device
+  final int ageMs; // ms since the last event (-1 if absent)
+  final int accuracy; // -1 unknown, 0 unreliable, 1 low, 2 med, 3 high
+  final bool alive; // present and (for streaming sensors) delivering fresh data
+  const SensorHealth({
+    required this.name,
+    required this.present,
+    required this.ageMs,
+    required this.accuracy,
+    required this.alive,
+  });
+}
+
 class SensorService {
   static const double _radToDeg = 57.2957795131;
   static const EventChannel _stream = EventChannel('aether/stream');
+
+  // Streaming sensors should deliver continuously; on-change ones (light,
+  // proximity, pressure, ambient) legitimately go quiet, so they are "alive"
+  // whenever present rather than by recency.
+  static const Set<String> _streaming = {'accel', 'lin', 'grav', 'gyro', 'mag', 'rot'};
+  final Map<String, SensorHealth> health = <String, SensorHealth>{};
+  SensorHealth? healthOf(String key) => health[key];
 
   StreamSubscription<dynamic>? _sub;
   bool _running = false;
@@ -255,6 +278,26 @@ class SensorService {
     _s(m['ringer'], 'ringer');
     _b(m['musicactive'], 'music', 'playing', 'idle');
     _s(m['audioout'], 'audioout');
+
+    // ── Sensor health verifier ──
+    final sraw = m['sensors'];
+    if (sraw is Map) {
+      sraw.forEach((k, v) {
+        if (v is List && v.length >= 4) {
+          final key = k.toString();
+          final present = v[1] == true;
+          final age = v[2] is num ? (v[2] as num).toInt() : -1;
+          final streaming = _streaming.contains(key);
+          health[key] = SensorHealth(
+            name: v[0]?.toString() ?? '',
+            present: present,
+            ageMs: age,
+            accuracy: v[3] is num ? (v[3] as num).toInt() : -1,
+            alive: present && (streaming ? (age >= 0 && age < 4000) : true),
+          );
+        }
+      });
+    }
 
     // ── Live graph histories ──
     final am = _toD(m['amag']);

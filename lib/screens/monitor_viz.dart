@@ -52,10 +52,12 @@ class VizCard extends StatelessWidget {
     this.trailing,
     this.trailingColor,
     this.live = true,
+    this.badge,
   });
   final String title;
   final double height;
   final Widget child;
+  final Widget? badge;
   final String? trailing;
   final Color? trailingColor;
   final bool live;
@@ -84,6 +86,7 @@ class VizCard extends StatelessWidget {
                 decoration: BoxDecoration(
                     color: live ? _green : _textD, shape: BoxShape.circle),
               ),
+              if (badge != null) ...[const SizedBox(width: 8), badge!],
               const Spacer(),
               if (trailing != null)
                 Text(trailing!,
@@ -107,6 +110,67 @@ Widget _noSocket(double h) => SizedBox(
         child: Text('no socket', style: TextStyle(color: _textD, fontSize: 13)),
       ),
     );
+
+/// On-card verifier: shows the real hardware sensor name, an ARMED indicator,
+/// its accuracy, and a LOST flag if a streaming sensor stops delivering.
+class SensorBadge extends StatelessWidget {
+  const SensorBadge({
+    super.key,
+    required this.name,
+    required this.present,
+    required this.alive,
+    required this.accuracy,
+  });
+  final String name;
+  final bool present, alive;
+  final int accuracy; // -1 unknown, 0 unreliable, 1 low, 2 med, 3 high
+
+  static const List<String> _acc = ['uncal', 'low', 'med', 'high'];
+
+  @override
+  Widget build(BuildContext context) {
+    final Color c;
+    final IconData icon;
+    final String label;
+    if (!present) {
+      c = _textD;
+      icon = Icons.do_not_disturb_on_outlined;
+      label = 'no sensor';
+    } else if (!alive) {
+      c = _red;
+      icon = Icons.sensors_off;
+      label = name.isNotEmpty ? 'LOST · $name' : 'LOST';
+    } else {
+      c = _green;
+      icon = Icons.sensors;
+      final a = (accuracy >= 0 && accuracy < 4) ? ' · ${_acc[accuracy]}' : '';
+      label = '${name.isNotEmpty ? name : 'ARMED'}$a';
+    }
+    return Container(
+      constraints: const BoxConstraints(maxWidth: 168),
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+      decoration: BoxDecoration(
+        color: Color.alphaBlend(c.withValues(alpha: 0.10), _panel),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: c.withValues(alpha: 0.4)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 10, color: c),
+          const SizedBox(width: 4),
+          Flexible(
+            child: Text(label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                    fontSize: 8.5, color: c, fontWeight: FontWeight.w700, letterSpacing: 0.2)),
+          ),
+        ],
+      ),
+    );
+  }
+}
 
 // ════════════════════════ HERO: DEVICE TWIN ════════════════════════
 
@@ -132,10 +196,12 @@ class DeviceTwin extends StatelessWidget {
     this.roll,
     this.pose,
     this.thermMax,
+    this.badge,
   });
 
   final double? grx, gry, grz, compass, lax, lay, pitch, roll, thermMax;
   final String? cardinal, pose;
+  final Widget? badge;
 
   @override
   Widget build(BuildContext context) {
@@ -166,6 +232,7 @@ class DeviceTwin extends StatelessWidget {
                 decoration: BoxDecoration(
                     color: live ? _green : _textD, shape: BoxShape.circle),
               ),
+              if (badge != null) ...[const SizedBox(width: 8), Flexible(child: badge!)],
               const Spacer(),
               Text(pose ?? '',
                   style: const TextStyle(fontSize: 11, color: _textM, fontWeight: FontWeight.w600)),
@@ -235,32 +302,73 @@ class _TwinPainter extends CustomPainter {
   final double? heading;
 
   // top-down perspective camera
-  static const double _H = 4.5, _f = 3.0, _tiltK = 0.85, _G = 9.81;
+  static const double _H = 4.6, _f = 3.0;
+  static const double _w = 0.6, _h = 1.05, _th = 0.07; // phone half-dims
   late double _cx, _cy, _pscale, _jx, _jy;
-  late double _w, _h, _th;
 
-  double _z(double x, double y) {
-    if (!hasGravity) return 0;
-    return (-(x * gvx + y * gvy) / _G * _tiltK).clamp(-1.4, 1.4).toDouble();
+  // Rotation taking the measured gravity direction (which Android reports
+  // pointing toward the SKY, +9.81 on Z when flat) to world-up (+Z) — the
+  // device's true tilt as a real 3D rotation, yaw-free. Built from gravity, so
+  // the slab rotates by the exact physical tilt with no Euler sign ambiguity.
+  late double _kx, _ky, _c, _s1;
+  late bool _flat, _faceDown;
+
+  void _setupRot() {
+    final g = math.sqrt(gvx * gvx + gvy * gvy + gvz * gvz);
+    if (!hasGravity || g < 1e-6) {
+      _flat = true;
+      _faceDown = false;
+      return;
+    }
+    final ux = gvx / g, uy = gvy / g, uz = gvz / g;
+    _s1 = math.sqrt(ux * ux + uy * uy); // sin(tilt)
+    _c = uz; // cos(tilt)
+    _faceDown = uz < 0;
+    if (_s1 < 1e-6) {
+      _flat = true;
+      return;
+    }
+    _flat = false;
+    _kx = uy / _s1; // rotation axis = ĝ × ẑ, normalized
+    _ky = -ux / _s1;
   }
 
-  Offset _proj(double x, double y, double z) {
-    final s = _f / (_H - z);
-    return Offset(_cx + x * s * _pscale + _jx, _cy - y * s * _pscale + _jy);
+  // device-local point → leveled (gravity-aligned, no yaw) coordinates
+  List<double> _lvl(double px, double py, double pz) {
+    if (_flat) {
+      return _faceDown ? [px, -py, -pz] : [px, py, pz];
+    }
+    // Rodrigues rotation about axis k=(_kx,_ky,0) by the tilt angle
+    final kdotp = _kx * px + _ky * py;
+    final crx = _ky * pz; // (k × p).x
+    final cry = -_kx * pz; // (k × p).y
+    final crz = _kx * py - _ky * px; // (k × p).z
+    final one = 1 - _c;
+    return [
+      px * _c + crx * _s1 + _kx * kdotp * one,
+      py * _c + cry * _s1 + _ky * kdotp * one,
+      pz * _c + crz * _s1,
+    ];
   }
+
+  Offset _proj(double px, double py, double pz) {
+    final q = _lvl(px, py, pz);
+    final s = _f / (_H - q[2]);
+    return Offset(_cx + q[0] * s * _pscale + _jx, _cy - q[1] * s * _pscale + _jy);
+  }
+
+  double _depth(double px, double py, double pz) => _lvl(px, py, pz)[2];
 
   @override
   void paint(Canvas canvas, Size size) {
     _cx = size.width / 2;
     _cy = size.height / 2;
     final rad = math.min(size.width, size.height) / 2 - 6;
-    _pscale = rad * 0.70;
-    // jitter from live linear acceleration (real, unsmoothed)
-    _jx = (ax * 1.2).clamp(-7.0, 7.0).toDouble();
-    _jy = (-ay * 1.2).clamp(-7.0, 7.0).toDouble();
-    _w = 0.58;
-    _h = 1.0;
-    _th = 0.05;
+    _pscale = rad * 0.62;
+    // bounce from live linear acceleration (real, unsmoothed)
+    _jx = (ax * 1.1).clamp(-6.0, 6.0).toDouble();
+    _jy = (-ay * 1.1).clamp(-6.0, 6.0).toDouble();
+    _setupRot();
 
     _drawGrid(canvas, rad);
     _drawDial(canvas, rad);
@@ -319,65 +427,57 @@ class _TwinPainter extends CustomPainter {
   }
 
   void _drawPhone(Canvas canvas) {
-    final faceDown = gvz < -2;
-    // device-local footprint corners (x,y); +y is the phone's forward/top edge
-    final fc = <List<double>>[
-      [-_w, -_h], [_w, -_h], [_w, _h], [-_w, _h],
+    // 8 corners of the real 3D slab in device coordinates
+    // (+Z = screen normal, +Y = top/forward edge, +X = right)
+    final v = <List<double>>[
+      [-_w, -_h, -_th], [_w, -_h, -_th], [_w, _h, -_th], [-_w, _h, -_th],
+      [-_w, -_h, _th], [_w, -_h, _th], [_w, _h, _th], [-_w, _h, _th],
     ];
-    final top = [for (final c in fc) _proj(c[0], c[1], _z(c[0], c[1]) + _th)];
-    final bot = [for (final c in fc) _proj(c[0], c[1], _z(c[0], c[1]) - _th)];
-    final zc = [for (final c in fc) _z(c[0], c[1])];
+    final pts = [for (final p in v) _proj(p[0], p[1], p[2])];
+    final faces = <List<int>>[
+      [4, 5, 6, 7], // screen (+z)
+      [0, 1, 2, 3], // back (−z)
+      [3, 2, 6, 7], // top (+y)
+      [0, 1, 5, 4], // bottom (−y)
+      [1, 2, 6, 5], // right (+x)
+      [0, 3, 7, 4], // left (−x)
+    ];
+    final fd = [
+      for (final f in faces)
+        f.map((i) => _depth(v[i][0], v[i][1], v[i][2])).reduce((a, b) => a + b) / f.length
+    ];
+    final order = List<int>.generate(faces.length, (i) => i)
+      ..sort((a, b) => fd[a].compareTo(fd[b])); // far (low) first
 
-    final bodyDark = Paint()..color = const Color(0xFF20272F);
-    final bodyMid = Paint()..color = const Color(0xFF2A3340);
-    final topCol = Paint()..color = faceDown ? const Color(0xFF232B35) : const Color(0xFF16222C);
+    final screenCol = Paint()..color = const Color(0xFF16222C);
+    final body = Paint()..color = const Color(0xFF2A3340);
     final edge = Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.4
       ..color = const Color(0xDDE6EDF3);
 
-    void quad(List<Offset> p, Paint fill) {
-      final path = Path()..moveTo(p[0].dx, p[0].dy);
-      for (int i = 1; i < p.length; i++) {
-        path.lineTo(p[i].dx, p[i].dy);
+    for (final fi in order) {
+      final f = faces[fi];
+      final path = Path()..moveTo(pts[f[0]].dx, pts[f[0]].dy);
+      for (int k = 1; k < f.length; k++) {
+        path.lineTo(pts[f[k]].dx, pts[f[k]].dy);
       }
       path.close();
-      canvas.drawPath(path, fill);
+      canvas.drawPath(path, fi == 0 ? screenCol : body);
       canvas.drawPath(path, edge);
-    }
-
-    // build faces with an average height for painter ordering
-    final faces = <MapEntry<double, List<Offset>>>[];
-    faces.add(MapEntry((zc[0] + zc[1] + zc[2] + zc[3]) / 4 + _th, top));
-    faces.add(MapEntry((zc[0] + zc[1] + zc[2] + zc[3]) / 4 - _th, bot));
-    for (int i = 0; i < 4; i++) {
-      final j = (i + 1) % 4;
-      final avg = (zc[i] + zc[j]) / 2;
-      faces.add(MapEntry(avg, [top[i], top[j], bot[j], bot[i]]));
-    }
-    faces.sort((a, b) => a.key.compareTo(b.key)); // far (low) first
-    for (final fentry in faces) {
-      final isTop = identical(fentry.value, top);
-      final isBot = identical(fentry.value, bot);
-      quad(fentry.value, isTop ? topCol : (isBot ? bodyDark : bodyMid));
-    }
-
-    // screen tint + camera dot only when face-up
-    if (!faceDown) {
-      final path = Path()..moveTo(top[0].dx, top[0].dy);
-      for (int i = 1; i < 4; i++) {
-        path.lineTo(top[i].dx, top[i].dy);
+      if (fi == 0 && !_faceDown) {
+        canvas.drawPath(path, Paint()..color = const Color(0x2222D3EE)); // screen glow
       }
-      path.close();
-      canvas.drawPath(path, Paint()..color = const Color(0x2222D3EE));
-      canvas.drawCircle(_proj(0, _h * 0.82, _z(0, _h * 0.82) + _th), 2.6,
-          Paint()..color = const Color(0xFF0D1117));
     }
 
-    // red forward arrow at the nose (+y)
-    final tip = _proj(0, _h + 0.22, _z(0, _h) + _th);
-    final bl = _proj(-0.17, _h + 0.02, _z(0, _h) + _th);
-    final br = _proj(0.17, _h + 0.02, _z(0, _h) + _th);
+    // front-camera dot on the screen face
+    if (!_faceDown) {
+      canvas.drawCircle(_proj(0, _h * 0.82, _th), 2.4, Paint()..color = const Color(0xFF0D1117));
+    }
+    // red forward nose arrow at +Y (marks the phone's top edge)
+    final tip = _proj(0, _h + 0.3, _th);
+    final bl = _proj(-0.2, _h + 0.04, _th);
+    final br = _proj(0.2, _h + 0.04, _th);
     final arrow = Path()
       ..moveTo(tip.dx, tip.dy)
       ..lineTo(bl.dx, bl.dy)
