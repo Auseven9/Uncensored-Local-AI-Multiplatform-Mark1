@@ -97,6 +97,7 @@ class MainActivity : FlutterActivity(), SensorEventListener {
     private var lightIr: Float? = null // Samsung IR illuminance (raw)
     private val rotM = FloatArray(9)
     private val ori = FloatArray(3)
+    private var headTop = true // which device axis the heading currently tracks (hysteresis)
 
     // ── event sensors (fire-and-flash): count + last-fired + whether armed ──
     private val eventCount = HashMap<String, Int>()
@@ -190,6 +191,8 @@ class MainActivity : FlutterActivity(), SensorEventListener {
     // ── heavy telemetry cache ──
     private var lastHeavy = 0L
     private var heavy = HashMap<String, Any>()
+    private var lastRadio = 0L
+    private var radioCache = HashMap<String, Any>()
     private var lastCpuTime = 0L
     private var lastCpuWall = 0L
     private var lastRx = 0L
@@ -522,8 +525,12 @@ class MainActivity : FlutterActivity(), SensorEventListener {
             // take its compass bearing. This stays continuous through vertical.
             val topE = rotM[1]; val topN = rotM[4]; val topU = rotM[7]
             val backE = -rotM[2]; val backN = -rotM[5]; val backU = -rotM[8]
+            // Hysteresis: stay on the current axis until the other is clearly more
+            // horizontal (by 0.15), so the heading doesn't snap at the crossover.
+            if (headTop) { if (abs(backU) < abs(topU) - 0.15f) headTop = false }
+            else { if (abs(topU) < abs(backU) - 0.15f) headTop = true }
             val he: Float; val hn: Float
-            if (abs(topU) <= abs(backU)) { he = topE; hn = topN } else { he = backE; hn = backN }
+            if (headTop) { he = topE; hn = topN } else { he = backE; hn = backN }
             var az = Math.toDegrees(atan2(he.toDouble(), hn.toDouble())); if (az < 0) az += 360.0
             f["compass"] = az
             f["cardinal"] = cardinal(az)
@@ -627,7 +634,12 @@ class MainActivity : FlutterActivity(), SensorEventListener {
             heavy = computeHeavy()
             lastHeavy = now
         }
+        if (now - lastRadio > 400) {
+            radioCache = computeRadio()
+            lastRadio = now
+        }
         f.putAll(heavy)
+        f.putAll(radioCache)
         return f
     }
 
@@ -658,6 +670,71 @@ class MainActivity : FlutterActivity(), SensorEventListener {
             e < 6.0 -> "active"
             else -> "impact"
         }
+    }
+
+    // Radio & Nearby on a faster ~400ms cadence so the radar/signal feel live.
+    private fun computeRadio(): HashMap<String, Any> {
+        val m = HashMap<String, Any>()
+        try {
+            val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            @Suppress("DEPRECATION") val info = wm.connectionInfo
+            if (info != null) {
+                val rssi = info.rssi
+                if (rssi in -100..0) {
+                    m["wifiRssi"] = rssi
+                    m["wifiSpeed"] = info.linkSpeed
+                    val freq = info.frequency
+                    m["wifiFreq"] = freq
+                    m["wifiBand"] = if (freq >= 5955) "6 GHz" else if (freq >= 4900) "5 GHz" else "2.4 GHz"
+                }
+            }
+            if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.NEARBY_WIFI_DEVICES)
+                == PackageManager.PERMISSION_GRANTED) {
+                try {
+                    @Suppress("DEPRECATION") val res = wm.scanResults
+                    val aps = ArrayList<List<Any>>()
+                    for (r in res.sortedByDescending { it.level }.take(16)) {
+                        val ssid = try { r.SSID ?: "" } catch (_: Exception) { "" }
+                        aps.add(listOf(r.level, r.frequency, if (ssid.isEmpty()) "(hidden)" else ssid))
+                    }
+                    m["wifiAps"] = aps
+                    try { @Suppress("DEPRECATION") wm.startScan() } catch (_: Exception) {}
+                } catch (_: Exception) {}
+            }
+        } catch (_: Exception) {}
+        try {
+            if (Build.VERSION.SDK_INT >= 29 &&
+                ContextCompat.checkSelfPermission(this, android.Manifest.permission.READ_PHONE_STATE)
+                == PackageManager.PERMISSION_GRANTED) {
+                val tm = getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+                val ss = tm.signalStrength
+                if (ss != null) {
+                    val cs = ss.cellSignalStrengths
+                    if (cs.isNotEmpty()) {
+                        m["cellDbm"] = cs[0].dbm
+                        m["cellLevel"] = cs[0].level
+                    }
+                }
+                m["cellType"] = cellTypeName(tm.dataNetworkType)
+            }
+        } catch (_: Exception) {}
+        try {
+            if (bleRunning) {
+                val now = SystemClock.elapsedRealtime()
+                val list = ArrayList<List<Any>>()
+                val iter = bleSeen.entries.iterator()
+                while (iter.hasNext()) {
+                    val e = iter.next()
+                    val age = now - e.value[1].toLong()
+                    if (age > 12000) { iter.remove(); continue }
+                    list.add(listOf(e.value[0].toInt(), bleName[e.key] ?: ""))
+                }
+                list.sortByDescending { it[0] as Int }
+                m["bleList"] = ArrayList(list.take(20))
+                m["bleCount"] = list.size
+            }
+        } catch (_: Exception) {}
+        return m
     }
 
     private fun computeHeavy(): HashMap<String, Any> {
@@ -809,66 +886,7 @@ class MainActivity : FlutterActivity(), SensorEventListener {
             if (rx >= 0) m["rxmb"] = rx / 1048576.0
             if (tx >= 0) m["txmb"] = tx / 1048576.0
         } catch (_: Exception) {}
-        // Radio & Nearby: Wi-Fi (connected + scan), cellular signal, BLE devices
-        try {
-            val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-            @Suppress("DEPRECATION") val info = wm.connectionInfo
-            if (info != null) {
-                val rssi = info.rssi
-                if (rssi in -100..0) {
-                    m["wifiRssi"] = rssi
-                    m["wifiSpeed"] = info.linkSpeed
-                    val freq = info.frequency
-                    m["wifiFreq"] = freq
-                    m["wifiBand"] = if (freq >= 5955) "6 GHz" else if (freq >= 4900) "5 GHz" else "2.4 GHz"
-                }
-            }
-            if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.NEARBY_WIFI_DEVICES)
-                == PackageManager.PERMISSION_GRANTED) {
-                try {
-                    @Suppress("DEPRECATION") val res = wm.scanResults
-                    val aps = ArrayList<List<Any>>()
-                    for (r in res.sortedByDescending { it.level }.take(16)) {
-                        val ssid = try { r.SSID ?: "" } catch (_: Exception) { "" }
-                        aps.add(listOf(r.level, r.frequency, if (ssid.isEmpty()) "(hidden)" else ssid))
-                    }
-                    m["wifiAps"] = aps
-                    try { @Suppress("DEPRECATION") wm.startScan() } catch (_: Exception) {}
-                } catch (_: Exception) {}
-            }
-        } catch (_: Exception) {}
-        try {
-            if (Build.VERSION.SDK_INT >= 29 &&
-                ContextCompat.checkSelfPermission(this, android.Manifest.permission.READ_PHONE_STATE)
-                == PackageManager.PERMISSION_GRANTED) {
-                val tm = getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
-                val ss = tm.signalStrength
-                if (ss != null) {
-                    val cs = ss.cellSignalStrengths
-                    if (cs.isNotEmpty()) {
-                        m["cellDbm"] = cs[0].dbm
-                        m["cellLevel"] = cs[0].level
-                    }
-                }
-                m["cellType"] = cellTypeName(tm.dataNetworkType)
-            }
-        } catch (_: Exception) {}
-        try {
-            if (bleRunning) {
-                val now = SystemClock.elapsedRealtime()
-                val list = ArrayList<List<Any>>()
-                val iter = bleSeen.entries.iterator()
-                while (iter.hasNext()) {
-                    val e = iter.next()
-                    val age = now - e.value[1].toLong()
-                    if (age > 12000) { iter.remove(); continue }
-                    list.add(listOf(e.value[0].toInt(), bleName[e.key] ?: ""))
-                }
-                list.sortByDescending { it[0] as Int }
-                m["bleList"] = ArrayList(list.take(20))
-                m["bleCount"] = list.size
-            }
-        } catch (_: Exception) {}
+        // Radio & Nearby now runs on its own faster ~400ms cadence (computeRadio).
         // Display
         try {
             val d = windowManager.defaultDisplay

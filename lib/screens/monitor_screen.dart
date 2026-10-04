@@ -400,7 +400,7 @@ class _MonitorScreenState extends State<MonitorScreen>
           ],
         ),
         const SizedBox(height: 2),
-        const Text('Live hardware stream · real reading or “no socket”',
+        const Text('Live hardware stream · fully offline · real reading or “no socket”',
             style: TextStyle(fontSize: 12, color: _textM)),
         const SizedBox(height: 10),
         Row(
@@ -512,6 +512,7 @@ class _MonitorScreenState extends State<MonitorScreen>
       compass: trueH ?? s.numOf('compass'),
       cardinal: trueH != null ? s.readings['cardinalTrue'] : s.readings['cardinal'],
       trueNorth: trueH != null,
+      headingDisplay: s.headingDisplay,
       lax: s.numOf('lax'),
       lay: s.numOf('lay'),
       pitch: s.numOf('pitch'),
@@ -597,6 +598,7 @@ class _MonitorScreenState extends State<MonitorScreen>
             heading: trueH ?? s.numOf('compass'),
             cardinal: trueH != null ? s.readings['cardinalTrue'] : s.readings['cardinal'],
             trueNorth: trueH != null,
+            headingDisplay: s.headingDisplay,
           ),
         ];
       case 'Environment':

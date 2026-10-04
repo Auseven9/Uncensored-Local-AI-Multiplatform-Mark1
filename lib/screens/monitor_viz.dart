@@ -27,6 +27,31 @@ const Color _red = Color(0xFFF85149);
 
 double _deg2rad(num d) => d * math.pi / 180.0;
 
+/// A rotating radar sweep arm (time-driven, ~3.6 s/rev) with a fading trail.
+/// Returns the current sweep angle (radians) so callers can "ping" marks as the
+/// arm passes them. Purely cosmetic motion — it never moves the real marks.
+double _radarSweep(Canvas canvas, Offset c, double r, Color col) {
+  final double a = (DateTime.now().millisecondsSinceEpoch % 3600) / 3600.0 * 2 * math.pi;
+  const int n = 22;
+  for (int i = 0; i < n; i++) {
+    final double frac = i / n;
+    final double aa = a - frac * 0.6;
+    final double alpha = (0.16 * (1 - frac)).clamp(0.0, 1.0).toDouble();
+    canvas.drawLine(c, Offset(c.dx + math.cos(aa) * r, c.dy + math.sin(aa) * r),
+        Paint()..color = col.withValues(alpha: alpha)..strokeWidth = 2);
+  }
+  canvas.drawLine(c, Offset(c.dx + math.cos(a) * r, c.dy + math.sin(a) * r),
+      Paint()..color = col.withValues(alpha: 0.5)..strokeWidth = 1.5);
+  return a;
+}
+
+/// 0..1 glow boost for a mark at angle [dotA] as the sweep [sweepA] passes it.
+double _pingBoost(double sweepA, double dotA) {
+  double d = ((sweepA - dotA) % (2 * math.pi)).abs();
+  if (d > math.pi) d = 2 * math.pi - d;
+  return (1 - d / 0.5).clamp(0.0, 1.0).toDouble();
+}
+
 Color _tempColor(double c) {
   if (c < 35) return _green;
   if (c < 42) return _amber;
@@ -199,12 +224,14 @@ class DeviceTwin extends StatelessWidget {
     this.thermMax,
     this.badge,
     this.trueNorth = false,
+    this.headingDisplay,
   });
 
   final double? grx, gry, grz, compass, lax, lay, pitch, roll, thermMax;
   final String? cardinal, pose;
   final Widget? badge;
   final bool trueNorth;
+  final double? headingDisplay; // smoothed, for the dial; text uses raw compass
 
   @override
   Widget build(BuildContext context) {
@@ -253,7 +280,7 @@ class DeviceTwin extends StatelessWidget {
                       gvy: gry ?? 0.0,
                       gvz: grz ?? 0.0,
                       hasGravity: grx != null,
-                      heading: compass,
+                      heading: headingDisplay ?? compass,
                       ax: lax ?? 0.0,
                       ay: lay ?? 0.0,
                     ),
@@ -1125,10 +1152,11 @@ class _MetalPainter extends CustomPainter {
 /// metal detector). The rose rotates to true heading; the fixed top marker is
 /// the device's own forward direction.
 class CompassRose extends StatelessWidget {
-  const CompassRose({super.key, this.heading, this.cardinal, this.trueNorth = false});
+  const CompassRose({super.key, this.heading, this.cardinal, this.trueNorth = false, this.headingDisplay});
   final double? heading;
   final String? cardinal;
   final bool trueNorth;
+  final double? headingDisplay; // smoothed, for rose rotation; number stays raw
   @override
   Widget build(BuildContext context) {
     return VizCard(
@@ -1139,21 +1167,21 @@ class CompassRose extends StatelessWidget {
       trailingColor: _cyan,
       child: heading == null
           ? _noSocket(140)
-          : CustomPaint(painter: _RosePainter(heading!), size: Size.infinite),
+          : CustomPaint(painter: _RosePainter(headingDisplay ?? heading!, heading!), size: Size.infinite),
     );
   }
 }
 
 class _RosePainter extends CustomPainter {
-  _RosePainter(this.heading);
-  final double heading;
+  _RosePainter(this.rot, this.label);
+  final double rot, label;
   @override
   void paint(Canvas canvas, Size size) {
     final c = Offset(size.width / 2, size.height / 2);
     final rad = math.min(size.width, size.height) / 2 - 10;
     canvas.save();
     canvas.translate(c.dx, c.dy);
-    canvas.rotate(_deg2rad(-heading));
+    canvas.rotate(_deg2rad(-rot));
     final ring = Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.4
@@ -1182,7 +1210,7 @@ class _RosePainter extends CustomPainter {
       ..lineTo(c.dx + 7, c.dy - rad + 12)
       ..close();
     canvas.drawPath(path, Paint()..color = _cyan);
-    _tp(canvas, '${heading.toStringAsFixed(0)}°', c, _text, size: 18, w: FontWeight.w700);
+    _tp(canvas, '${label.toStringAsFixed(0)}°', c, _text, size: 18, w: FontWeight.w700);
   }
 
   @override
@@ -1874,11 +1902,16 @@ class _SkyPainter extends CustomPainter {
       final at = Offset(c.dx + math.cos(a) * (r + 9), c.dy + math.sin(a) * (r + 9));
       _tp(canvas, e[1] as String, at, (e[0] as int) == 0 ? _red : _textM, size: 10, w: FontWeight.w700);
     }
+    final double skySweep = _radarSweep(canvas, c, r, _cyan);
     for (final s in sats) {
       final double rr = ((90 - s.el) / 90).clamp(0.0, 1.0).toDouble() * r;
       final a = _deg2rad(s.az - 90);
       final p = Offset(c.dx + math.cos(a) * rr, c.dy + math.sin(a) * rr);
       final col = _cn0Color(s.cn0);
+      final double boost = _pingBoost(skySweep, a);
+      if (boost > 0) {
+        canvas.drawCircle(p, 5 + boost * 8, Paint()..color = col.withValues(alpha: 0.10 + 0.25 * boost));
+      }
       if (s.used) {
         canvas.drawCircle(p, 4.2, Paint()..color = col);
         canvas.drawCircle(
@@ -1899,6 +1932,7 @@ class _SkyPainter extends CustomPainter {
       }
     }
     _tp(canvas, '$used used · $seen in view', Offset(size.width / 2, 8), _textM, size: 10, w: FontWeight.w700);
+    _tp(canvas, 'satellite-direct · works offline', Offset(size.width / 2, size.height - 6), _textD, size: 9);
     if (sats.isEmpty) {
       _tp(canvas, 'acquiring sky… (go near a window)', c, _textD, size: 11);
     }
@@ -2123,6 +2157,7 @@ class _RadarPainter extends CustomPainter {
     for (final f in const [1.0, 0.66, 0.33]) {
       canvas.drawCircle(c, rad * f, ring);
     }
+    final double rSweep = _radarSweep(canvas, c, rad, _green);
     canvas.drawCircle(c, 4, Paint()..color = _text);
     _tp(canvas, 'YOU', Offset(c.dx, c.dy + 14), _textM, size: 8);
     for (final d in dots) {
@@ -2130,10 +2165,11 @@ class _RadarPainter extends CustomPainter {
       final double a = ((d.label.hashCode & 0x7fffffff) % 360) * math.pi / 180.0;
       final p = Offset(c.dx + math.cos(a) * rr, c.dy + math.sin(a) * rr);
       final col = d.kind == 'wifi' ? _cyan : _accent;
+      final double boost = _pingBoost(rSweep, a);
       canvas.drawCircle(p, 4.2, Paint()..color = col);
-      canvas.drawCircle(p, 8, Paint()..color = col.withValues(alpha: 0.12));
+      canvas.drawCircle(p, 8 + boost * 7, Paint()..color = col.withValues(alpha: 0.12 + 0.3 * boost));
     }
-    _tp(canvas, '${dots.length} emitters · radius = signal · bearing not sensed',
+    _tp(canvas, '${dots.length} emitters · signal radius · airwave scan, no connection',
         Offset(size.width / 2, size.height - 6), _textD, size: 9);
     if (dots.isEmpty) {
       _tp(canvas, 'enable Nearby Wi-Fi / BLE to populate', c.translate(0, -rad - 2), _textD, size: 10);
@@ -2187,12 +2223,13 @@ class _UwbPainter extends CustomPainter {
     for (final f in const [1.0, 0.6]) {
       canvas.drawCircle(c, rad * f, ring);
     }
+    _radarSweep(canvas, c, rad, _cyan);
     canvas.drawCircle(c, 4, Paint()..color = _cyan);
-    _tp(canvas, 'needs a UWB peer to range', c.translate(0, rad - 4), _textD, size: 10);
+    _tp(canvas, 'scanning — needs a UWB peer to range', c.translate(0, rad - 4), _textD, size: 10);
   }
 
   @override
-  bool shouldRepaint(_UwbPainter old) => false;
+  bool shouldRepaint(_UwbPainter old) => true;
 }
 
 // ════════════════════════ INPUT PADS (S-Pen · touch) ════════════════════════

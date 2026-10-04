@@ -284,6 +284,10 @@ class SensorService {
   List<Ap> wifiAps = const <Ap>[];
   List<BleDev> bleDevices = const <BleDev>[];
 
+  // Display-only smoothed heading (deg) for the twin/compass dials — the raw
+  // heading is preserved in readings/sub-tiles; this just makes the dial glide.
+  double? headingDisplay;
+
   /// One-shot probe of every subsystem/API — what we can tap and where.
   Future<List<IndexSection>> fetchIndex() async {
     try {
@@ -469,6 +473,19 @@ class SensorService {
     _d2(m['geoDecl'], 'geoDecl', (v) => '${v >= 0 ? '+' : ''}${v.toStringAsFixed(1)} °');
     _d2(m['geoField'], 'geoField', (v) => '${v.toStringAsFixed(1)} µT');
     _d2(m['geoIncl'], 'geoIncl', (v) => '${v.toStringAsFixed(1)} °');
+    // Display-only smoothed heading (shortest-path circular EMA) for the dials.
+    final rawHead = _toD(m['trueHeading']) ?? _toD(m['compass']);
+    if (rawHead != null) {
+      final cur = headingDisplay;
+      if (cur == null) {
+        headingDisplay = rawHead;
+      } else {
+        var diff = rawHead - cur;
+        while (diff > 180) diff -= 360;
+        while (diff < -180) diff += 360;
+        headingDisplay = ((cur + diff * 0.18) % 360 + 360) % 360;
+      }
+    }
     final r = m['rot'];
     if (r is List && r.length == 9) {
       rot.value = r.map((e) => (e as num).toDouble()).toList(growable: false);
