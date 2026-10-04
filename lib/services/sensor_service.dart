@@ -35,10 +35,18 @@ class SensorService {
   // orientation phone. Null until the sensor delivers a frame.
   final ValueNotifier<List<double>?> rot = ValueNotifier<List<double>?>(null);
 
-  // Rolling histories for the live accel/gyro graph (magnitude, last N).
+  // Rolling histories for the live graphs (last N samples).
   static const int _histLen = 90;
-  final List<double> accelHist = <double>[];
-  final List<double> gyroHist = <double>[];
+  final List<double> accelHist = <double>[]; // |a| m/s²
+  final List<double> gyroHist = <double>[]; // |ω| °/s
+  final List<double> cpuHist = <double>[]; // app CPU %
+  final List<double> downHist = <double>[]; // KB/s down
+  final List<double> upHist = <double>[]; // KB/s up
+
+  void _push(List<double> buf, double v) {
+    buf.add(v);
+    if (buf.length > _histLen) buf.removeAt(0);
+  }
 
   // Gauge rings.
   final ValueNotifier<double?> cpuPct = ValueNotifier<double?>(null);
@@ -146,6 +154,7 @@ class SensorService {
     if (cpu != null) {
       _put('cpuapp', '${cpu.toStringAsFixed(1)} %', cpu);
       cpuPct.value = cpu;
+      _push(cpuHist, cpu);
     }
     final cores = _toI(m['cores']);
     if (cores != null) {
@@ -221,8 +230,16 @@ class SensorService {
     _b(m['vpn'], 'vpn', 'active', 'off');
     _int(m['linkdown'], 'linkdown', (v) => '${(v / 1000).toStringAsFixed(0)} Mbps');
     _int(m['linkup'], 'linkup', (v) => '${(v / 1000).toStringAsFixed(0)} Mbps');
-    _d2(m['downkbs'], 'downkbs', (v) => '${v.toStringAsFixed(1)} KB/s');
-    _d2(m['upkbs'], 'upkbs', (v) => '${v.toStringAsFixed(1)} KB/s');
+    final dn = _toD(m['downkbs']);
+    if (dn != null) {
+      _put('downkbs', '${dn.toStringAsFixed(1)} KB/s', dn);
+      _push(downHist, dn);
+    }
+    final upk = _toD(m['upkbs']);
+    if (upk != null) {
+      _put('upkbs', '${upk.toStringAsFixed(1)} KB/s', upk);
+      _push(upHist, upk);
+    }
     _d2(m['rxmb'], 'rxmb', (v) => '${v.toStringAsFixed(1)} MB');
     _d2(m['txmb'], 'txmb', (v) => '${v.toStringAsFixed(1)} MB');
 
@@ -236,6 +253,7 @@ class SensorService {
     _d2(m['volring'], 'volring', (v) => '${v.toStringAsFixed(0)} %');
     _s(m['ringer'], 'ringer');
     _b(m['musicactive'], 'music', 'playing', 'idle');
+    _s(m['audioout'], 'audioout');
 
     // ── Live graph histories ──
     final am = _toD(m['amag']);

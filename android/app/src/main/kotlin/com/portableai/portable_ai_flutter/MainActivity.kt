@@ -261,7 +261,7 @@ class MainActivity : FlutterActivity(), SensorEventListener {
                 if (dt > 0.5) {
                     vspeed = (alt - lastAlt) / dt
                     floors += abs(alt - lastAlt) / 3.0
-                    f["ptrend"] = if (alt - lastAlt > 0.3) "falling" else if (alt - lastAlt < -0.3) "rising" else "steady"
+                    f["ptrend"] = if (alt - lastAlt > 0.3) "rising" else if (alt - lastAlt < -0.3) "falling" else "steady"
                     lastAlt = alt; lastAltT = now
                 }
             } else { lastAlt = alt; lastAltT = now }
@@ -492,6 +492,11 @@ class MainActivity : FlutterActivity(), SensorEventListener {
                 else -> "normal"
             }
             m["musicactive"] = au.isMusicActive
+            m["audioout"] = when {
+                au.isBluetoothA2dpOn -> "bluetooth"
+                au.isWiredHeadsetOn -> "wired"
+                else -> "speaker"
+            }
         } catch (_: Exception) {}
         return m
     }

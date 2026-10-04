@@ -1,9 +1,8 @@
-import 'dart:math' as math;
-
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
 import '../services/sensor_service.dart';
+import 'monitor_viz.dart';
 
 /// Native Monitor — a real Flutter sensor/resource dashboard.
 ///
@@ -249,6 +248,8 @@ class _MonitorScreenState extends State<MonitorScreen>
                       _header(svc, now),
                       const SizedBox(height: 14),
                       _gaugeRow(svc),
+                      const SizedBox(height: 16),
+                      _hero(svc),
                       for (final g in _groups) ..._group(g, svc, now),
                     ],
                   );
@@ -373,10 +374,105 @@ class _MonitorScreenState extends State<MonitorScreen>
             style: const TextStyle(
                 fontSize: 11, letterSpacing: 1.2, color: _textM, fontWeight: FontWeight.w700)),
       ),
-      if (g.title == 'Motion') _accelGyroGraph(s),
-      if (g.title == 'Orientation') _phone3d(s, now),
+      ..._topViz(g.title, s),
       for (final p in g.parents) _parentCard(p, s, now),
+      ..._bottomViz(g.title, s),
     ];
+  }
+
+  // ── Hero: the device twin, under the gauge rings ──
+  Widget _hero(SensorService s) => DeviceTwin(
+        rot: s.rot.value,
+        lax: s.numOf('lax'),
+        lay: s.numOf('lay'),
+        laz: s.numOf('laz'),
+        lmag: s.numOf('lmag'),
+        thermCpu: s.numOf('thermcpu'),
+        thermGpu: s.numOf('thermgpu'),
+        thermBatt: s.numOf('thermbatt'),
+        thermSkin: s.numOf('thermskin'),
+        thermMax: s.numOf('thermmax'),
+        pose: s.readings['pose'],
+        compass: s.numOf('compass'),
+        cardinal: s.readings['cardinal'],
+        pitch: s.numOf('pitch'),
+        roll: s.numOf('roll'),
+      );
+
+  // ── Per-section visualizations above the cards ──
+  List<Widget> _topViz(String title, SensorService s) {
+    switch (title) {
+      case 'Compute':
+        return [
+          CoreEqualizer(freqs: [for (int i = 0; i < s.coreCount; i++) s.numOf('core$i')]),
+          CpuArea(hist: s.cpuHist, now: s.numOf('cpuapp')),
+        ];
+      case 'Power / Thermal':
+        return [
+          ThermalPhone(
+            cpu: s.numOf('thermcpu'),
+            gpu: s.numOf('thermgpu'),
+            batt: s.numOf('thermbatt'),
+            skin: s.numOf('thermskin'),
+            maxz: s.numOf('thermmax'),
+          ),
+          BatteryFlow(
+            level: s.numOf('batl'),
+            charging: s.readings['batc'] == 'charging',
+            currentMa: s.numOf('batcur'),
+            powerW: s.numOf('batpower'),
+          ),
+        ];
+      case 'Motion':
+        return [
+          _accelGyroGraph(s),
+          SpiritLevel(gx: s.numOf('grx'), gy: s.numOf('gry'), gz: s.numOf('grz')),
+          GyroRates(x: s.numOf('gx'), y: s.numOf('gy'), z: s.numOf('gz')),
+        ];
+      case 'Orientation':
+        return [
+          CompassRose(heading: s.numOf('compass'), cardinal: s.readings['cardinal']),
+        ];
+      case 'Environment':
+        return [
+          Altimeter(alt: s.numOf('alt'), vspeed: s.numOf('vspeed'), trend: s.readings['ptrend']),
+          LightBar(lux: s.numOf('lux'), cat: s.readings['lightcat']),
+        ];
+      case 'Network':
+        return [
+          ThroughputGraph(
+            down: s.downHist,
+            up: s.upHist,
+            downNow: s.numOf('downkbs'),
+            upNow: s.numOf('upkbs'),
+            rx: s.readings['rxmb'],
+            tx: s.readings['txmb'],
+          ),
+        ];
+      case 'System':
+        return [
+          RefreshTach(hz: s.numOf('refresh')),
+          AudioMeter(
+            media: s.numOf('volmedia'),
+            ring: s.numOf('volring'),
+            music: s.readings['music'] == 'playing',
+            ringer: s.readings['ringer'],
+            route: s.readings['audioout'],
+          ),
+        ];
+      default:
+        return const [];
+    }
+  }
+
+  // ── Per-section visualizations below the cards ──
+  List<Widget> _bottomViz(String title, SensorService s) {
+    if (title == 'Magnetic') {
+      return [
+        MetalDetector(field: s.numOf('bmag'), mx: s.numOf('mx'), my: s.numOf('my')),
+      ];
+    }
+    return const [];
   }
 
   Widget _parentCard(_Parent p, SensorService s, int now) {
@@ -582,47 +678,6 @@ class _MonitorScreenState extends State<MonitorScreen>
     );
   }
 
-  // ── 3D orientation phone ──
-  Widget _phone3d(SensorService s, int now) {
-    final live = _state(s, 'compass', now) == 2;
-    return Container(
-      margin: const EdgeInsets.only(bottom: 10),
-      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-      decoration: BoxDecoration(
-        color: _panel,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: _border),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Text('3D orientation',
-                  style: TextStyle(fontSize: 12, color: _textM, fontWeight: FontWeight.w600)),
-              const SizedBox(width: 6),
-              _Dot(color: live ? _green : _textD, pulse: live ? _pulse : null),
-              const Spacer(),
-              Text(s.readings['pose'] ?? '',
-                  style: const TextStyle(fontSize: 11, color: _textM)),
-            ],
-          ),
-          const SizedBox(height: 8),
-          SizedBox(
-            height: 200,
-            child: ValueListenableBuilder<List<double>?>(
-              valueListenable: s.rot,
-              builder: (context, r, __) => r == null
-                  ? const Center(
-                      child: Text('no socket', style: TextStyle(color: _textD, fontSize: 13)))
-                  : CustomPaint(painter: _PhonePainter(r), size: Size.infinite),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
   // ── live accel / gyro graph ──
   Widget _accelGyroGraph(SensorService s) => Container(
         margin: const EdgeInsets.only(bottom: 10),
@@ -684,87 +739,6 @@ class _Dot extends StatelessWidget {
       child: dot,
     );
   }
-}
-
-/// Hand-drawn low-poly phone driven by the live device rotation matrix (9).
-class _PhonePainter extends CustomPainter {
-  _PhonePainter(this.r);
-  final List<double> r;
-
-  static const double _phi = 0.42; // view elevation (~24°)
-
-  List<double> _rot(double x, double y, double z) {
-    if (r.length < 9) return [x, y, z];
-    return [
-      r[0] * x + r[1] * y + r[2] * z,
-      r[3] * x + r[4] * y + r[5] * z,
-      r[6] * x + r[7] * y + r[8] * z,
-    ];
-  }
-
-  double _depth(double x, double y, double z) {
-    final w = _rot(x, y, z);
-    return -w[2] * math.sin(_phi) + w[1] * math.cos(_phi);
-  }
-
-  Offset _project(double x, double y, double z, double cx, double cy, double scale) {
-    final w = _rot(x, y, z);
-    final ex = w[0], no = w[1], up = w[2];
-    final vy = up * math.cos(_phi) + no * math.sin(_phi);
-    final vd = -up * math.sin(_phi) + no * math.cos(_phi);
-    final s = 4.5 / (6.0 - vd);
-    return Offset(cx + ex * s * scale, cy - vy * s * scale);
-  }
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final cx = size.width / 2, cy = size.height / 2;
-    final scale = math.min(size.width, size.height) * 0.42;
-    const w = 0.95, h = 1.9, t = 0.13;
-    final v = <List<double>>[
-      [-w, -h, -t], [w, -h, -t], [w, h, -t], [-w, h, -t],
-      [-w, -h, t], [w, -h, t], [w, h, t], [-w, h, t],
-    ];
-    final pts = [for (final p in v) _project(p[0], p[1], p[2], cx, cy, scale)];
-    final faces = <List<int>>[
-      [4, 5, 6, 7], // screen (+z)
-      [0, 1, 2, 3], // back
-      [3, 2, 6, 7], // top
-      [0, 1, 5, 4], // bottom
-      [1, 2, 6, 5], // right
-      [0, 3, 7, 4], // left
-    ];
-    final fd = [
-      for (final f in faces)
-        f.map((i) => _depth(v[i][0], v[i][1], v[i][2])).reduce((a, b) => a + b) / f.length
-    ];
-    final order = List<int>.generate(faces.length, (i) => i)
-      ..sort((a, b) => fd[a].compareTo(fd[b]));
-
-    final body = Paint()..color = const Color(0xFF232B38);
-    final screen = Paint()..color = const Color(0xFF22D3EE).withValues(alpha: 0.82);
-    final edge = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.4
-      ..color = const Color(0xCCE6EDF3);
-
-    for (final fi in order) {
-      final f = faces[fi];
-      final path = Path()..moveTo(pts[f[0]].dx, pts[f[0]].dy);
-      for (int k = 1; k < f.length; k++) {
-        path.lineTo(pts[f[k]].dx, pts[f[k]].dy);
-      }
-      path.close();
-      canvas.drawPath(path, fi == 0 ? screen : body);
-      canvas.drawPath(path, edge);
-    }
-    // front-camera marker near the top of the screen face
-    final cam = _project(0, h * 0.78, t, cx, cy, scale);
-    canvas.drawCircle(cam, 3, Paint()..color = const Color(0xFF0D1117));
-  }
-
-  @override
-  bool shouldRepaint(_PhonePainter old) => !identical(old.r, r);
 }
 
 /// Simple live sparkline for a sensor magnitude history.
