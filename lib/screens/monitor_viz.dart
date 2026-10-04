@@ -1529,3 +1529,195 @@ class _AreaPainter extends CustomPainter {
   @override
   bool shouldRepaint(_AreaPainter old) => true;
 }
+
+// ════════════════════════ ON-CARD LIVENESS MICRO-VIZ ════════════════════════
+
+/// Tiny auto-scaled sparkline of a reading's recent real samples. Its only job
+/// is to prove the sensor is live and ticking: the line moves while values
+/// stream, and it flattens (but still draws) when a reading holds steady.
+class MicroSpark extends StatelessWidget {
+  const MicroSpark({super.key, required this.data, required this.color, this.height = 20});
+  final List<double> data;
+  final Color color;
+  final double height;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+        height: height,
+        width: double.infinity,
+        child: data.length < 2
+            ? const SizedBox.expand()
+            : CustomPaint(painter: _MicroSparkPainter(List<double>.of(data), color)),
+      );
+}
+
+class _MicroSparkPainter extends CustomPainter {
+  _MicroSparkPainter(this.data, this.color);
+  final List<double> data;
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    double lo = data.first, hi = data.first;
+    for (final d in data) {
+      if (d < lo) lo = d;
+      if (d > hi) hi = d;
+    }
+    final double span = (hi - lo).abs();
+    final bool flat = span < 1e-9;
+    final double usable = size.height - 3;
+
+    double yAt(double v) {
+      final double n = flat ? 0.5 : ((v - lo) / span).clamp(0.0, 1.0).toDouble();
+      return size.height - n * usable - 1.5;
+    }
+
+    final line = Path();
+    for (int i = 0; i < data.length; i++) {
+      final double x = size.width * i / (data.length - 1);
+      final double y = yAt(data[i]);
+      if (i == 0) {
+        line.moveTo(x, y);
+      } else {
+        line.lineTo(x, y);
+      }
+    }
+    canvas.drawPath(
+        line,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.4
+          ..strokeJoin = StrokeJoin.round
+          ..color = color);
+    final area = Path.from(line)
+      ..lineTo(size.width, size.height)
+      ..lineTo(0, size.height)
+      ..close();
+    canvas.drawPath(area, Paint()..color = color.withValues(alpha: 0.10));
+    canvas.drawCircle(Offset(size.width - 1.5, yAt(data.last)), 1.8, Paint()..color = color);
+  }
+
+  @override
+  bool shouldRepaint(_MicroSparkPainter old) => true;
+}
+
+/// Pulse lane for state readings (strings/booleans). Each real update time is a
+/// tick that marches left over a window, brightest when freshest — so you can
+/// see the reading pulse as it changes, not just a static label.
+class PulseLane extends StatelessWidget {
+  const PulseLane({
+    super.key,
+    required this.beats,
+    required this.color,
+    required this.now,
+    this.height = 20,
+    this.windowMs = 3000,
+  });
+  final List<int> beats;
+  final Color color;
+  final int now;
+  final double height;
+  final int windowMs;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+        height: height,
+        width: double.infinity,
+        child: CustomPaint(painter: _PulsePainter(List<int>.of(beats), color, now, windowMs)),
+      );
+}
+
+class _PulsePainter extends CustomPainter {
+  _PulsePainter(this.beats, this.color, this.now, this.windowMs);
+  final List<int> beats;
+  final Color color;
+  final int now;
+  final int windowMs;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.drawLine(Offset(0, size.height - 1), Offset(size.width, size.height - 1),
+        Paint()..color = const Color(0x0DFFFFFF)..strokeWidth = 1);
+    for (final b in beats) {
+      final int age = now - b;
+      if (age < 0 || age > windowMs) continue;
+      final double frac = 1 - age / windowMs;
+      final double x = size.width * frac;
+      canvas.drawLine(
+          Offset(x, size.height),
+          Offset(x, 2),
+          Paint()
+            ..color = color.withValues(alpha: (0.25 + 0.6 * frac).clamp(0.0, 1.0).toDouble())
+            ..strokeWidth = 1.6);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_PulsePainter old) => true;
+}
+
+// ════════════════════════ EVENT LAMPS ════════════════════════
+
+/// One fire-and-flash event sensor, for the [EventLamps] row.
+class EventLampData {
+  final String label;
+  final bool armed;
+  final int count;
+  final int ageMs;
+  const EventLampData(this.label, this.armed, this.count, this.ageMs);
+}
+
+/// A row of lamps for the device's event sensors. A lamp glows on each fire
+/// (real trigger), shows its running count, and reports honestly when a sensor
+/// is present but can't fire without a permission.
+class EventLamps extends StatelessWidget {
+  const EventLamps({super.key, required this.lamps});
+  final List<EventLampData> lamps;
+
+  static const Map<String, String> _names = {
+    'tilt': 'Tilt',
+    'sigmotion': 'Sig-motion',
+    'stepdet': 'Step',
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final armed = lamps.where((l) => l.armed).length;
+    return VizCard(
+      title: 'Event sensors',
+      height: 62,
+      live: armed > 0,
+      trailing: '$armed/${lamps.length} armed',
+      child: Row(children: [for (final l in lamps) Expanded(child: _lamp(l))]),
+    );
+  }
+
+  Widget _lamp(EventLampData l) {
+    final bool fired = l.ageMs >= 0 && l.ageMs < 700;
+    final Color c = !l.armed ? _textD : (fired ? _amber : _green);
+    final String sub = l.armed
+        ? '${l.count}'
+        : (l.label == 'stepdet' ? 'needs perm' : 'waiting');
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Container(
+          width: 15,
+          height: 15,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: fired ? c : c.withValues(alpha: 0.16),
+            border: Border.all(color: c, width: 1.3),
+            boxShadow: fired ? [BoxShadow(color: c.withValues(alpha: 0.6), blurRadius: 8)] : null,
+          ),
+        ),
+        const SizedBox(height: 5),
+        Text(_names[l.label] ?? l.label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 8.5, color: _textM, fontWeight: FontWeight.w600)),
+        Text(sub, style: TextStyle(fontSize: 8, color: c, fontWeight: FontWeight.w700)),
+      ],
+    );
+  }
+}

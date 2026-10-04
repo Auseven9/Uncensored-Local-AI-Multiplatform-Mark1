@@ -10,6 +10,8 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.hardware.TriggerEvent
+import android.hardware.TriggerEventListener
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CameraMetadata
@@ -69,8 +71,23 @@ class MainActivity : FlutterActivity(), SensorEventListener {
     private var ambientTemp: Float? = null
     private var humidity: Float? = null
     private var hall: Float? = null
+    private var cct: FloatArray? = null // Samsung color-temp sensor raw channels
+    private var lightIr: Float? = null // Samsung IR illuminance (raw)
     private val rotM = FloatArray(9)
     private val ori = FloatArray(3)
+
+    // ── event sensors (fire-and-flash): count + last-fired + whether armed ──
+    private val eventCount = HashMap<String, Int>()
+    private val eventLast = HashMap<String, Long>()
+    private val eventArmed = HashMap<String, Boolean>()
+    private var smSensor: Sensor? = null
+    private val smTrigger = object : TriggerEventListener() {
+        override fun onTrigger(e: TriggerEvent?) {
+            bumpEvent("sigmotion")
+            // one-shot trigger sensors must be re-armed after each fire
+            try { smSensor?.let { sm?.requestTriggerSensor(this, it) } } catch (_: Exception) {}
+        }
+    }
 
     // ── sensor health: name/liveness/accuracy per type ──
     private val sensorNames = HashMap<Int, String>()
@@ -134,6 +151,7 @@ class MainActivity : FlutterActivity(), SensorEventListener {
                 override fun onCancel(arguments: Any?) {
                     handler.removeCallbacks(emitter)
                     try { sm?.unregisterListener(this@MainActivity) } catch (_: Exception) {}
+                    try { smSensor?.let { sm?.cancelTriggerSensor(smTrigger, it) } } catch (_: Exception) {}
                     sink = null
                 }
             })
@@ -149,6 +167,11 @@ class MainActivity : FlutterActivity(), SensorEventListener {
                     result.notImplemented()
                 }
             }
+    }
+
+    private fun bumpEvent(label: String) {
+        eventCount[label] = (eventCount[label] ?: 0) + 1
+        eventLast[label] = SystemClock.elapsedRealtime()
     }
 
     private fun reg(type: Int, delay: Int) {
@@ -201,6 +224,21 @@ class MainActivity : FlutterActivity(), SensorEventListener {
                 }
                 registeredOkName[s.name] = ok
             }
+        } catch (_: Exception) {}
+        // Event sensors: mark which on-change ones we can actually listen to, and
+        // arm the significant-motion trigger (one-shot sensors use the trigger API,
+        // not registerListener). Honest armed flags — a lamp lights only if live.
+        try {
+            for (s in mgr.getSensorList(Sensor.TYPE_ALL)) {
+                val st = s.stringType ?: ""
+                val ok = registeredOkName[s.name] ?: false
+                when {
+                    st.contains("tilt", true) -> eventArmed["tilt"] = ok
+                    st.endsWith("step_detector", true) -> eventArmed["stepdet"] = ok
+                }
+            }
+            smSensor = mgr.getDefaultSensor(Sensor.TYPE_SIGNIFICANT_MOTION)
+            smSensor?.let { eventArmed["sigmotion"] = sm?.requestTriggerSensor(smTrigger, it) ?: false }
         } catch (_: Exception) {}
     }
 
@@ -264,7 +302,14 @@ class MainActivity : FlutterActivity(), SensorEventListener {
             Sensor.TYPE_AMBIENT_TEMPERATURE -> ambientTemp = e.values[0]
             Sensor.TYPE_RELATIVE_HUMIDITY -> humidity = e.values[0]
             else -> {
-                if (e.sensor.stringType?.contains("hall", true) == true) hall = e.values[0]
+                val st = e.sensor.stringType ?: ""
+                when {
+                    st.contains("hall", true) -> hall = e.values[0]
+                    st.contains("light_cct", true) -> cct = e.values.clone()
+                    st.contains("light_ir", true) -> lightIr = e.values[0]
+                    st.contains("tilt", true) -> bumpEvent("tilt")
+                    st.endsWith("step_detector", true) -> bumpEvent("stepdet")
+                }
             }
         }
     }
@@ -340,6 +385,22 @@ class MainActivity : FlutterActivity(), SensorEventListener {
         ambientTemp?.let { f["atemp"] = it.toDouble() }
         humidity?.let { f["humid"] = it.toDouble() }
         hall?.let { f["hall"] = if (it > 0) "field" else "none" }
+        cct?.let {
+            f["cct0"] = it[0].toDouble()
+            if (it.size > 1) f["cct1"] = it[1].toDouble()
+        }
+        lightIr?.let { f["lightir"] = it.toDouble() }
+
+        // event sensors: [armed, count, ageMs] — emitted every frame so the lamp
+        // can flash the moment one fires (age small) and go quiet between.
+        val evNow = SystemClock.elapsedRealtime()
+        val ev = HashMap<String, Any>()
+        for (label in listOf("tilt", "sigmotion", "stepdet")) {
+            val last = eventLast[label] ?: 0L
+            val age = if (last > 0) evNow - last else -1L
+            ev[label] = listOf(eventArmed[label] ?: false, eventCount[label] ?: 0, age)
+        }
+        f["events"] = ev
 
         // fusion
         f["steps"] = stepCount
@@ -928,6 +989,7 @@ class MainActivity : FlutterActivity(), SensorEventListener {
 
     override fun onDestroy() {
         try { sm?.unregisterListener(this) } catch (_: Exception) {}
+        try { smSensor?.let { sm?.cancelTriggerSensor(smTrigger, it) } } catch (_: Exception) {}
         handler.removeCallbacks(emitter)
         super.onDestroy()
     }

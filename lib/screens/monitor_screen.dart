@@ -146,6 +146,9 @@ class _MonitorScreenState extends State<MonitorScreen>
         _Tile('lux', 'Illuminance', min: 0, max: 2000, color: _amber),
         _Tile('lightcat', 'Category'),
         _Tile('prox', 'Proximity', min: 0, max: 1, color: _amber),
+        _Tile('cct0', 'Color ch0 (raw)', color: _amber),
+        _Tile('cct1', 'Color ch1 (raw)', color: _amber),
+        _Tile('lightir', 'IR light (raw)', color: _amber),
       ]),
       _Parent('atemp', 'Ambient', min: 0, max: 50, color: _amber, sensorKey: 'temp', children: [
         _Tile('atemp', 'Temperature', min: 0, max: 50, color: _amber),
@@ -211,6 +214,21 @@ class _MonitorScreenState extends State<MonitorScreen>
     final t = s.stampOf(id);
     if (t == null) return 0;
     return (now - t) <= _liveMs ? 2 : 1;
+  }
+
+  // Per-card liveness proof: a sparkline of the reading's real samples if it is
+  // numeric, otherwise a pulse lane that ticks on each state change. This is how
+  // every card shows it is genuinely reading values (or pulses), not frozen.
+  Widget _liveProof(SensorService s, String id, Color color, int now, {double height = 18}) {
+    final h = s.histOf(id);
+    if (h != null && h.length >= 2) {
+      return MicroSpark(data: h, color: color, height: height);
+    }
+    final b = s.beatsOf(id);
+    if (b != null && b.isNotEmpty) {
+      return PulseLane(beats: b, color: color, now: now, height: height);
+    }
+    return SizedBox(height: height);
   }
 
   // All tile ids currently on screen (parents' children + dynamic cores).
@@ -465,6 +483,12 @@ class _MonitorScreenState extends State<MonitorScreen>
           _accelGyroGraph(s),
           SpiritLevel(gx: s.numOf('grx'), gy: s.numOf('gry'), gz: s.numOf('grz')),
           GyroRates(x: s.numOf('gx'), y: s.numOf('gy'), z: s.numOf('gz')),
+          if (s.events.isNotEmpty)
+            EventLamps(lamps: [
+              for (final k in const ['tilt', 'sigmotion', 'stepdet'])
+                if (s.events[k] != null)
+                  EventLampData(k, s.events[k]!.armed, s.events[k]!.count, s.events[k]!.ageMs),
+            ]),
         ];
       case 'Orientation':
         return [
@@ -657,6 +681,10 @@ class _MonitorScreenState extends State<MonitorScreen>
                   ),
                 ),
                 Padding(
+                  padding: const EdgeInsets.fromLTRB(14, 0, 14, 6),
+                  child: _liveProof(s, p.id, p.color, now),
+                ),
+                Padding(
                   padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(3),
@@ -749,17 +777,20 @@ class _MonitorScreenState extends State<MonitorScreen>
                   fontSize: 13,
                   fontWeight: FontWeight.w700,
                   color: st == 0 ? _textD : _text)),
-          const SizedBox(height: 6),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(2),
-            child: LinearProgressIndicator(
-              value: frac ?? 0.0,
-              minHeight: 3,
-              backgroundColor: const Color(0x0DFFFFFF),
-              valueColor: AlwaysStoppedAnimation<Color>(
-                  frac == null ? const Color(0x00000000) : t.color),
+          const SizedBox(height: 5),
+          _liveProof(s, t.id, t.color, now, height: 13),
+          if (frac != null) ...[
+            const SizedBox(height: 3),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(2),
+              child: LinearProgressIndicator(
+                value: frac,
+                minHeight: 2,
+                backgroundColor: const Color(0x0DFFFFFF),
+                valueColor: AlwaysStoppedAnimation<Color>(t.color),
+              ),
             ),
-          ),
+          ],
         ],
       ),
     );

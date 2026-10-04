@@ -94,6 +94,17 @@ class IndexSection {
   const IndexSection({required this.name, required this.entries});
 }
 
+/// An event ("fire-and-flash") sensor: tilt, significant-motion, step detector.
+/// [armed] = we have a live listener/trigger that can fire it; [count] total
+/// fires this session; [ageMs] since the last fire (-1 if never), for the flash.
+class EventInfo {
+  final bool armed;
+  final int count;
+  final int ageMs;
+  const EventInfo({required this.armed, required this.count, required this.ageMs});
+  bool get firedRecently => ageMs >= 0 && ageMs < 700;
+}
+
 class SensorService {
   static const double _radToDeg = 57.2957795131;
   static const EventChannel _stream = EventChannel('aether/stream');
@@ -147,6 +158,21 @@ class SensorService {
   final Map<String, double> _nums = <String, double>{};
   final Map<String, int> _stamps = <String, int>{};
 
+  // Per-reading liveness record, powering the on-card micro-viz. [_hist] is a
+  // short ring of recent numeric values (→ a sparkline that moves while the
+  // sensor streams); [_beats] is the epoch-ms of each value CHANGE (→ a pulse
+  // lane that ticks when a state reading updates). Both are real: the sparkline
+  // is the actual samples, the pulses are the actual update times.
+  static const int _histCap = 48;
+  static const int _beatCap = 32;
+  final Map<String, List<double>> _hist = <String, List<double>>{};
+  final Map<String, List<int>> _beats = <String, List<int>>{};
+  List<double>? histOf(String id) => _hist[id];
+  List<int>? beatsOf(String id) => _beats[id];
+
+  // Event sensors (tilt / significant-motion / step) — fire-and-flash lamps.
+  final Map<String, EventInfo> events = <String, EventInfo>{};
+
   // Live rotation matrix (9) from the fused rotation vector — drives the 3D
   // orientation phone. Null until the sensor delivers a frame.
   final ValueNotifier<List<double>?> rot = ValueNotifier<List<double>?>(null);
@@ -177,9 +203,21 @@ class SensorService {
   int? stampOf(String id) => _stamps[id];
 
   void _put(String id, String display, [double? value]) {
+    final changed = _readings[id] != display;
+    final now = DateTime.now().millisecondsSinceEpoch;
     _readings[id] = display;
-    _stamps[id] = DateTime.now().millisecondsSinceEpoch;
-    if (value != null) _nums[id] = value;
+    _stamps[id] = now;
+    if (value != null) {
+      _nums[id] = value;
+      final h = _hist.putIfAbsent(id, () => <double>[]);
+      h.add(value);
+      if (h.length > _histCap) h.removeAt(0);
+    }
+    if (changed) {
+      final b = _beats.putIfAbsent(id, () => <int>[]);
+      b.add(now);
+      if (b.length > _beatCap) b.removeAt(0);
+    }
   }
 
   void start() {
@@ -256,6 +294,25 @@ class SensorService {
     _d2(m['atemp'], 'atemp', (v) => '${v.toStringAsFixed(1)} °C');
     _d2(m['humid'], 'humid', (v) => '${v.toStringAsFixed(0)} %');
     _s(m['hall'], 'hall');
+    // Samsung optical raw channels — genuine sensor outputs, surfaced raw. Units
+    // are device-private (not yet verified), so shown as raw, never mislabelled.
+    _d2(m['cct0'], 'cct0', (v) => v.toStringAsFixed(1));
+    _d2(m['cct1'], 'cct1', (v) => v.toStringAsFixed(1));
+    _d2(m['lightir'], 'lightir', (v) => v.toStringAsFixed(1));
+
+    // ── Event sensors (fire-and-flash) ──
+    final eraw = m['events'];
+    if (eraw is Map) {
+      eraw.forEach((k, v) {
+        if (v is List && v.length >= 3) {
+          events[k.toString()] = EventInfo(
+            armed: v[0] == true,
+            count: v[1] is num ? (v[1] as num).toInt() : 0,
+            ageMs: v[2] is num ? (v[2] as num).toInt() : -1,
+          );
+        }
+      });
+    }
 
     // ── Fusion / inferred ──
     _s(m['motionstate'], 'motionstate');
