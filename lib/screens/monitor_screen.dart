@@ -276,8 +276,14 @@ class _MonitorScreenState extends State<MonitorScreen>
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text('Monitor',
-            style: TextStyle(fontSize: 24, fontWeight: FontWeight.w700, color: _text)),
+        Row(
+          children: [
+            const Text('Monitor',
+                style: TextStyle(fontSize: 24, fontWeight: FontWeight.w700, color: _text)),
+            const Spacer(),
+            _indexButton(s),
+          ],
+        ),
         const SizedBox(height: 2),
         const Text('Live hardware stream · real reading or “no socket”',
             style: TextStyle(fontSize: 12, color: _textM)),
@@ -493,6 +499,200 @@ class _MonitorScreenState extends State<MonitorScreen>
       default:
         return const [];
     }
+  }
+
+  // ── Full device sensor inventory (how deep we can reach) ──
+  static Color _reachColor(String r) {
+    if (r == 'streaming') return _green;
+    if (r == 'armed') return _cyan;
+    if (r.startsWith('needs')) return _amber;
+    if (r == 'one-shot') return _textM;
+    return _textD;
+  }
+
+  static int _reachRank(String r) {
+    if (r == 'streaming') return 0;
+    if (r == 'armed') return 1;
+    if (r.startsWith('needs')) return 2;
+    if (r == 'one-shot') return 3;
+    return 4;
+  }
+
+  // INDEX button in the Monitor header — opens the full sensor index sheet.
+  Widget _indexButton(SensorService s) => Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(9),
+          onTap: () => _openIndex(s),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+            decoration: BoxDecoration(
+              color: Color.alphaBlend(_accent.withValues(alpha: 0.14), _bg),
+              borderRadius: BorderRadius.circular(9),
+              border: Border.all(color: _accent.withValues(alpha: 0.5)),
+            ),
+            child: const Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.format_list_numbered_rounded, size: 15, color: _accent),
+                SizedBox(width: 6),
+                Text('INDEX',
+                    style: TextStyle(
+                        fontSize: 11, color: _accent, fontWeight: FontWeight.w700, letterSpacing: 0.6)),
+              ],
+            ),
+          ),
+        ),
+      );
+
+  void _openIndex(SensorService s) {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: _bg,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
+      builder: (ctx) => DraggableScrollableSheet(
+        initialChildSize: 0.9,
+        minChildSize: 0.5,
+        maxChildSize: 0.95,
+        expand: false,
+        builder: (ctx, scrollCtl) => ValueListenableBuilder<int>(
+          valueListenable: s.tick,
+          builder: (ctx, _, __) {
+            final inv = List<SensorInfo>.from(s.inventory)
+              ..sort((a, b) {
+                final r = _reachRank(a.reach).compareTo(_reachRank(b.reach));
+                return r != 0 ? r : a.type.compareTo(b.type);
+              });
+            final streaming = inv.where((e) => e.streaming).length;
+            final reached = inv.where((e) => e.registered).length;
+            return Column(
+              children: [
+                const SizedBox(height: 10),
+                Container(
+                  width: 38,
+                  height: 4,
+                  decoration: BoxDecoration(
+                      color: _textD, borderRadius: BorderRadius.circular(2)),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 12, 4),
+                  child: Row(
+                    children: [
+                      const Text('Sensor Index',
+                          style: TextStyle(
+                              fontSize: 18, fontWeight: FontWeight.w700, color: _text)),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text('${inv.length} found · $streaming live · $reached reached',
+                            style: const TextStyle(fontSize: 11, color: _textM)),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.close_rounded, color: _textM, size: 22),
+                        onPressed: () => Navigator.of(ctx).pop(),
+                      ),
+                    ],
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                  child: Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: [
+                      _legend('streaming', _green),
+                      _legend('armed', _cyan),
+                      _legend('needs perm', _amber),
+                      _legend('one-shot', _textM),
+                      _legend('restricted', _textD),
+                    ],
+                  ),
+                ),
+                Expanded(
+                  child: inv.isEmpty
+                      ? const Center(
+                          child: Text('indexing sensors…', style: TextStyle(color: _textM)))
+                      : ListView(
+                          controller: scrollCtl,
+                          padding: const EdgeInsets.fromLTRB(14, 4, 14, 28),
+                          children: [for (final si in inv) _invRow(si)],
+                        ),
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  Widget _legend(String label, Color c) => Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 8,
+            height: 8,
+            decoration: BoxDecoration(color: c, shape: BoxShape.circle),
+          ),
+          const SizedBox(width: 4),
+          Text(label, style: TextStyle(fontSize: 9.5, color: c, fontWeight: FontWeight.w600)),
+        ],
+      );
+
+  Widget _invRow(SensorInfo si) {
+    final rc = _reachColor(si.reach);
+    final specs = StringBuffer()
+      ..write('#${si.type}')
+      ..write(si.maxHz > 0 ? ' · ${si.maxHz.toStringAsFixed(0)} Hz' : ' · ${si.modeLabel}')
+      ..write(' · ${si.power.toStringAsFixed(1)} mA')
+      ..write(' · ±${si.maxRange >= 100 ? si.maxRange.toStringAsFixed(0) : si.maxRange.toStringAsFixed(2)}')
+      ..write(si.wakeUp ? ' · wake' : '');
+    return Container(
+      margin: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.fromLTRB(12, 9, 10, 9),
+      decoration: BoxDecoration(
+        color: _panel,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: _border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(si.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 12, color: _text, fontWeight: FontWeight.w600)),
+              ),
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                decoration: BoxDecoration(
+                  color: Color.alphaBlend(rc.withValues(alpha: 0.12), _panel),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: rc.withValues(alpha: 0.4)),
+                ),
+                child: Text(si.reach,
+                    style: TextStyle(fontSize: 8.5, color: rc, fontWeight: FontWeight.w700)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 2),
+          Text(
+              [si.vendor, si.stringType].where((e) => e.isNotEmpty).join(' · '),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 9, color: _textM)),
+          const SizedBox(height: 3),
+          Text(specs.toString(),
+              maxLines: 1, overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 9, color: _textD)),
+        ],
+      ),
+    );
   }
 
   // ── Per-section visualizations below the cards ──

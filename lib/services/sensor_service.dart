@@ -36,9 +36,51 @@ class SensorHealth {
   });
 }
 
+/// One entry in the full device sensor inventory (every sensor the HAL exposes,
+/// vendor-private included) with its spec and whether we could register it.
+class SensorInfo {
+  final int type;
+  final String name, vendor, stringType, gate;
+  final double power, resolution, maxRange;
+  final int minDelayUs, reportingMode, ageMs;
+  final bool wakeUp, registered;
+  const SensorInfo({
+    required this.type,
+    required this.name,
+    required this.vendor,
+    required this.stringType,
+    required this.power,
+    required this.resolution,
+    required this.maxRange,
+    required this.minDelayUs,
+    required this.reportingMode,
+    required this.wakeUp,
+    required this.registered,
+    required this.ageMs,
+    required this.gate,
+  });
+
+  double get maxHz => minDelayUs > 0 ? 1000000.0 / minDelayUs : 0;
+  bool get streaming => registered && ageMs >= 0 && ageMs < 4000;
+  String get modeLabel => const ['continuous', 'on-change', 'one-shot', 'special'][
+      reportingMode >= 0 && reportingMode < 4 ? reportingMode : 3];
+
+  /// Reachability tier: how deep we actually got.
+  String get reach {
+    if (streaming) return 'streaming';
+    if (registered) return 'armed';
+    if (gate.isNotEmpty) return 'needs $gate';
+    if (reportingMode == 2) return 'one-shot';
+    return 'restricted';
+  }
+}
+
 class SensorService {
   static const double _radToDeg = 57.2957795131;
   static const EventChannel _stream = EventChannel('aether/stream');
+
+  // Full device sensor inventory (populated ~1s from the native probe).
+  List<SensorInfo> inventory = const <SensorInfo>[];
 
   // Streaming sensors should deliver continuously; on-change ones (light,
   // proximity, pressure, ambient) legitimately go quiet, so they are "alive"
@@ -278,6 +320,32 @@ class SensorService {
     _s(m['ringer'], 'ringer');
     _b(m['musicactive'], 'music', 'playing', 'idle');
     _s(m['audioout'], 'audioout');
+
+    // ── Full sensor inventory ──
+    final iraw = m['inventory'];
+    if (iraw is List) {
+      final list = <SensorInfo>[];
+      for (final e in iraw) {
+        if (e is List && e.length >= 13) {
+          list.add(SensorInfo(
+            type: e[0] is num ? (e[0] as num).toInt() : -1,
+            name: e[1]?.toString() ?? '',
+            vendor: e[2]?.toString() ?? '',
+            stringType: e[3]?.toString() ?? '',
+            power: e[4] is num ? (e[4] as num).toDouble() : 0,
+            resolution: e[5] is num ? (e[5] as num).toDouble() : 0,
+            maxRange: e[6] is num ? (e[6] as num).toDouble() : 0,
+            minDelayUs: e[7] is num ? (e[7] as num).toInt() : 0,
+            reportingMode: e[8] is num ? (e[8] as num).toInt() : 3,
+            wakeUp: e[9] == true,
+            registered: e[10] == true,
+            ageMs: e[11] is num ? (e[11] as num).toInt() : -1,
+            gate: e[12]?.toString() ?? '',
+          ));
+        }
+      }
+      inventory = list;
+    }
 
     // ── Sensor health verifier ──
     final sraw = m['sensors'];

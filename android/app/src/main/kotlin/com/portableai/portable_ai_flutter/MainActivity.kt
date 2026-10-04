@@ -63,6 +63,10 @@ class MainActivity : FlutterActivity(), SensorEventListener {
     private val sensorNames = HashMap<Int, String>()
     private val lastSeen = HashMap<Int, Long>()
     private val accuracyMap = HashMap<Int, Int>()
+
+    // ── full inventory probe: per distinct sensor (by name) ──
+    private val lastSeenName = HashMap<String, Long>()
+    private val registeredOkName = HashMap<String, Boolean>()
     private var haveRot = false
 
     // ── derivation state ──
@@ -127,9 +131,18 @@ class MainActivity : FlutterActivity(), SensorEventListener {
             val sensor = sm?.getDefaultSensor(type)
             if (sensor != null) {
                 sensorNames[type] = sensor.name
-                sm?.registerListener(this, sensor, delay)
+                val ok = sm?.registerListener(this, sensor, delay) ?: false
+                registeredOkName[sensor.name] = ok
             }
         } catch (_: Exception) {}
+    }
+
+    // Permission a sensor type needs before it will stream (for honest labeling).
+    private fun gateFor(type: Int): String = when (type) {
+        Sensor.TYPE_STEP_COUNTER, Sensor.TYPE_STEP_DETECTOR -> "ACTIVITY_RECOGNITION"
+        Sensor.TYPE_HEART_RATE -> "BODY_SENSORS"
+        31, 34 -> "BODY_SENSORS" // heart-beat, low-latency off-body
+        else -> ""
     }
 
     private fun registerSensors() {
@@ -149,11 +162,20 @@ class MainActivity : FlutterActivity(), SensorEventListener {
         reg(Sensor.TYPE_PRESSURE, norm)
         reg(Sensor.TYPE_AMBIENT_TEMPERATURE, norm)
         reg(Sensor.TYPE_RELATIVE_HUMIDITY, norm)
+        // Inventory probe: attempt to register EVERY sensor the device exposes
+        // (Samsung private paths included) at a low rate, and record whether the
+        // registration was accepted — the real "how deep can we reach" signal.
+        // The high-rate sensors above are skipped here (already registered).
         try {
-            val hallS = mgr.getSensorList(Sensor.TYPE_ALL).firstOrNull {
-                it.stringType?.contains("hall", true) == true
+            for (s in mgr.getSensorList(Sensor.TYPE_ALL)) {
+                if (registeredOkName.containsKey(s.name)) continue
+                val ok = try {
+                    mgr.registerListener(this, s, norm)
+                } catch (_: Exception) {
+                    false
+                }
+                registeredOkName[s.name] = ok
             }
-            hallS?.let { mgr.registerListener(this, it, norm) }
         } catch (_: Exception) {}
     }
 
@@ -162,7 +184,9 @@ class MainActivity : FlutterActivity(), SensorEventListener {
     }
 
     override fun onSensorChanged(e: SensorEvent) {
-        lastSeen[e.sensor.type] = SystemClock.elapsedRealtime()
+        val tNow = SystemClock.elapsedRealtime()
+        lastSeen[e.sensor.type] = tNow
+        lastSeenName[e.sensor.name] = tNow
         when (e.sensor.type) {
             Sensor.TYPE_ACCELEROMETER -> {
                 accel = e.values.clone()
@@ -543,6 +567,36 @@ class MainActivity : FlutterActivity(), SensorEventListener {
             put("temp", Sensor.TYPE_AMBIENT_TEMPERATURE)
             put("humid", Sensor.TYPE_RELATIVE_HUMIDITY)
             m["sensors"] = sh
+        } catch (_: Exception) {}
+        // Full sensor inventory — every sensor the device exposes, with its spec
+        // and whether we could register it (listed vs actually reachable).
+        try {
+            val mgr = sm
+            if (mgr != null) {
+                val now = SystemClock.elapsedRealtime()
+                val inv = ArrayList<List<Any>>()
+                for (s in mgr.getSensorList(Sensor.TYPE_ALL)) {
+                    val age = lastSeenName[s.name]?.let { now - it } ?: -1L
+                    inv.add(
+                        listOf(
+                            s.type,
+                            s.name,
+                            s.vendor,
+                            s.stringType ?: "",
+                            s.power.toDouble(),
+                            s.resolution.toDouble(),
+                            s.maximumRange.toDouble(),
+                            s.minDelay,
+                            s.reportingMode,
+                            s.isWakeUpSensor,
+                            registeredOkName[s.name] ?: false,
+                            age,
+                            gateFor(s.type)
+                        )
+                    )
+                }
+                m["inventory"] = inv
+            }
         } catch (_: Exception) {}
         return m
     }
