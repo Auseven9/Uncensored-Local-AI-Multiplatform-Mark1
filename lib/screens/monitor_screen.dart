@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 
 import '../services/sensor_service.dart';
@@ -502,23 +503,7 @@ class _MonitorScreenState extends State<MonitorScreen>
   }
 
   // ── Full device sensor inventory (how deep we can reach) ──
-  static Color _reachColor(String r) {
-    if (r == 'streaming') return _green;
-    if (r == 'armed') return _cyan;
-    if (r.startsWith('needs')) return _amber;
-    if (r == 'one-shot') return _textM;
-    return _textD;
-  }
-
-  static int _reachRank(String r) {
-    if (r == 'streaming') return 0;
-    if (r == 'armed') return 1;
-    if (r.startsWith('needs')) return 2;
-    if (r == 'one-shot') return 3;
-    return 4;
-  }
-
-  // INDEX button in the Monitor header — opens the full sensor index sheet.
+  // INDEX button in the Monitor header — opens the full device capability index.
   Widget _indexButton(SensorService s) => Material(
         color: Colors.transparent,
         child: InkWell(
@@ -553,144 +538,12 @@ class _MonitorScreenState extends State<MonitorScreen>
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
       builder: (ctx) => DraggableScrollableSheet(
-        initialChildSize: 0.9,
+        initialChildSize: 0.92,
         minChildSize: 0.5,
-        maxChildSize: 0.95,
+        maxChildSize: 0.96,
         expand: false,
-        builder: (ctx, scrollCtl) => ValueListenableBuilder<int>(
-          valueListenable: s.tick,
-          builder: (ctx, _, __) {
-            final inv = List<SensorInfo>.from(s.inventory)
-              ..sort((a, b) {
-                final r = _reachRank(a.reach).compareTo(_reachRank(b.reach));
-                return r != 0 ? r : a.type.compareTo(b.type);
-              });
-            final streaming = inv.where((e) => e.streaming).length;
-            final reached = inv.where((e) => e.registered).length;
-            return Column(
-              children: [
-                const SizedBox(height: 10),
-                Container(
-                  width: 38,
-                  height: 4,
-                  decoration: BoxDecoration(
-                      color: _textD, borderRadius: BorderRadius.circular(2)),
-                ),
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 12, 12, 4),
-                  child: Row(
-                    children: [
-                      const Text('Sensor Index',
-                          style: TextStyle(
-                              fontSize: 18, fontWeight: FontWeight.w700, color: _text)),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Text('${inv.length} found · $streaming live · $reached reached',
-                            style: const TextStyle(fontSize: 11, color: _textM)),
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.close_rounded, color: _textM, size: 22),
-                        onPressed: () => Navigator.of(ctx).pop(),
-                      ),
-                    ],
-                  ),
-                ),
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                  child: Wrap(
-                    spacing: 6,
-                    runSpacing: 6,
-                    children: [
-                      _legend('streaming', _green),
-                      _legend('armed', _cyan),
-                      _legend('needs perm', _amber),
-                      _legend('one-shot', _textM),
-                      _legend('restricted', _textD),
-                    ],
-                  ),
-                ),
-                Expanded(
-                  child: inv.isEmpty
-                      ? const Center(
-                          child: Text('indexing sensors…', style: TextStyle(color: _textM)))
-                      : ListView(
-                          controller: scrollCtl,
-                          padding: const EdgeInsets.fromLTRB(14, 4, 14, 28),
-                          children: [for (final si in inv) _invRow(si)],
-                        ),
-                ),
-              ],
-            );
-          },
-        ),
-      ),
-    );
-  }
-
-  Widget _legend(String label, Color c) => Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            width: 8,
-            height: 8,
-            decoration: BoxDecoration(color: c, shape: BoxShape.circle),
-          ),
-          const SizedBox(width: 4),
-          Text(label, style: TextStyle(fontSize: 9.5, color: c, fontWeight: FontWeight.w600)),
-        ],
-      );
-
-  Widget _invRow(SensorInfo si) {
-    final rc = _reachColor(si.reach);
-    final specs = StringBuffer()
-      ..write('#${si.type}')
-      ..write(si.maxHz > 0 ? ' · ${si.maxHz.toStringAsFixed(0)} Hz' : ' · ${si.modeLabel}')
-      ..write(' · ${si.power.toStringAsFixed(1)} mA')
-      ..write(' · ±${si.maxRange >= 100 ? si.maxRange.toStringAsFixed(0) : si.maxRange.toStringAsFixed(2)}')
-      ..write(si.wakeUp ? ' · wake' : '');
-    return Container(
-      margin: const EdgeInsets.only(bottom: 6),
-      padding: const EdgeInsets.fromLTRB(12, 9, 10, 9),
-      decoration: BoxDecoration(
-        color: _panel,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: _border),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Expanded(
-                child: Text(si.name,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 12, color: _text, fontWeight: FontWeight.w600)),
-              ),
-              const SizedBox(width: 8),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-                decoration: BoxDecoration(
-                  color: Color.alphaBlend(rc.withValues(alpha: 0.12), _panel),
-                  borderRadius: BorderRadius.circular(6),
-                  border: Border.all(color: rc.withValues(alpha: 0.4)),
-                ),
-                child: Text(si.reach,
-                    style: TextStyle(fontSize: 8.5, color: rc, fontWeight: FontWeight.w700)),
-              ),
-            ],
-          ),
-          const SizedBox(height: 2),
-          Text(
-              [si.vendor, si.stringType].where((e) => e.isNotEmpty).join(' · '),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 9, color: _textM)),
-          const SizedBox(height: 3),
-          Text(specs.toString(),
-              maxLines: 1, overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 9, color: _textD)),
-        ],
+        builder: (ctx, scrollCtl) =>
+            _IndexSheet(service: s, scrollController: scrollCtl),
       ),
     );
   }
@@ -1057,4 +910,231 @@ class _Tile {
   final Color color;
   const _Tile(this.id, this.label,
       {this.min = 0, this.max = 0, this.abs = false, this.color = const Color(0xFF818CF8)});
+}
+
+/// Full-screen device capability index — every subsystem/API probed for what we
+/// can tap and where, with a COPY button that puts the whole catalog on the
+/// clipboard.
+class _IndexSheet extends StatefulWidget {
+  const _IndexSheet({required this.service, required this.scrollController});
+  final SensorService service;
+  final ScrollController scrollController;
+
+  @override
+  State<_IndexSheet> createState() => _IndexSheetState();
+}
+
+class _IndexSheetState extends State<_IndexSheet> {
+  static const Color _bg = Color(0xFF0D1117);
+  static const Color _panel = Color(0xFF161B22);
+  static const Color _border = Color(0x1AFFFFFF);
+  static const Color _text = Color(0xFFE6EDF3);
+  static const Color _textM = Color(0xFF8B949E);
+  static const Color _textD = Color(0xFF484F58);
+  static const Color _accent = Color(0xFF818CF8);
+  static const Color _cyan = Color(0xFF22D3EE);
+  static const Color _green = Color(0xFF3FB950);
+  static const Color _amber = Color(0xFFE3B341);
+  static const Color _red = Color(0xFFF85149);
+
+  List<IndexSection>? _sections;
+  bool _copied = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final s = await widget.service.fetchIndex();
+    if (mounted) setState(() => _sections = s);
+  }
+
+  Color _statusColor(String st) {
+    switch (st) {
+      case 'available':
+        return _green;
+      case 'needs-perm':
+        return _amber;
+      case 'command':
+        return _cyan;
+      case 'sealed':
+        return _textM;
+      default:
+        return _red; // unsupported
+    }
+  }
+
+  int get _count => _sections?.fold<int>(0, (a, s) => a + s.entries.length) ?? 0;
+  int get _available =>
+      _sections?.fold<int>(0, (a, s) => a + s.entries.where((e) => e.status == 'available').length) ?? 0;
+
+  Future<void> _copy() async {
+    final secs = _sections ?? const <IndexSection>[];
+    final b = StringBuffer()
+      ..writeln('UNCENSORED LOCAL AI — DEVICE CAPABILITY INDEX')
+      ..writeln('$_count capabilities across ${secs.length} subsystems');
+    for (final s in secs) {
+      b.writeln('\n=== ${s.name} (${s.entries.length}) ===');
+      for (final e in s.entries) {
+        final extra = [
+          if (e.detail.isNotEmpty) e.detail,
+          if (e.perm.isNotEmpty) 'perm:${e.perm}',
+          if (e.api.isNotEmpty) 'api:${e.api}',
+        ].join(' · ');
+        b.writeln('- [${e.status}] ${e.label}${extra.isNotEmpty ? ' — $extra' : ''}');
+      }
+    }
+    await Clipboard.setData(ClipboardData(text: b.toString()));
+    if (mounted) {
+      setState(() => _copied = true);
+      Future.delayed(const Duration(seconds: 2), () {
+        if (mounted) setState(() => _copied = false);
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final secs = _sections;
+    return Column(
+      children: [
+        const SizedBox(height: 10),
+        Container(
+          width: 38,
+          height: 4,
+          decoration: BoxDecoration(color: _textD, borderRadius: BorderRadius.circular(2)),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 8, 6),
+          child: Row(
+            children: [
+              const Text('Device Index',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: _text)),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                    secs == null ? 'probing…' : '$_count caps · $_available open · ${secs.length} systems',
+                    style: const TextStyle(fontSize: 11, color: _textM)),
+              ),
+              _copyBtn(),
+              IconButton(
+                icon: const Icon(Icons.close_rounded, color: _textM, size: 22),
+                onPressed: () => Navigator.of(context).pop(),
+              ),
+            ],
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+          child: Wrap(spacing: 8, runSpacing: 6, children: [
+            _legend('available', _green),
+            _legend('needs-perm', _amber),
+            _legend('command', _cyan),
+            _legend('sealed', _textM),
+            _legend('unsupported', _red),
+          ]),
+        ),
+        Expanded(
+          child: secs == null
+              ? const Center(child: CircularProgressIndicator(strokeWidth: 2))
+              : ListView(
+                  controller: widget.scrollController,
+                  padding: const EdgeInsets.fromLTRB(14, 4, 14, 28),
+                  children: [for (final sec in secs) ..._sectionWidgets(sec)],
+                ),
+        ),
+      ],
+    );
+  }
+
+  Widget _copyBtn() => GestureDetector(
+        onTap: _copied ? null : _copy,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+          decoration: BoxDecoration(
+            color: Color.alphaBlend((_copied ? _green : _accent).withValues(alpha: 0.14), _bg),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: (_copied ? _green : _accent).withValues(alpha: 0.5)),
+          ),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            Icon(_copied ? Icons.check_rounded : Icons.copy_rounded,
+                size: 14, color: _copied ? _green : _accent),
+            const SizedBox(width: 5),
+            Text(_copied ? 'COPIED' : 'COPY',
+                style: TextStyle(
+                    fontSize: 11, color: _copied ? _green : _accent, fontWeight: FontWeight.w700)),
+          ]),
+        ),
+      );
+
+  List<Widget> _sectionWidgets(IndexSection sec) => [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(2, 16, 2, 8),
+          child: Row(children: [
+            Text(sec.name.toUpperCase(),
+                style: const TextStyle(
+                    fontSize: 11, letterSpacing: 1.1, color: _textM, fontWeight: FontWeight.w700)),
+            const SizedBox(width: 8),
+            Text('${sec.entries.length}', style: const TextStyle(fontSize: 10, color: _textD)),
+          ]),
+        ),
+        for (final e in sec.entries) _entryRow(e),
+      ];
+
+  Widget _entryRow(IndexEntry e) {
+    final c = _statusColor(e.status);
+    final sub = [if (e.perm.isNotEmpty) 'perm: ${e.perm}', if (e.api.isNotEmpty) e.api].join(' · ');
+    return Container(
+      margin: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.fromLTRB(12, 8, 10, 9),
+      decoration: BoxDecoration(
+        color: _panel,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: _border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(children: [
+            Expanded(
+              child: Text(e.label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 12, color: _text, fontWeight: FontWeight.w600)),
+            ),
+            const SizedBox(width: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+              decoration: BoxDecoration(
+                color: Color.alphaBlend(c.withValues(alpha: 0.12), _panel),
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: c.withValues(alpha: 0.4)),
+              ),
+              child: Text(e.status,
+                  style: TextStyle(fontSize: 8.5, color: c, fontWeight: FontWeight.w700)),
+            ),
+          ]),
+          if (e.detail.isNotEmpty) ...[
+            const SizedBox(height: 2),
+            Text(e.detail, style: const TextStyle(fontSize: 9.5, color: _textM)),
+          ],
+          if (sub.isNotEmpty) ...[
+            const SizedBox(height: 3),
+            Text(sub,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 9, color: _textD)),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _legend(String label, Color c) => Row(mainAxisSize: MainAxisSize.min, children: [
+        Container(width: 8, height: 8, decoration: BoxDecoration(color: c, shape: BoxShape.circle)),
+        const SizedBox(width: 4),
+        Text(label, style: TextStyle(fontSize: 9, color: c, fontWeight: FontWeight.w600)),
+      ]);
 }

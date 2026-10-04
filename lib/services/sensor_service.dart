@@ -75,9 +75,60 @@ class SensorInfo {
   }
 }
 
+/// One capability in the wider device index (an API/subsystem, not just a HAL
+/// sensor). status: available | needs-perm | command | sealed | unsupported.
+class IndexEntry {
+  final String label, status, detail, perm, api;
+  const IndexEntry({
+    required this.label,
+    required this.status,
+    required this.detail,
+    required this.perm,
+    required this.api,
+  });
+}
+
+class IndexSection {
+  final String name;
+  final List<IndexEntry> entries;
+  const IndexSection({required this.name, required this.entries});
+}
+
 class SensorService {
   static const double _radToDeg = 57.2957795131;
   static const EventChannel _stream = EventChannel('aether/stream');
+  static const MethodChannel _index = MethodChannel('aether/index');
+
+  /// One-shot probe of every subsystem/API — what we can tap and where.
+  Future<List<IndexSection>> fetchIndex() async {
+    try {
+      final res = await _index.invokeMethod<List<dynamic>>('full');
+      if (res == null) return const [];
+      final out = <IndexSection>[];
+      for (final sec in res) {
+        if (sec is! Map) continue;
+        final entries = <IndexEntry>[];
+        final raw = sec['entries'];
+        if (raw is List) {
+          for (final e in raw) {
+            if (e is Map) {
+              entries.add(IndexEntry(
+                label: e['label']?.toString() ?? '',
+                status: e['status']?.toString() ?? '',
+                detail: e['detail']?.toString() ?? '',
+                perm: e['perm']?.toString() ?? '',
+                api: e['api']?.toString() ?? '',
+              ));
+            }
+          }
+        }
+        out.add(IndexSection(name: sec['name']?.toString() ?? '', entries: entries));
+      }
+      return out;
+    } catch (_) {
+      return const [];
+    }
+  }
 
   // Full device sensor inventory (populated ~1s from the native probe).
   List<SensorInfo> inventory = const <SensorInfo>[];

@@ -1,17 +1,26 @@
 package com.portableai.portable_ai_flutter
 
 import android.app.ActivityManager
+import android.bluetooth.BluetoothManager
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraManager
+import android.hardware.camera2.CameraMetadata
+import android.location.LocationManager
+import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.TrafficStats
+import android.net.wifi.WifiManager
+import android.nfc.NfcAdapter
 import android.os.BatteryManager
 import android.os.Build
 import android.os.Debug
@@ -22,9 +31,13 @@ import android.os.PowerManager
 import android.os.Process
 import android.os.StatFs
 import android.os.SystemClock
+import android.os.Vibrator
+import android.telephony.TelephonyManager
+import android.view.InputDevice
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
+import io.flutter.plugin.common.MethodChannel
 import java.io.File
 import java.io.RandomAccessFile
 import kotlin.math.abs
@@ -124,6 +137,18 @@ class MainActivity : FlutterActivity(), SensorEventListener {
                     sink = null
                 }
             })
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "aether/index")
+            .setMethodCallHandler { call, result ->
+                if (call.method == "full") {
+                    try {
+                        result.success(buildIndex())
+                    } catch (e: Exception) {
+                        result.error("INDEX", e.message, null)
+                    }
+                } else {
+                    result.notImplemented()
+                }
+            }
     }
 
     private fun reg(type: Int, delay: Int) {
@@ -616,6 +641,289 @@ class MainActivity : FlutterActivity(), SensorEventListener {
         BatteryManager.BATTERY_PLUGGED_WIRELESS -> "wireless"
         0 -> "unplugged"
         else -> "plugged"
+    }
+
+    // ── Wider capability index: probe every subsystem/API for reachability ──
+    // status: available | needs-perm | command | sealed | unsupported
+    private fun idxEntry(
+        label: String, status: String, detail: String = "", perm: String = "", api: String = ""
+    ): HashMap<String, String> =
+        hashMapOf("label" to label, "status" to status, "detail" to detail, "perm" to perm, "api" to api)
+
+    private fun feat(f: String): Boolean =
+        try { packageManager.hasSystemFeature(f) } catch (_: Exception) { false }
+
+    private fun buildIndex(): ArrayList<HashMap<String, Any>> {
+        val out = ArrayList<HashMap<String, Any>>()
+        fun section(name: String, entries: ArrayList<HashMap<String, String>>) {
+            out.add(hashMapOf("name" to name, "entries" to entries))
+        }
+
+        // ── Device ──
+        run {
+            val es = ArrayList<HashMap<String, String>>()
+            try { es.add(idxEntry("Model", "available", "${Build.MANUFACTURER} ${Build.MODEL}")) } catch (_: Exception) {}
+            try { es.add(idxEntry("Android", "available", "Android ${Build.VERSION.RELEASE} · API ${Build.VERSION.SDK_INT}")) } catch (_: Exception) {}
+            try { if (Build.VERSION.SDK_INT >= 31) es.add(idxEntry("SoC", "available", "${Build.SOC_MANUFACTURER} ${Build.SOC_MODEL}")) } catch (_: Exception) {}
+            try { es.add(idxEntry("ABIs", "available", Build.SUPPORTED_ABIS.joinToString(", "))) } catch (_: Exception) {}
+            try { es.add(idxEntry("Security patch", "available", Build.VERSION.SECURITY_PATCH)) } catch (_: Exception) {}
+            section("Device", es)
+        }
+
+        // ── Compute ──
+        run {
+            val es = ArrayList<HashMap<String, String>>()
+            try {
+                val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+                es.add(idxEntry("CPU", "available", "$ncores cores · ${Build.SUPPORTED_ABIS.firstOrNull() ?: ""}"))
+                es.add(idxEntry("OpenGL ES", "command", am.deviceConfigurationInfo.glEsVersion, "", "OpenGL ES"))
+            } catch (_: Exception) {}
+            es.add(idxEntry("Vulkan", if (feat("android.hardware.vulkan.level")) "command" else "unsupported", "GPU compute/render", "", "Vulkan"))
+            es.add(idxEntry("NPU / DSP", "command", "AI accel — drive via NNAPI/QNN; no utilization readout", "", "NNAPI/TFLite"))
+            try {
+                val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+                val mi = ActivityManager.MemoryInfo(); am.getMemoryInfo(mi)
+                es.add(idxEntry("RAM", "available", "${(mi.totalMem / 1073741824.0).let { "%.1f".format(it) }} GB total"))
+            } catch (_: Exception) {}
+            section("Compute", es)
+        }
+
+        // ── Sensors (SensorManager) ──
+        run {
+            val es = ArrayList<HashMap<String, String>>()
+            try {
+                val mgr = sm ?: (getSystemService(Context.SENSOR_SERVICE) as SensorManager)
+                val list = mgr.getSensorList(Sensor.TYPE_ALL)
+                es.add(idxEntry("SensorManager", "available", "${list.size} hardware sensors (see live index)", "", "SensorManager"))
+                for (s in list) {
+                    val ok = registeredOkName[s.name] ?: false
+                    val gate = gateFor(s.type)
+                    val status = when {
+                        ok -> "available"
+                        gate.isNotEmpty() -> "needs-perm"
+                        s.reportingMode == 2 -> "command"
+                        else -> "sealed"
+                    }
+                    es.add(idxEntry(s.name, status, "#${s.type} · ${s.vendor} · ${s.stringType ?: ""}", gate, "SensorManager"))
+                }
+            } catch (_: Exception) {}
+            section("Sensors", es)
+        }
+
+        // ── Location / GNSS ──
+        run {
+            val es = ArrayList<HashMap<String, String>>()
+            try {
+                val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+                es.add(idxEntry("Providers", "available", lm.allProviders.joinToString(", "), "", "LocationManager"))
+                if (Build.VERSION.SDK_INT >= 28) {
+                    try { es.add(idxEntry("GNSS hardware", "available", "${lm.gnssHardwareModelName ?: "?"} · year ${lm.gnssYearOfHardware}")) } catch (_: Exception) {}
+                }
+            } catch (_: Exception) {}
+            es.add(idxEntry("Fused location", "needs-perm", "lat/lon/alt, speed, bearing, accuracy", "ACCESS_FINE_LOCATION", "FusedLocationProvider"))
+            es.add(idxEntry("GNSS raw measurements", "needs-perm", "per-satellite C/N0, pseudorange, carrier phase, constellation", "ACCESS_FINE_LOCATION", "GnssMeasurementsEvent"))
+            section("Location / GNSS", es)
+        }
+
+        // ── Cellular ──
+        run {
+            val es = ArrayList<HashMap<String, String>>()
+            val hasTel = feat("android.hardware.telephony")
+            try {
+                val tm = getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+                es.add(idxEntry("Telephony", if (hasTel) "available" else "unsupported", "phoneType ${tm.phoneType} · simState ${tm.simState}", "", "TelephonyManager"))
+            } catch (_: Exception) {
+                es.add(idxEntry("Telephony", if (hasTel) "available" else "unsupported", "", "", "TelephonyManager"))
+            }
+            es.add(idxEntry("Signal strength", "needs-perm", "dBm RSRP/RSRQ/RSSNR, cell id, band, network type", "READ_PHONE_STATE", "CellInfo/SignalStrength"))
+            section("Cellular", es)
+        }
+
+        // ── Wi-Fi ──
+        run {
+            val es = ArrayList<HashMap<String, String>>()
+            try {
+                val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+                val b6 = if (Build.VERSION.SDK_INT >= 30) wm.is6GHzBandSupported else false
+                es.add(idxEntry("Wi-Fi", "available", "5GHz:${wm.is5GHzBandSupported} 6GHz:$b6", "", "WifiManager"))
+            } catch (_: Exception) {}
+            es.add(idxEntry("Wi-Fi RTT ranging", if (feat("android.hardware.wifi.rtt")) "needs-perm" else "unsupported", "fine timing measurement distance", "NEARBY_WIFI_DEVICES", "WifiRttManager"))
+            es.add(idxEntry("Wi-Fi Aware", if (feat("android.hardware.wifi.aware")) "needs-perm" else "unsupported", "", "NEARBY_WIFI_DEVICES", "WifiAwareManager"))
+            es.add(idxEntry("Scan (RSSI/BSSID)", "needs-perm", "per-AP signal, channel, link speed", "NEARBY_WIFI_DEVICES / location", "WifiManager.scanResults"))
+            section("Wi-Fi", es)
+        }
+
+        // ── Bluetooth ──
+        run {
+            val es = ArrayList<HashMap<String, String>>()
+            val le = feat("android.hardware.bluetooth_le")
+            es.add(idxEntry("Bluetooth LE", if (le) "available" else "unsupported", "", "", "BluetoothManager"))
+            try {
+                val bm = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+                val a = bm.adapter
+                if (a != null && Build.VERSION.SDK_INT >= 26) {
+                    es.add(idxEntry("LE PHY", "available", "2M:${a.isLe2MPhySupported} Coded:${a.isLeCodedPhySupported} ExtAdv:${a.isLeExtendedAdvertisingSupported}"))
+                }
+            } catch (_: Exception) {
+                es.add(idxEntry("LE details", "needs-perm", "adapter capabilities", "BLUETOOTH_CONNECT", "BluetoothAdapter"))
+            }
+            es.add(idxEntry("BLE scan (RSSI/beacons)", "needs-perm", "nearby device signal", "BLUETOOTH_SCAN + location", "BluetoothLeScanner"))
+            section("Bluetooth", es)
+        }
+
+        // ── UWB ──
+        run {
+            val es = ArrayList<HashMap<String, String>>()
+            val uwb = feat("android.hardware.uwb")
+            es.add(idxEntry("Ultra-Wideband", if (uwb) "needs-perm" else "unsupported", if (uwb) "ranging + angle-of-arrival (needs a peer)" else "not present", "UWB_RANGING", "UwbManager"))
+            section("UWB", es)
+        }
+
+        // ── NFC ──
+        run {
+            val es = ArrayList<HashMap<String, String>>()
+            try {
+                val nfc = NfcAdapter.getDefaultAdapter(this)
+                es.add(idxEntry("NFC", if (nfc != null) "available" else "unsupported", if (nfc != null) "enabled:${nfc.isEnabled}" else "", "NFC", "NfcAdapter"))
+            } catch (_: Exception) {}
+            es.add(idxEntry("Host card emulation", if (feat("android.hardware.nfc.hce")) "available" else "unsupported", "", "NFC", "HCE"))
+            section("NFC", es)
+        }
+
+        // ── Cameras ──
+        run {
+            val es = ArrayList<HashMap<String, String>>()
+            try {
+                val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+                for (id in cm.cameraIdList) {
+                    try {
+                        val c = cm.getCameraCharacteristics(id)
+                        val facing = when (c.get(CameraCharacteristics.LENS_FACING)) {
+                            CameraCharacteristics.LENS_FACING_FRONT -> "front"
+                            CameraCharacteristics.LENS_FACING_BACK -> "back"
+                            else -> "ext"
+                        }
+                        val px = c.get(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE)
+                        val mp = if (px != null) "%.0f MP".format(px.width.toLong() * px.height / 1e6) else "?"
+                        val iso = c.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE)
+                        val caps = c.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)
+                        val tags = ArrayList<String>()
+                        if (caps != null) {
+                            if (caps.contains(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_RAW)) tags.add("RAW")
+                            if (caps.contains(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR)) tags.add("MANUAL")
+                            if (caps.contains(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_DEPTH_OUTPUT)) tags.add("DEPTH")
+                        }
+                        es.add(idxEntry("Camera $id ($facing)", "needs-perm",
+                            "$mp · ISO ${iso?.lower ?: "?"}-${iso?.upper ?: "?"} · ${tags.joinToString("/")}",
+                            "CAMERA", "Camera2"))
+                    } catch (_: Exception) {}
+                }
+            } catch (_: Exception) {}
+            es.add(idxEntry("Flashlight / torch", if (feat("android.hardware.camera.flash")) "available" else "unsupported", "incl. strength level (API33+)", "", "CameraManager.setTorchMode"))
+            section("Cameras", es)
+        }
+
+        // ── Microphone / Audio ──
+        run {
+            val es = ArrayList<HashMap<String, String>>()
+            es.add(idxEntry("Microphone", if (feat("android.hardware.microphone")) "needs-perm" else "unsupported", "raw PCM — SPL, FFT, waveform", "RECORD_AUDIO", "AudioRecord"))
+            try {
+                val au = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                val ins = au.getDevices(AudioManager.GET_DEVICES_INPUTS)
+                es.add(idxEntry("Input devices", "available", ins.joinToString(", ") { audioTypeName(it.type) }, "", "AudioManager"))
+                val outs = au.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+                es.add(idxEntry("Output devices", "available", outs.joinToString(", ") { audioTypeName(it.type) }, "", "AudioManager"))
+                es.add(idxEntry("Native rate", "available",
+                    "${au.getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE)} Hz · ${au.getProperty(AudioManager.PROPERTY_OUTPUT_FRAMES_PER_BUFFER)} frames"))
+            } catch (_: Exception) {}
+            section("Microphone / Audio", es)
+        }
+
+        // ── Input / Touch ──
+        run {
+            val es = ArrayList<HashMap<String, String>>()
+            es.add(idxEntry("Touch (digitizer)", "available", "per-touch pressure, size, tool — our own MotionEvents", "", "MotionEvent"))
+            es.add(idxEntry("Multitouch", if (feat("android.hardware.touchscreen.multitouch.jazzhand")) "available" else "basic", "10-point distinct", "", "PackageManager"))
+            try {
+                for (id in InputDevice.getDeviceIds()) {
+                    val d = InputDevice.getDevice(id) ?: continue
+                    val isStylus = (d.sources and InputDevice.SOURCE_STYLUS) == InputDevice.SOURCE_STYLUS
+                    if (isStylus) es.add(idxEntry("Stylus / S-Pen", "available", d.name, "", "InputDevice"))
+                }
+            } catch (_: Exception) {}
+            section("Input / Touch", es)
+        }
+
+        // ── Display ──
+        run {
+            val es = ArrayList<HashMap<String, String>>()
+            try {
+                val d = windowManager.defaultDisplay
+                val modes = d.supportedModes.joinToString(", ") { "${it.physicalWidth}x${it.physicalHeight}@${it.refreshRate.toInt()}" }
+                es.add(idxEntry("Display modes", "available", modes, "", "Display"))
+            } catch (_: Exception) {}
+            try {
+                val dm = resources.displayMetrics
+                es.add(idxEntry("Metrics", "available", "${dm.widthPixels}x${dm.heightPixels} · ${dm.densityDpi} dpi"))
+            } catch (_: Exception) {}
+            es.add(idxEntry("HDR", if (feat("android.hardware.ram.normal")) "available" else "available", "high-dynamic-range caps queryable", "", "Display.getHdrCapabilities"))
+            section("Display", es)
+        }
+
+        // ── Biometrics ──
+        run {
+            val es = ArrayList<HashMap<String, String>>()
+            es.add(idxEntry("Fingerprint", if (feat("android.hardware.fingerprint")) "command" else "unsupported", "auth only — no raw image", "USE_BIOMETRIC", "BiometricPrompt"))
+            es.add(idxEntry("Face", if (feat("android.hardware.biometrics.face")) "command" else "unsupported", "auth only", "USE_BIOMETRIC", "BiometricPrompt"))
+            es.add(idxEntry("Iris", if (feat("android.hardware.biometrics.iris")) "command" else "unsupported", "auth only", "USE_BIOMETRIC", "BiometricPrompt"))
+            section("Biometrics", es)
+        }
+
+        // ── Haptics ──
+        run {
+            val es = ArrayList<HashMap<String, String>>()
+            try {
+                val v = getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+                es.add(idxEntry("Vibrator", if (v.hasVibrator()) "command" else "unsupported", "amplitude control: ${v.hasAmplitudeControl()}", "", "Vibrator"))
+            } catch (_: Exception) {}
+            section("Haptics", es)
+        }
+
+        // ── Thermal / Power ──
+        run {
+            val es = ArrayList<HashMap<String, String>>()
+            es.add(idxEntry("Thermal", "available", "status + headroom (API30) + /sys zones", "", "PowerManager"))
+            es.add(idxEntry("Battery / BMS", "available", "V, I, charge counter, cycle count, temp", "", "BatteryManager"))
+            section("Thermal / Power", es)
+        }
+
+        // ── System features (hardware.*) ──
+        run {
+            val es = ArrayList<HashMap<String, String>>()
+            try {
+                val feats = packageManager.systemAvailableFeatures
+                    .mapNotNull { it.name }
+                    .filter { it.startsWith("android.hardware") }
+                    .sorted()
+                for (f in feats) es.add(idxEntry(f, "available", "", "", "PackageManager"))
+            } catch (_: Exception) {}
+            section("System features", es)
+        }
+
+        return out
+    }
+
+    private fun audioTypeName(t: Int): String = when (t) {
+        AudioDeviceInfo.TYPE_BUILTIN_MIC -> "builtin-mic"
+        AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "speaker"
+        AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> "earpiece"
+        AudioDeviceInfo.TYPE_WIRED_HEADSET -> "wired-headset"
+        AudioDeviceInfo.TYPE_WIRED_HEADPHONES -> "wired-headphones"
+        AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> "bt-a2dp"
+        AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "bt-sco"
+        AudioDeviceInfo.TYPE_USB_DEVICE -> "usb"
+        AudioDeviceInfo.TYPE_TELEPHONY -> "telephony"
+        else -> "type$t"
     }
 
     override fun onDestroy() {
