@@ -183,71 +183,73 @@ ERA IV  ·  THE SENSORIUM  (2026-10-03 → 2026-10-05)  ·  Monitor v3.0.0 → v
 
 
 ══════════════════════════════════════════════════════════════════════════════════════════════════
-ERA V  ·  BRIDGING THE GAP MAP  (planned)  ·  Phases A → G   (faithful to ALESIS_BUILD_MAP.md)
-» Reasoning: not a rewrite — a keystone (archive), a tenant (dreamer), a wire (senses→memory), a clock
-  (sleep). Ordered by DEPENDENCY: A → B → E → F → G, with C and D joining in. Neither C nor D is skippable.
+ERA V  ·  ★ CANONICAL CHECKLIST — BRIDGING THE GAP MAP  (planned · the authoritative to-do)
+» Identical to the ★ Canonical Checklist at the head of ALESIS_BUILD_MAP.md — one source of truth.
+» BUILD ORDER: A → B = the heartbeat. C and D build in parallel. E stacks on A+B. F on E.
+  G hardens E/F. H closes the loop. Portability is NOT dropped — it rides in A (format spec) + G (backup).
 ══════════════════════════════════════════════════════════════════════════════════════════════════
-├─ 🧱 PHASE A · THE ARCHIVE KEYSTONE (ground truth — R1) 🆕
-│  ├─ Schema v7 ➔ v8: append-only `archive` (id, ts_utc, role, content, prev_hash, hash, session_id)
-│  ├─ SHA256 chain: hash(N)=sha256(ts+role+content+hash(N-1)); entry 1 = zero-hash
-│  ├─ `appendArchive()` — the ONE immutable write path (no update/delete, ever)
-│  ├─ `verifyChain()` — walks N➔1, stops on mismatch; runs on app start + pre-daemon (fail-closed)
-│  ├─ Export + published format spec README ("works in 2056")
-│  └─ Wire chat turns (USER & ASSISTANT) ➔ appendArchive 🔧 (rememberTurn exists)
-│  EXIT: every turn archived + chain green on CI + FFI test proves a tampered row is detected.
-│        episodic_log STAYS as the working/index layer; archive is the law beneath it (R2).
+_--"A · ARCHIVE KEYSTONE"  🆕  (do first · needs nothing)
+│   |_-- schema v7→v8 in eidetic_store_io.dart + eidetic_store_web.dart (both impls):
+│   |     new `archive` table (id, ts_utc, role, content, prev_hash, hash, session_id)  🆕
+│   |_-- appendArchive(role, content) in the store + engine = the ONLY write path;
+│   |     no update, no delete; hash = sha256(ts+role+content+prev_hash); entry 1 = 64 zeros  🆕
+│   |_-- verifyChain(): walk oldest→newest, recompute each hash, stop on first mismatch;
+│   |     call on app-start (splash arming) AND before every dream — fail-closed  🆕
+│   |_-- wire chat turns: appendArchive(USER) before gen, appendArchive(ASSISTANT) after,
+│   |     in MemoryService.rememberTurn / chat_controller  🔧
+│   |_-- PORTABILITY: docs/ARCHIVE_FORMAT.md (the parse spec) + export() to a plain .jsonl  🆕  ⏭
+│   |_-- FFI test: tamper one row → verifyChain goes red; CI green on the honest path
 │
-├─ 💤 PHASE B · THE DREAMING BRAIN (cycled 2nd tenant — R3) 🔧+🆕
-│  ├─ 🧭 dream model = small instruct GGUF (Gemma-2-2B / Qwen2.5-1.5B class, Q4), fits <2 GB
-│  │   beside the tiny embedder while the big chat model is UNLOADED (CPU-sized per ERA III verdict)
-│  ├─ `model_manager`: loadDream() / unloadDream()  ⚠️ invariant: big chat model unloads FIRST
-│  ├─ route the reflection pass through InferenceWorker on the dream model 🔧 (worker exists)
-│  ├─ reflection PROMPT: "who am I becoming / patterns / changed beliefs / contradictions / new questions?"
-│  ├─ embedder stays a deep-sleep CO-TASK (keep vector recall) — not booted 🔧 (EmbeddingService)
-│  └─ mechanical parser: reflection ➔ candidate self-model edits (no interpretation)
-│  EXIT: a manual "dream now" loads the small brain, reflects over the archive, emits candidate
-│        changes — big brain never co-resident.  (first HEARTBEAT: A + B by hand)
+_--"B · DREAMING BRAIN"  🔧+🆕  (the heartbeat with A · needs A)
+│   |_-- model_manager.dart: loadDream(path) / unloadDream()
+│   |     ⚠ unload the foreground chat model FIRST, assert free RAM, THEN load the dreamer  🆕
+│   |_-- 🧭 you pick the GGUF per slot (already settled — your config action, not a build task)
+│   |_-- reflection pass runs through InferenceWorker at a new low priority on the dream model  🔧
+│   |_-- reflection prompt: "read your archive — who are you becoming / patterns /
+│   |     changed beliefs / contradictions / new questions"  🆕
+│   |_-- output is GBNF-gated JSON (reuse GbnfToolEngine) → clean candidate edits, zero prose  🔧
+│   |_-- embedder stays loaded as a co-task (keeps vector recall; it's tiny)  🔧
+│   |_-- dev "Dream now" button on the dev screen → the first heartbeat, by hand  🆕
 │
-├─ 🔌 PHASE C · SENSES-INTO-MEMORY (the wire we half-own) 🔧
-│  ├─ point `SensorAnchor` at the live SensorService (`aether/stream`), not the clock/battery/GPS stub
-│  ├─ stream salient sensor events ➔ `event_log` (AppEvent) 🔧 (table + type exist)
-│  ├─ anchor each archive turn with the live sensor snapshot
-│  ├─ new `sensor_models` table + predict➔confirm➔confidence loop 🆕 (never confidently wrong)
-│  └─ daemon consolidates confirmed sensor patterns 🆕
-│  EXIT: a drive/walk yields real event_log rows anchored to turns; a sensed-unknown moves a confidence #.
+_--"C · SENSES → MEMORY"  🔧  (parallel · needs A to anchor turns)
+│   |_-- engine.snapshot() reads the live SensorService (aether/stream), not the clock/batt/GPS stub  🔧
+│   |_-- push salient sensor events → event_log via AppEvent  🔧
+│   |_-- stamp each archive turn with the live SensorAnchor  🔧
+│   |_-- new `sensor_models` table (signature, meaning, confidence, confirms, corrects)
+│   |     + predict→confirm(+)/correct(−) loop; never confidently wrong  🆕
 │
-├─ 🌙 PHASE D · THE SLEEP CYCLE (the real adversary — R4) 🆕
-│  ├─ native WorkManager jobs + control channel (`MainActivity.kt` side)
-│  ├─ MICRO-SLEEP (screen off+idle, 5–15 min): NO LLM — flush buffers, index embeddings, prune (<2% CPU)
-│  ├─ DEEP-SLEEP gate: charger + battery>80% + 02:00–05:00 + idle + LOCK file ➔ fire the dreamer
-│  ├─ ⚠️ unload-before-load discipline + OOM/thermal guard (abort if hot)
-│  └─ lock file prevents concurrent runs; (later) contextual-bandit scheduler learns real downtime
-│  EXIT: on charger overnight the deep-sleep job fires ONCE, runs Phase-B, app alive + cool by morning.
+_--"D · SLEEP CYCLE"  🆕  (parallel · the Android fight · needs B — it schedules B)
+│   |_-- native WorkManager jobs in MainActivity.kt + a new `aether/sleep` control channel  🆕
+│   |_-- micro-sleep (screen off + idle): NO LLM — flush buffers, index embeddings, prune cache  🆕
+│   |_-- deep-sleep gate: charger + batt>80% + 02:00–05:00 + idle + LOCK file present  🆕
+│   |_-- ⚠ unload-before-load + abort-if-hot (reuse the thermal read from gpu diagnostics)  🆕/🔧
+│   |_-- LOCK file prevents concurrent runs  🆕
 │
-├─ 🪞 PHASE E · SELF-MODEL VIEWS (map, don't regress — R2) 🔧
-│  ├─ IDENTITY / BELIEFS / US = query VIEWS over `semantic_facts` (holder=self), rendered by attribution.dart
-│  ├─ DREAMS == `open_questions` (already DONE)
-│  ├─ daemon writes consolidated self-understanding back as facts (holder=self)
-│  ├─ conversation loop injects the self-model slice into context 🔧 (remembering() exists)
-│  └─ Memory Panel "Self" tab
-│  EXIT: Panel shows a coherent, evolving IDENTITY/BELIEFS/US/DREAMS — all backed by the real engine.
+_--"E · SELF-MODEL VIEWS"  🔧  (needs A + B)
+│   |_-- IDENTITY / BELIEFS / US = queries over semantic_facts where holder=self,
+│   |     rendered by attribution.dart  🔧
+│   |_-- DREAMS = open_questions  ✅ already
+│   |_-- dream pass writes consolidated self back as semantic_facts (holder=self)
+│   |     through the consolidateNow path  🔧
+│   |_-- inject the self-model slice into chat context (remembering())  🔧
+│   |_-- Memory Panel "Self" tab (memory_panel_screen.dart)  🔧
 │
-├─ 🔍 PHASE F · INSPECTION & TRACEABILITY (trial measure #5) 🔧
-│  ├─ `CONSOLIDATION_LOG`: before/after + the archive lines that caused it + confidence + reversible undo
-│  │   (extend the MemoryCall log + provenance table)
-│  ├─ consolidation-log viewer in Memory Panel (reuse the Events-tab pattern)
-│  ├─ line-level trace: one change ➔ back to its archive entries 🆕
-│  └─ structured, user-visible background-operation logs
-│  EXIT: pick any self-model change ➔ see the reflection + archive entries that caused it ➔ undo if wrong.
+_--"F · INSPECTION"  🔧  (needs E)
+│   |_-- CONSOLIDATION_LOG: extend the MemoryCall log + provenance with
+│   |     before/after + the archive rows that caused it + confidence + undo payload  🔧
+│   |_-- consolidation-log viewer in Memory Panel (reuse the Events-tab pattern)  🔧
+│   |_-- tap any change → trace it back to the exact archive row(s)  🆕
 │
-└─ 🛡️ PHASE G · THE RAILS (safety = honesty, = your "no false data" value) 🔧+🆕
-   ├─ S3 bounded change: reject any run rewriting >30% of a self-model slice 🆕
-   ├─ S2 contradiction guard: reject a belief that conflicts with ARCHIVE 🔧 (reconciliation)
-   ├─ R6 reversibility: one-tap undo + daily backup 🔧+🆕
-   ├─ G4 refusal: she can disagree in chat; pushback lands in ARCHIVE; next dream must reckon with it
-   ├─ S1/S4/S5 drift flags: dramatic-shift + quorum-on-major + self-audit 🆕
-   └─ backup / export / restore + the published ARCHIVE format spec 🆕
-   EXIT: a deliberately bad reflection is caught, logged, NOT applied; restore brings last-known-good.
+_--"G · RAILS"  🔧+🆕  (hardens E/F · needs E + F)
+│   |_-- ≤30% change cap per run (reject + flag over-budget rewrites)  🆕
+│   |_-- contradiction guard vs the archive (reconciliation.dart)  🔧
+│   |_-- one-tap undo (uses F's undo payload)  🔧
+│   |_-- drift flags: dramatic-shift / quorum-on-major-change / self-audit  🆕
+│   |_-- refusal: she can disagree in chat; it lands in the archive; next dream must reckon with it  🔧
+│   |_-- PORTABILITY: daily backup snapshot to shared storage + restore-to-last-good,
+│   |     on top of A's format spec (this is what survives a phone swap / rebuild = R1)  🆕
+│
+└─ (H · FIRST BOOT follows below — the first unattended closure of the loop)
 
 
 ══════════════════════════════════════════════════════════════════════════════════════════════════
