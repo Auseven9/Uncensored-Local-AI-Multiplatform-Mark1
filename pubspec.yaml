@@ -1,7 +1,7 @@
 name: portable_ai_flutter
 description: "Portable AI — Run uncensored local LLMs natively on any device."
 publish_to: 'none'
-version: 3.13.0-beta+32
+version: 3.14.0-beta+33
 
 environment:
   sdk: ^3.11.4
@@ -41,6 +41,12 @@ dependencies:
   percent_indicator: ^4.2.4        # Download progress bars
   flutter_animate: ^4.5.0          # Micro-animations
   cupertino_icons: ^1.0.8
+
+  # ── Monitor tab: live camera preview (Vision card) ──
+  # Camera2-backed CameraPreview. On-device/offline: it opens the local
+  # camera sensor directly, no network. Plugin internals are native (Kotlin
+  # Camera2 + a platform Texture) — no WebView/HTML/JS.
+  camera: ^0.11.0
 
   # ── Background / Wake Lock ─────────────────────────────────────
   wakelock_plus: ^1.2.10             # Keep screen on during downloads

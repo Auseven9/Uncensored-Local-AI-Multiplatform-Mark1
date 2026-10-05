@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'package:camera/camera.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
@@ -2521,4 +2522,202 @@ class _PdrPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_PdrPainter old) => true;
+}
+
+/// LIVE camera preview (Vision card).
+///
+/// Opens the device camera sensor directly through the Camera2 stack and shows
+/// the real frames in a platform Texture — nothing is network-fetched or
+/// simulated. Self-managing: it holds its own CameraController lifecycle so the
+/// 60 fps Monitor rebuild never re-initializes the camera, and it releases the
+/// sensor when the card is torn down or the app is backgrounded. No frames are
+/// recorded or stored; the preview is drawn and discarded.
+class CameraView extends StatefulWidget {
+  const CameraView({super.key, this.height = 280});
+  final double height;
+  @override
+  State<CameraView> createState() => _CameraViewState();
+}
+
+class _CameraViewState extends State<CameraView> with WidgetsBindingObserver {
+  CameraController? _ctrl;
+  List<CameraDescription> _cams = const <CameraDescription>[];
+  int _idx = 0;
+  bool _live = false;
+  bool _busy = false;
+  String? _err;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _ctrl?.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (!_live) return;
+    // Release the sensor when backgrounded; re-open on resume so the OS never
+    // kills the whole app for holding the camera while hidden.
+    if (state == AppLifecycleState.inactive || state == AppLifecycleState.paused) {
+      final c = _ctrl;
+      _ctrl = null;
+      c?.dispose();
+      if (mounted) setState(() {});
+    } else if (state == AppLifecycleState.resumed) {
+      _open(_idx);
+    }
+  }
+
+  Future<void> _start() async {
+    if (_busy) return;
+    setState(() {
+      _busy = true;
+      _err = null;
+    });
+    try {
+      if (_cams.isEmpty) _cams = await availableCameras();
+      if (_cams.isEmpty) {
+        if (mounted) {
+          setState(() {
+            _err = 'no camera sensor';
+            _busy = false;
+          });
+        }
+        return;
+      }
+      await _open(_idx);
+      if (mounted) {
+        setState(() {
+          _live = true;
+          _busy = false;
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _err = 'camera unavailable';
+          _busy = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _open(int i) async {
+    final old = _ctrl;
+    _ctrl = null;
+    await old?.dispose();
+    final cam = _cams[i % _cams.length];
+    final c = CameraController(cam, ResolutionPreset.medium, enableAudio: false);
+    await c.initialize();
+    if (!mounted) {
+      await c.dispose();
+      return;
+    }
+    setState(() {
+      _ctrl = c;
+      _idx = i % _cams.length;
+    });
+  }
+
+  Future<void> _stop() async {
+    final c = _ctrl;
+    _ctrl = null;
+    await c?.dispose();
+    if (mounted) setState(() => _live = false);
+  }
+
+  Future<void> _flip() async {
+    if (_cams.length < 2 || _busy) return;
+    setState(() => _busy = true);
+    try {
+      await _open(_idx + 1);
+    } catch (_) {}
+    if (mounted) setState(() => _busy = false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final ctrl = _ctrl;
+    final String facing =
+        _cams.isNotEmpty ? _cams[_idx % _cams.length].lensDirection.name : '';
+    Widget body;
+    if (_err != null) {
+      body = Center(child: Text(_err!, style: const TextStyle(color: _red, fontSize: 12)));
+    } else if (!_live) {
+      body = const Center(
+          child: Text('tap LIVE to open the camera',
+              style: TextStyle(color: _textD, fontSize: 12)));
+    } else if (ctrl == null || !ctrl.value.isInitialized) {
+      body = const Center(
+          child: SizedBox(
+              width: 22,
+              height: 22,
+              child: CircularProgressIndicator(strokeWidth: 2, color: _cyan)));
+    } else {
+      final Size ps = ctrl.value.previewSize ?? const Size(720, 1280);
+      // previewSize is in sensor (landscape) orientation; swap for portrait and
+      // cover-fit so the feed fills the card without stretching.
+      body = ClipRRect(
+        borderRadius: BorderRadius.circular(10),
+        child: FittedBox(
+          fit: BoxFit.cover,
+          clipBehavior: Clip.hardEdge,
+          child: SizedBox(
+            width: ps.height,
+            height: ps.width,
+            child: CameraPreview(ctrl),
+          ),
+        ),
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          height: widget.height,
+          width: double.infinity,
+          decoration: BoxDecoration(
+            color: const Color(0xFF05070A),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: _border),
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: body,
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            GestureDetector(
+              onTap: _busy ? null : (_live ? _stop : _start),
+              child: _camPill(_live ? 'STOP' : 'LIVE', _live ? _red : _green),
+            ),
+            const SizedBox(width: 8),
+            if (_live && _cams.length > 1)
+              GestureDetector(onTap: _busy ? null : _flip, child: _camPill('FLIP', _cyan)),
+            const Spacer(),
+            if (_live && facing.isNotEmpty)
+              Text(facing, style: const TextStyle(fontSize: 10, color: _textM)),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _camPill(String label, Color col) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          color: Color.alphaBlend(col.withValues(alpha: 0.16), _panel),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: col.withValues(alpha: 0.5)),
+        ),
+        child: Text(label,
+            style: TextStyle(fontSize: 11, color: col, fontWeight: FontWeight.w700)),
+      );
 }

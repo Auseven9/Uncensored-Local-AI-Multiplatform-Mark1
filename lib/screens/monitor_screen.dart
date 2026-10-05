@@ -873,6 +873,9 @@ class _MonitorScreenState extends State<MonitorScreen>
           return VuWaveform(wave: s.micWave, db: s.micDb, peak: s.micPeak);
         }
         return null;
+      case 'cam':
+        if (!s.granted(SensorService.pCam)) return null;
+        return const CameraView();
       case 'gnss':
         if (!s.granted(SensorService.pLoc)) return null;
         return SkyPlot(
