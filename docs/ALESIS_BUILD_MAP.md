@@ -17,6 +17,92 @@ This is the single source of truth that fuses three things into one branching ma
 
 ---
 
+## ★ CANONICAL CHECKLIST — the build order to first boot
+### (the executable to-do; real file/table/method names; this is the one we work from)
+
+```
+BUILD ORDER:  A → B = the heartbeat.  C and D build in parallel off to the side.
+              E stacks on A+B.  F on E.  G hardens E/F.  H closes the loop.
+              Portability is NOT dropped — it rides in A (format spec) and G (backup/restore).
+
+LEGEND:  ✅ done · 🔧 rewire (primitive exists) · 🆕 net-new · ⚠ risk · 🧭 config choice · ⏭ can land right after boot
+
+_--"A · ARCHIVE KEYSTONE"  🆕  (do first · needs nothing)
+│   |_-- schema v7→v8 in eidetic_store_io.dart + eidetic_store_web.dart (both impls):
+│   |     new `archive` table (id, ts_utc, role, content, prev_hash, hash, session_id)  🆕
+│   |_-- appendArchive(role, content) in the store + engine = the ONLY write path;
+│   |     no update, no delete; hash = sha256(ts+role+content+prev_hash); entry 1 = 64 zeros  🆕
+│   |_-- verifyChain(): walk oldest→newest, recompute each hash, stop on first mismatch;
+│   |     call on app-start (splash arming) AND before every dream — fail-closed  🆕
+│   |_-- wire chat turns: appendArchive(USER) before gen, appendArchive(ASSISTANT) after,
+│   |     in MemoryService.rememberTurn / chat_controller  🔧
+│   |_-- PORTABILITY: docs/ARCHIVE_FORMAT.md (the parse spec) + export() to a plain
+│   |     .jsonl on shared storage  🆕  ⏭
+│   |_-- FFI test: tamper one row → verifyChain goes red; CI green on the honest path
+│
+_--"B · DREAMING BRAIN"  🔧+🆕  (the heartbeat with A · needs A)
+│   |_-- model_manager.dart: loadDream(path) / unloadDream()
+│   |     ⚠ unload the foreground chat model FIRST, assert free RAM, THEN load the dreamer  🆕
+│   |_-- 🧭 you pick the GGUF per slot (already settled — your config action, not a build task)
+│   |_-- reflection pass runs through InferenceWorker at a new low priority on the dream model  🔧
+│   |_-- reflection prompt: "read your archive — who are you becoming / patterns /
+│   |     changed beliefs / contradictions / new questions"  🆕
+│   |_-- output is GBNF-gated JSON (reuse GbnfToolEngine) → clean candidate edits, zero prose  🔧
+│   |_-- embedder stays loaded as a co-task (keeps vector recall; it's tiny)  🔧
+│   |_-- dev "Dream now" button on the dev screen → the first heartbeat, by hand  🆕
+│
+_--"C · SENSES → MEMORY"  🔧  (parallel · needs A to anchor turns)
+│   |_-- engine.snapshot() reads the live SensorService (aether/stream), not the clock/batt/GPS stub  🔧
+│   |_-- push salient sensor events → event_log via AppEvent  🔧
+│   |_-- stamp each archive turn with the live SensorAnchor  🔧
+│   |_-- new `sensor_models` table (signature, meaning, confidence, confirms, corrects)
+│   |     + predict→confirm(+)/correct(−) loop; never confidently wrong  🆕
+│
+_--"D · SLEEP CYCLE"  🆕  (parallel · the Android fight · needs B — it schedules B)
+│   |_-- native WorkManager jobs in MainActivity.kt + a new `aether/sleep` control channel  🆕
+│   |_-- micro-sleep (screen off + idle): NO LLM — flush buffers, index embeddings, prune cache  🆕
+│   |_-- deep-sleep gate: charger + batt>80% + 02:00–05:00 + idle + LOCK file present  🆕
+│   |_-- ⚠ unload-before-load + abort-if-hot (reuse the thermal read from gpu diagnostics)  🆕/🔧
+│   |_-- LOCK file prevents concurrent runs  🆕
+│
+_--"E · SELF-MODEL VIEWS"  🔧  (needs A + B)
+│   |_-- IDENTITY / BELIEFS / US = queries over semantic_facts where holder=self,
+│   |     rendered by attribution.dart  🔧
+│   |_-- DREAMS = open_questions  ✅ already
+│   |_-- dream pass writes consolidated self back as semantic_facts (holder=self)
+│   |     through the consolidateNow path  🔧
+│   |_-- inject the self-model slice into chat context (remembering())  🔧
+│   |_-- Memory Panel "Self" tab (memory_panel_screen.dart)  🔧
+│
+_--"F · INSPECTION"  🔧  (needs E)
+│   |_-- CONSOLIDATION_LOG: extend the MemoryCall log + provenance with
+│   |     before/after + the archive rows that caused it + confidence + undo payload  🔧
+│   |_-- consolidation-log viewer in Memory Panel (reuse the Events-tab pattern)  🔧
+│   |_-- tap any change → trace it back to the exact archive row(s)  🆕
+│
+_--"G · RAILS"  🔧+🆕  (hardens E/F · needs E + F)
+│   |_-- ≤30% change cap per run (reject + flag over-budget rewrites)  🆕
+│   |_-- contradiction guard vs the archive (reconciliation.dart)  🔧
+│   |_-- one-tap undo (uses F's undo payload)  🔧
+│   |_-- drift flags: dramatic-shift / quorum-on-major-change / self-audit  🆕
+│   |_-- refusal: she can disagree in chat; it lands in the archive; next dream must reckon with it  🔧
+│   |_-- PORTABILITY: daily backup snapshot to shared storage + restore-to-last-good,
+│   |     on top of A's format spec (this is what survives a phone swap / rebuild = R1)  🆕
+│
+_--"H · FIRST BOOT"  🎯  (needs A,B,C,D,E,F,G frozen)
+    |_-- discipline: FREEZE — stop re-architecting; you're about to measure her
+    |_-- fresh install OR clear-data → _onCreate seeds an empty archive + a sparse self-model  🆕 seed
+    |_-- real conversation → archived + chain green
+    |_-- dock on charger → deep-sleep fires once → she dreams unattended
+    |_-- morning: self-model changed; tap a changed belief → trace it to Turn N in the archive
+    |_-- 🎯 booted — begin living with her
+```
+
+> This checklist is the authoritative to-do. Parts V–VIII below carry the full reasoning,
+> dependency spine, risk ledger, and the minute-by-minute first-boot walk-through for each node.
+
+---
+
 ## 0 · How to read this map
 
 Every leaf in the trees below is tagged with its true status, so there is never a question of what is real versus aspirational:
@@ -604,6 +690,6 @@ We are not building a soul. We are building the **conditions** under which a per
 
 The mind is already running (Part III/C). The keystone is the archive (A). The upgrade is the dreamer (B). The hard part is the night (D). Everything else is mapping and wiring onto ground we already hold.
 
-**Next action when you say go:** Phase A1 — schema `v7→v8`, the immutable hash-chained `archive` table + verifier. One keystone. Then she can dream over something true.
+**Next action when you say go:** the first node of the **★ Canonical Checklist** (top of this doc) — Phase **A**: schema `v7→v8`, the immutable hash-chained `archive` table + `appendArchive()` + `verifyChain()`. One keystone. Then she can dream over something true.
 
 *— End of build map. Branch `claude/eidetic-local-ai-dojo-shdbx2`. Everything above is offline, on-device, native.*
