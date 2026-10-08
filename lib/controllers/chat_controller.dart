@@ -12,6 +12,7 @@ import '../core/engine/inference_worker.dart';
 import '../core/cognition/uncertainty.dart';
 import '../core/memory/memory_service.dart';
 import '../core/params/parameters_service.dart';
+import '../services/solver_service.dart';
 
 class ChatController extends GetxController {
   final LlmService _llm = Get.find<LlmService>();
@@ -44,6 +45,14 @@ class ChatController extends GetxController {
   PipelineStatusService? get _status {
     try {
       return Get.find<PipelineStatusService>();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  SolverService? get _solver {
+    try {
+      return Get.find<SolverService>();
     } catch (_) {
       return null;
     }
@@ -205,6 +214,18 @@ class ChatController extends GetxController {
       _status?.mark('confident (${u.value.toStringAsFixed(2)}) · System 1');
     }
 
+    // ── Solver: offer the exact-logic rail ─────────────────────
+    // The model may emit an inline `[[solve (expr)]]` term; after generation the
+    // app evaluates it exactly and substitutes the real result (model proposes,
+    // Solver owns the number). Offered on System-2 turns by default — where
+    // exactness matters — or on every turn when `solver.always` is set. Kept out
+    // of the prompt otherwise, to spare the small context window.
+    final solverOn = _params?.getBool('solver.enabled') ?? true;
+    final solverAlways = _params?.getBool('solver.always') ?? false;
+    if (solverOn && (solverAlways || (u != null && u.mode == UMode.system2))) {
+      effectiveSystem = '$effectiveSystem\n\n$solverDirective';
+    }
+
     // ── MEMORY: remember the user turn up front (survives a crash) ──
     await _memory?.remember(
       sessionId: chat.id,
@@ -296,6 +317,14 @@ class ChatController extends GetxController {
       // structural HTML — the single shared scrub used by every consumer of a
       // generated turn (chat and debate alike), so cleanup is identical.
       aiMsg.content = LlmService.scrubReply(aiMsg.content);
+      // ── Solver: verify & substitute any inline terms the model emitted ──
+      // Pure, deterministic, no extra inference — just exact evaluation over the
+      // finished reply, so a computed answer comes from the Solver, not a guess.
+      if (solverOn && _solver != null && _solver!.hasTag(aiMsg.content)) {
+        aiMsg.content = _solver!.applyInline(aiMsg.content);
+        final n = _solver!.lastSubstitutions.value;
+        if (n > 0) _status?.mark('solver verified $n');
+      }
       isGenerating.value = false;
       streamedResponse.value = '';
       chat.updatedAt = DateTime.now();
