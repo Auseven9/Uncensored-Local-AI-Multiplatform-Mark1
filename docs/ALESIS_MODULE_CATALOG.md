@@ -9,7 +9,13 @@
 > **Status key:** ✅ built & shipped · 🆕 agreed / planned (on the roadmap) · 💡 shelved idea (pinned, not committed)
 > **Layer key:** FE = front-end (UI) · BE = back-end (Dart logic) · NATIVE = Kotlin/Android · DATA = storage
 >
-> Grounded in the source at `3.14.0-beta+33`, schema `v7`, branch `claude/eidetic-local-ai-dojo-shdbx2`.
+> Grounded in the source at `3.16.0-beta+35`, schema `v8`, branch `claude/eidetic-local-ai-dojo-shdbx2`.
+
+> **🟢 BUILD LOG — updated 2026-10-08 (Cairn).** Two modules this catalog listed as 💡/🆕 are now **✅ built & CI-green**:
+> - **The Solver** (E · Deterministic Rails) — `lib/core/cognition/solver.dart` (exact-logic executor: rational arithmetic, dates, logic, sets; GBNF grammar; derivation trace) **+ wired into the live chat path** via `lib/services/solver_service.dart` (inline `[[solve (expr)]]` propose→verify→substitute, offered on System-2 turns). Params `solver.enabled`/`solver.always`. Shipped v3.15.0.
+> - **The Archive** (E · Deterministic Rails) — `lib/core/memory/archive_chain.dart` (pure SHA-256 hash-chain: `computeArchiveHash`/`nextEntry`/`verifyChain`, tamper-evident) **+ a live durable store**: new `archive` table (schema **v7→v8**), `EideticMemoryEngine.archiveTurn()/verifyArchive()`, per-turn writer at `MemoryService.remember()`, fail-closed boot verify (`lastArchiveCheck`). Param `archive.enabled`. Shipped v3.16.0. Boundary held: it is the dreamer's **source, never its sink**.
+>
+> Still 🆕/💡 below: Dreamer, Sleep daemon, model-cycling safety, self-model/Self tab, Integrity panel+backup, senses→memory. New shelved idea under team research: the **belief-state (VSA) organ** — gated on a rung-1 coupling experiment; lives in its own store if it ever lands, never chained into the Archive. The per-card entries below still read as first written; trust this banner where they disagree.
 
 ---
 
