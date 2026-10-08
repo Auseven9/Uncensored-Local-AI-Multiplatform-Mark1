@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:get/get.dart';
 
 import '../../services/log_service.dart';
+import 'archive_chain.dart';
 import 'eidetic_store.dart';
 import 'event_records.dart';
 import 'memory_records.dart';
@@ -67,6 +68,11 @@ class EideticMemoryEngine extends GetxService {
   /// Number of episodic rows not yet consolidated into semantic memory.
   final episodicPending = 0.obs;
 
+  /// The result of the most recent Archive chain verification (boot + on demand).
+  /// Null until first verified. The fail-closed signal the dreamer must check
+  /// before consolidating over history, and what the Integrity panel reports.
+  ChainVerification? lastArchiveCheck;
+
   final List<WorkingMemoryItem> _working = [];
 
   LogService? get _log {
@@ -90,6 +96,17 @@ class EideticMemoryEngine extends GetxService {
       await appendEvent(source: 'system', type: 'app_launch', payload: {
         'persistent': _store.isPersistent,
       });
+    } catch (_) {}
+    // Fail-closed integrity: verify the Archive chain on boot. A break does NOT
+    // crash the app — it is recorded in [lastArchiveCheck] (and logged loudly) so
+    // the dreamer can refuse to consolidate over a corrupted history and the
+    // Integrity panel can show the owner exactly where it broke.
+    try {
+      final v = verifyChain(await _store.loadArchive());
+      lastArchiveCheck = v;
+      if (!v.ok) {
+        _log?.error('ARCHIVE INTEGRITY BROKEN: ${v.reason}', source: 'Memory');
+      }
     } catch (_) {}
     _log?.info(
       'Eidetic memory ready (persistent=${_store.isPersistent})',
@@ -135,6 +152,46 @@ class EideticMemoryEngine extends GetxService {
       parentEventIds: parents,
       anchor: snapshot(),
     ));
+  }
+
+  // ── Archive (immutable, hash-chained ground truth) ──────────
+
+  /// Append one turn to the Archive: read the current tip, chain the next link
+  /// off it (genesis for the first), and persist. Returns the new entry. The
+  /// hash is computed by [nextEntry]; the store only persists it.
+  Future<ArchiveEntry> archiveTurn({
+    required String role,
+    required String content,
+    DateTime? at,
+  }) async {
+    await _ensureInit();
+    final tip = await _store.archiveTip();
+    final seq = tip == null ? 0 : tip.seq + 1;
+    final prev = tip?.hash ?? kArchiveGenesisHash;
+    final ts = (at ?? DateTime.now().toUtc()).toIso8601String();
+    final entry = nextEntry(
+      seq: seq,
+      prevHash: prev,
+      timestampUtc: ts,
+      role: role,
+      content: content,
+    );
+    await _store.appendArchiveEntry(entry);
+    return entry;
+  }
+
+  /// Verify the whole Archive chain (fail-closed). Refreshes [lastArchiveCheck].
+  Future<ChainVerification> verifyArchive() async {
+    await _ensureInit();
+    final v = verifyChain(await _store.loadArchive());
+    lastArchiveCheck = v;
+    return v;
+  }
+
+  /// How many entries are in the Archive.
+  Future<int> archiveCount() async {
+    await _ensureInit();
+    return _store.archiveCount();
   }
 
   Future<List<AppEvent>> recentEvents({int limit = 100}) async {

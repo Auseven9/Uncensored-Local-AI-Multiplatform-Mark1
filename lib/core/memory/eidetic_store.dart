@@ -1,3 +1,4 @@
+import 'archive_chain.dart';
 import 'event_records.dart';
 import 'memory_dynamics.dart';
 import 'memory_records.dart';
@@ -51,6 +52,20 @@ abstract class EideticStore {
   Future<int> appendEvent(AppEvent event);
   Future<List<AppEvent>> recentEvents({int limit = 100});
   Future<int> eventCount();
+
+  // ── Archive (immutable, hash-chained ground truth — v8) ─────
+  /// Append one pre-built, pre-hashed [ArchiveEntry]. The chain logic lives in
+  /// the engine / `archive_chain.dart`; the store only persists the row.
+  Future<void> appendArchiveEntry(ArchiveEntry entry);
+
+  /// The last entry in the chain (highest seq), or null when the archive is empty.
+  Future<ArchiveEntry?> archiveTip();
+
+  /// The whole chain in ascending seq order (for verification / export).
+  Future<List<ArchiveEntry>> loadArchive({int limit = 1000000});
+
+  /// How many entries are in the archive.
+  Future<int> archiveCount();
 
   // ── Epistemic graph (Phase 2) ───────────────────────────────
   /// Add a directed relation edge between two claims. Returns its row id.
@@ -177,6 +192,7 @@ class InMemoryEideticStore implements EideticStore {
   final Map<int, List<double>> _embeddings = {};
   final List<OpenQuestion> _openQuestions = [];
   final List<ProcedureRecord> _procedures = [];
+  final List<ArchiveEntry> _archive = [];
   int _autoId = 0;
 
   @override
@@ -325,6 +341,29 @@ class InMemoryEideticStore implements EideticStore {
 
   @override
   Future<int> eventCount() async => _events.length;
+
+  @override
+  Future<void> appendArchiveEntry(ArchiveEntry entry) async =>
+      _archive.add(entry);
+
+  @override
+  Future<ArchiveEntry?> archiveTip() async {
+    if (_archive.isEmpty) return null;
+    var tip = _archive.first;
+    for (final e in _archive) {
+      if (e.seq > tip.seq) tip = e;
+    }
+    return tip;
+  }
+
+  @override
+  Future<List<ArchiveEntry>> loadArchive({int limit = 1000000}) async {
+    final rows = [..._archive]..sort((a, b) => a.seq.compareTo(b.seq));
+    return rows.take(limit).toList();
+  }
+
+  @override
+  Future<int> archiveCount() async => _archive.length;
 
   @override
   Future<int> addEdge(RelationEdge edge) async {
@@ -606,6 +645,7 @@ class InMemoryEideticStore implements EideticStore {
     _embeddings.clear();
     _openQuestions.clear();
     _procedures.clear();
+    _archive.clear();
   }
 
   @override

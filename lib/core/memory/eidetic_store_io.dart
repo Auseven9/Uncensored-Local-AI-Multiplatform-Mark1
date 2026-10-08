@@ -6,6 +6,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
+import 'archive_chain.dart';
 import 'eidetic_store.dart';
 import 'event_records.dart';
 import 'memory_dynamics.dart';
@@ -69,7 +70,8 @@ class SqliteEideticStore implements EideticStore {
       // v5: identity/attribution columns on semantic_facts (Phase 5).
       // v6: attribute slot column + open_questions table (2.0 Living Memory).
       // v7: procedures table — procedural memory, the "how" (multi-step agent).
-      version: 7,
+      // v8: archive table — append-only, SHA-256 hash-chained ground truth.
+      version: 8,
       onConfigure: (db) async {
         // Write-Ahead Logging: durable, low-latency appends for the event log.
         //
@@ -140,6 +142,11 @@ class SqliteEideticStore implements EideticStore {
       // Procedural memory: the agent's skills/workflows/tools/snippets — the
       // "how", read by the multi-step agent loop. Additive; empty on upgrade.
       await _createProceduresTable(db);
+    }
+    if (oldVersion < 8) {
+      // Archive (ALESIS ground truth): append-only, SHA-256 hash-chained ledger
+      // of every turn. Additive; empty on upgrade; nothing rewrites it.
+      await _createArchiveTable(db);
     }
   }
 
@@ -310,6 +317,26 @@ class SqliteEideticStore implements EideticStore {
     await _createEmbeddingsTable(db);
     await _createOpenQuestionsTable(db);
     await _createProceduresTable(db);
+    await _createArchiveTable(db);
+  }
+
+  /// The Archive (v8): append-only, SHA-256 hash-chained ground truth of every
+  /// turn. `seq` is the explicit 0-based chain position (PRIMARY KEY, assigned by
+  /// the engine off the current tip — not autoincrement). Nothing updates or
+  /// deletes a row except the panel's "clear all"; the chain makes any in-place
+  /// edit or middle deletion evident. Created fresh in [_onCreate], back-filled
+  /// in [_onUpgrade].
+  Future<void> _createArchiveTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS archive (
+        seq INTEGER PRIMARY KEY,
+        timestamp_utc TEXT NOT NULL,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        prev_hash TEXT NOT NULL,
+        hash TEXT NOT NULL
+      )
+    ''');
   }
 
   @override
@@ -451,6 +478,49 @@ class SqliteEideticStore implements EideticStore {
   Future<int> eventCount() async {
     final rows =
         await _database.rawQuery('SELECT COUNT(*) AS c FROM event_log');
+    return (rows.first['c'] as num).toInt();
+  }
+
+  // ── Archive (immutable, hash-chained ground truth — v8) ─────
+
+  ArchiveEntry _archiveFromRow(Map<String, Object?> r) => ArchiveEntry(
+        seq: (r['seq'] as num).toInt(),
+        timestampUtc: r['timestamp_utc'] as String,
+        role: r['role'] as String,
+        content: r['content'] as String,
+        prevHash: r['prev_hash'] as String,
+        hash: r['hash'] as String,
+      );
+
+  @override
+  Future<void> appendArchiveEntry(ArchiveEntry entry) async {
+    await _database.insert('archive', {
+      'seq': entry.seq,
+      'timestamp_utc': entry.timestampUtc,
+      'role': entry.role,
+      'content': entry.content,
+      'prev_hash': entry.prevHash,
+      'hash': entry.hash,
+    });
+  }
+
+  @override
+  Future<ArchiveEntry?> archiveTip() async {
+    final rows = await _database.query('archive', orderBy: 'seq DESC', limit: 1);
+    if (rows.isEmpty) return null;
+    return _archiveFromRow(rows.first);
+  }
+
+  @override
+  Future<List<ArchiveEntry>> loadArchive({int limit = 1000000}) async {
+    final rows =
+        await _database.query('archive', orderBy: 'seq ASC', limit: limit);
+    return rows.map(_archiveFromRow).toList();
+  }
+
+  @override
+  Future<int> archiveCount() async {
+    final rows = await _database.rawQuery('SELECT COUNT(*) AS c FROM archive');
     return (rows.first['c'] as num).toInt();
   }
 
@@ -767,6 +837,7 @@ class SqliteEideticStore implements EideticStore {
     await _database.delete('claim_embeddings');
     await _database.delete('open_questions');
     await _database.delete('procedures');
+    await _database.delete('archive');
   }
 
   @override

@@ -450,6 +450,14 @@ class MemoryService extends GetxService {
     // the live chat path (the controller records user and assistant turns
     // through remember), so this is what makes the event log populate at all.
     await _appendMessageEvent(role, content);
+    // Archive (ground truth): mirror the turn into the append-only, SHA-256
+    // hash-chained ledger — the tamper-evident source the dreamer will read.
+    // Best-effort and gated (`archive.enabled`); never fails a turn.
+    if (_params?.getBool('archive.enabled') ?? true) {
+      try {
+        await _memory.archiveTurn(role: role, content: content);
+      } catch (_) {}
+    }
     return id;
   }
 
