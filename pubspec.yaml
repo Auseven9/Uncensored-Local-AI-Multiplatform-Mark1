@@ -27,6 +27,12 @@ dependencies:
   sqflite: ^2.3.0                  # SQLite ledger on Android/iOS/macOS
   sqflite_common_ffi: ^2.3.3       # SQLite via FFI on Linux/Windows + unit tests
 
+  # ── Integrity (Archive hash chain) ─────────────────────────────
+  # Pure-Dart SHA-256 (official dart.dev package, no native code) for the
+  # append-only, tamper-evident Archive chain. Already resolved transitively;
+  # promoted to a direct dependency now that the Archive uses it.
+  crypto: ^3.0.0
+
   # ── Networking / Downloads ──────────────────────────────────────
   http: ^1.2.2                     # HTTP requests + model downloading
 
