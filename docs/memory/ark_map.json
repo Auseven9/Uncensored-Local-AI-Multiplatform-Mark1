@@ -1,0 +1,338 @@
+{
+  "version": 4,
+  "nodes": {
+    "alesis": {
+      "name": "ALESIS",
+      "path": "repo: Auseven9/Uncensored-Local-AI-Multiplatform-Mark1 (Flutter/Dart)",
+      "kind": "system",
+      "purpose": "The app, and also the on-device AI persona. This repo is the dojo's home repo.",
+      "uses": [],
+      "used_by": [],
+      "status": "building",
+      "notes": "Source: Cairn (Claude0 session) build-state report. Containment (which nodes live in this repo) is recorded in each node's lives_in field, not as uses edges. No uses edges from ALESIS itself are stated."
+    },
+    "on_device_target": {
+      "name": "On-device target: Samsung S24 Ultra",
+      "path": "n/a (project goal/constraint)",
+      "kind": "goal",
+      "purpose": "ALESIS runs locally on a Samsung S24 Ultra; mobile-first.",
+      "uses": [],
+      "used_by": [],
+      "status": "in-progress",
+      "notes": "Goal/constraint node. Not confirmed achieved. No dependency edges recorded."
+    },
+    "eidetic_memory_engine": {
+      "name": "EideticMemoryEngine",
+      "path": "lib/core/memory/",
+      "lives_in": "alesis",
+      "kind": "component",
+      "purpose": "SQLite-backed memory store with a vector-sync trigger that indexes entries into llama_index every N turns.",
+      "uses": [
+        "sqlite",
+        "llama_index"
+      ],
+      "used_by": [],
+      "status": "building",
+      "notes": "Lives in the ALESIS repo. Live vector-sync interval \"N\" is unset because the consolidation/reflection daemon is unbuilt (defaults known; see consolidation_reflection_daemon). No consumers recorded yet. Relationship to episodic_log and the archive nodes is not stated; whether the daemon is the vector-sync trigger is not stated."
+    },
+    "archive_chain_core": {
+      "name": "Archive chain core",
+      "path": "lib/core/memory/archive_chain.dart (test: test/archive_chain_test.dart)",
+      "lives_in": "alesis",
+      "kind": "component",
+      "purpose": "Pure Dart tamper-EVIDENT SHA-256 hash chain. Hash recipe is LOCKED: sha256(jsonEncode([prevHash, ts, role, content])). Functions: computeArchiveHash (that recipe), nextEntry (builds the next link off the current tip), verifyChain (fail-closed walk reporting the FIRST break and its kind).",
+      "uses": [
+        "crypto"
+      ],
+      "used_by": [
+        "archive_table"
+      ],
+      "status": "working",
+      "commit": "18cbedc",
+      "notes": "DONE, CI-green, commit 18cbedc (per Cairn). Tamper-evident, not tamper-proof: a full recompute, tail-truncation or store-wipe needs an out-of-store backup to catch. crypto is a direct dependency. Sole recorded consumer is archive_table (#3b), which is unbuilt, so that edge is planned, not live."
+    },
+    "crypto": {
+      "name": "crypto",
+      "path": "external: Dart package",
+      "kind": "api",
+      "purpose": "SHA-256 hashing for the archive chain.",
+      "uses": [],
+      "used_by": [
+        "archive_chain_core"
+      ],
+      "status": "working",
+      "notes": "External dependency; now a direct dependency of the app."
+    },
+    "archive_table": {
+      "name": "Archive table (#3b)",
+      "path": "does not exist yet; will be a v7->v8 migration in lib/core/memory/eidetic_store_io.dart and lib/core/memory/eidetic_store_web.dart",
+      "lives_in": "alesis",
+      "kind": "component",
+      "purpose": "Dedicated append-only, single-writer archive table, hash-chained by calling archive_chain_core computeArchiveHash/nextEntry (same recipe: sha256(jsonEncode([prevHash, ts, role, content]))). Planned: DB migration v7->v8, a single chat-path writer, a fail-closed boot check. Both store implementations get it (two-impl discipline: _io device impl, _web test impl).",
+      "uses": [
+        "archive_chain_core"
+      ],
+      "used_by": [
+        "consolidation_reflection_daemon"
+      ],
+      "status": "building",
+      "notes": "GREEN-LIT in v4 and being built now by Cairn (status was planned in v3; completion not confirmed). Valid regardless of rung-1. Migration v7->v8 not confirmed written. Deliberately does NOT chain the mutable episodic_log. belief_state_organ must NEVER be chained into it. The dreamer READS FROM it (planned; it is the dreamer's source, never its sink). Hash recipe resolved by Cairn: no separate concatenation exists; it reuses archive_chain_core. The uses edge is planned (applies when built).",
+      "decision": "GREEN-LIT. Being built now by Cairn. Valid regardless of the rung-1 result."
+    },
+    "episodic_log": {
+      "name": "episodic_log",
+      "path": "table inside lib/core/memory/eidetic_store_io.dart (+ lib/core/memory/eidetic_store_web.dart), around line 265",
+      "kind": "component",
+      "purpose": "Existing mutable memory log.",
+      "uses": [],
+      "used_by": [],
+      "status": "working",
+      "notes": "Mutable. The archive is deliberately kept separate from it. Relationship to eidetic_memory_engine is still not stated (same lib/core/memory/ directory, but no edge inferred).",
+      "lives_in": "alesis"
+    },
+    "solver_core": {
+      "name": "Solver core",
+      "path": "lib/core/cognition/solver.dart and lib/services/solver_service.dart",
+      "lives_in": "alesis",
+      "kind": "component",
+      "purpose": "Exact arithmetic/expression solver.",
+      "uses": [],
+      "used_by": [
+        "solver_chat_integration"
+      ],
+      "status": "working",
+      "commit": "e1cdaaa",
+      "notes": "CI green per report."
+    },
+    "solver_chat_integration": {
+      "name": "Solver-to-chat integration",
+      "path": "not stated",
+      "lives_in": "alesis",
+      "kind": "component",
+      "purpose": "On System-2 turns the model emits a [[solve (expr)]] marker and the app substitutes the real computed answer.",
+      "uses": [
+        "solver_core"
+      ],
+      "used_by": [],
+      "status": "working",
+      "commit": "fe034c1",
+      "notes": "App version v3.15.0. CI green per report."
+    },
+    "dual_agent_arena": {
+      "name": "Dual-Agent Arena",
+      "path": "lib/features/rooms/",
+      "lives_in": "alesis",
+      "kind": "component",
+      "purpose": "UI room for the Dual-Agent Arena feature.",
+      "uses": [],
+      "used_by": [],
+      "status": "planned",
+      "notes": "Not built. Lives in the ALESIS repo. Shares path lib/features/rooms/ with continuous_introspection_dojo; file-level paths not yet decided. No dependency edges recorded."
+    },
+    "continuous_introspection_dojo": {
+      "name": "Continuous Introspection Dojo",
+      "path": "lib/features/rooms/",
+      "lives_in": "alesis",
+      "kind": "component",
+      "purpose": "UI room for continuous introspection.",
+      "uses": [],
+      "used_by": [],
+      "status": "planned",
+      "notes": "Not built. Lives in the ALESIS repo. Shares path lib/features/rooms/ with dual_agent_arena; file-level paths not yet decided. No dependency edges recorded."
+    },
+    "constrained_json_tool_layer": {
+      "name": "Constrained-JSON tool layer",
+      "path": "lib/core/tools/",
+      "lives_in": "alesis",
+      "kind": "component",
+      "purpose": "Constrained JSON sampling schemas to eliminate parser misfires.",
+      "uses": [],
+      "used_by": [],
+      "status": "building",
+      "notes": "Lives in the ALESIS repo. No consumers or dependencies recorded yet."
+    },
+    "llama_index": {
+      "name": "llama_index",
+      "path": "external: Auseven9/llama_index",
+      "kind": "api",
+      "purpose": "Vector index and retrieval.",
+      "uses": [],
+      "used_by": [
+        "eidetic_memory_engine"
+      ],
+      "status": "working",
+      "notes": "External dependency."
+    },
+    "sqlite": {
+      "name": "sqlite",
+      "path": "external",
+      "kind": "api",
+      "purpose": "Local persistence.",
+      "uses": [],
+      "used_by": [
+        "eidetic_memory_engine"
+      ],
+      "status": "working",
+      "notes": "External dependency."
+    },
+    "cognitive_team": {
+      "name": "Six-role cognitive team",
+      "path": "n/a (not a code path)",
+      "kind": "agent",
+      "purpose": "Working group on the project: user (human builder), Claude1 (computational partner / orchestrator), Cairn (Claude0 session) (session building the app; source of build-state reports; chose the name Cairn), Vector (relational analyst, read-only), Myea (creative analyst, read-only), Ark (cartographer, sole writer of the project map).",
+      "uses": [],
+      "used_by": [],
+      "status": "forming",
+      "notes": "Recorded as one node; members are not split into separate nodes. Roster is 6. Former member label \"Claude0\" is now \"Cairn (Claude0 session)\". Role wording is only what was reported. No dependency edges recorded."
+    },
+    "consolidation_reflection_daemon": {
+      "name": "Consolidation/reflection daemon (the dreamer)",
+      "path": "not stated",
+      "kind": "component",
+      "purpose": "Background consolidation and reflection process. Reads FROM the archive and distills INTO the semantic store and the belief state. The archive is its SOURCE, never its sink. Known default config: consolidate.minEntries=6, reflect.everyConsolidations=3, idle.intervalMinutes=10.",
+      "config_defaults": {
+        "consolidate.minEntries": 6,
+        "reflect.everyConsolidations": 3,
+        "idle.intervalMinutes": 10
+      },
+      "uses": [
+        "archive_table",
+        "belief_state_organ"
+      ],
+      "used_by": [],
+      "status": "held",
+      "notes": "HELD until rung-1 resolves; its design may shift. UNBUILT. Defaults known but nothing runs, so the live \"sync interval N\" is unset. CORRECTION (v4): it distills from the archive into the semantic store + belief state; the archive is never a destination. (No 'distill to archive' wording was found in v3 files; correction recorded explicitly.) Edges to archive_table (read) and belief_state_organ (write) are planned, not live; the belief-state edge also depends on rung-1 passing. The 'semantic store' is not a recorded node and its identity is not stated, so no edge is drawn to it (no inference to eidetic_memory_engine or llama_index). Location (repo/path) not stated.",
+      "reads_from": [
+        "archive_table"
+      ],
+      "writes_to": [
+        "belief_state_organ"
+      ],
+      "gated_by": [
+        "rung1_coupling_test"
+      ]
+    },
+    "belief_state_organ": {
+      "name": "Belief-state organ (VSA/HRR working memory)",
+      "path": "not stated (own store, single BLOB; repo location not stated)",
+      "kind": "component",
+      "purpose": "A fixed-size VSA/HRR hypervector serving as fast working memory.",
+      "uses": [
+        "llm_embeddings"
+      ],
+      "used_by": [
+        "rung1_coupling_test",
+        "consolidation_reflection_daemon"
+      ],
+      "status": "proposed",
+      "proven": false,
+      "gated_by": [
+        "rung1_coupling_test"
+      ],
+      "never_chained_into": [
+        "archive_table"
+      ],
+      "validated_in_isolation": [
+        "Capacity about 240 flat facts per vector",
+        "Whitening beats embedding crosstalk",
+        "Nested structure collapses capacity fast"
+      ],
+      "constraints": [
+        "NOT yet justified: must pass the rung-1 coupling test before any production code.",
+        "Lives in its OWN store, one BLOB.",
+        "MUST NEVER be chained into the Archive.",
+        "Disposable cache, never the system of record.",
+        "Confidence floor: any decode below a cosine threshold returns UNSURE, never a guess (no-fake-data law). Threshold value not stated."
+      ],
+      "representation": {
+        "status": "UNDECIDED",
+        "options": [
+          "binary/bipolar (~1.25KB)",
+          "real-valued FHRR (~40KB)"
+        ]
+      },
+      "risks": [
+        "Coupling unproven (the kill-shot): if the LLM does not reason better over the VSA-decoded state, the organ is abandoned.",
+        "Whitening cold-start: crosstalk is worst when memory is newest; who refits the covariance is unresolved.",
+        "Soft-failure fabrication: a bad decode can look plausible; mitigated by the confidence floor (UNSURE below threshold).",
+        "Attribution blur: superposition loses provenance, so it can only be a disposable cache.",
+        "Representation and size undecided (binary/bipolar ~1.25KB vs FHRR ~40KB)."
+      ],
+      "notes": "PROPOSED and UNPROVEN. Isolation results above do not establish that it helps the LLM. Fed by the LLM's embeddings (sign-quantized). The uses edge to llm_embeddings is as stated; which model or embedding source is not stated. The dreamer is expected to distill INTO it (see consolidation_reflection_daemon). Its store's repo location and lives_in are not stated, so none is recorded. No edge to the archive by design: it must never be chained into it."
+    },
+    "rung1_coupling_test": {
+      "name": "Rung-1 coupling test",
+      "path": "harness being written; runs on a GPU/Colab with a small open model",
+      "kind": "experiment",
+      "purpose": "Gate experiment: does an LLM reason better over a VSA-decoded working state than over (b) a plain-text scratchpad or (c) RAG? If not, the organ is abandoned.",
+      "uses": [
+        "belief_state_organ"
+      ],
+      "used_by": [],
+      "gates": [
+        "belief_state_organ",
+        "consolidation_reflection_daemon"
+      ],
+      "status": "in-progress",
+      "notes": "Harness is being written; no result yet. Uses edge means it exercises the organ as the system under test. Which small open model is not stated. Baseline (c) RAG is not tied to any existing node (no edge to llama_index inferred). Outcome decides whether the organ lives and may shift the dreamer's design."
+    },
+    "llm_embeddings": {
+      "name": "LLM embeddings",
+      "path": "not stated",
+      "kind": "api",
+      "purpose": "The LLM's embeddings, sign-quantized, as the input to the belief-state organ.",
+      "uses": [],
+      "used_by": [
+        "belief_state_organ"
+      ],
+      "status": "not stated",
+      "notes": "Added in v4 only as the target of belief_state_organ's stated dependency, so the edge resolves. Which model, where it runs and its repo location are not stated. No relation to llama_index or the on-device target is inferred."
+    }
+  },
+  "decisions": [
+    {
+      "id": "D1",
+      "decision": "#3b durable archive store (archive_table) is GREEN-LIT and being built now by Cairn; valid regardless of rung-1.",
+      "affects": [
+        "archive_table"
+      ]
+    },
+    {
+      "id": "D2",
+      "decision": "The dreamer (consolidation_reflection_daemon) is HELD until rung-1 resolves; its design may shift.",
+      "affects": [
+        "consolidation_reflection_daemon",
+        "rung1_coupling_test"
+      ]
+    },
+    {
+      "id": "D3",
+      "decision": "Confidence floor: any belief-state decode below a cosine threshold returns UNSURE, never a guess (no-fake-data law). Threshold value not set.",
+      "affects": [
+        "belief_state_organ"
+      ]
+    },
+    {
+      "id": "D4",
+      "decision": "belief_state_organ lives in its own store (one BLOB), is never chained into the Archive, and is a disposable cache, not a system of record.",
+      "affects": [
+        "belief_state_organ",
+        "archive_table"
+      ]
+    },
+    {
+      "id": "D5",
+      "decision": "No production code for belief_state_organ until rung1_coupling_test passes.",
+      "affects": [
+        "belief_state_organ",
+        "rung1_coupling_test"
+      ]
+    }
+  ],
+  "changelog_v4": [
+    "Added belief_state_organ (proposed, unproven), rung1_coupling_test (in-progress), llm_embeddings (stub dependency target).",
+    "archive_table: planned -> building (green-lit).",
+    "consolidation_reflection_daemon: planned -> held; direction corrected (archive is source, not sink); planned edges to archive_table and belief_state_organ.",
+    "Added top-level decisions list; added risks to belief_state_organ."
+  ]
+}
