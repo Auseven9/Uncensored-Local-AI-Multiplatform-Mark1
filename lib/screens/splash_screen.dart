@@ -10,6 +10,9 @@ import '../services/local_api_server_service.dart';
 import '../services/wakelock_service.dart';
 import '../services/log_service.dart';
 import '../services/background_optimizer_service.dart';
+import '../core/memory/eidetic_memory_engine.dart';
+import '../services/system_health_monitor.dart';
+import '../core/params/parameters_service.dart';
 import '../routes/app_routes.dart';
 
 class SplashScreen extends StatefulWidget {
@@ -36,6 +39,15 @@ class _SplashScreenState extends State<SplashScreen> {
       setState(() => _status = 'Setting up storage...');
       log.info('Initializing storage...', source: 'Splash');
       await Get.find<ChatStorageService>().init();
+      Get.find<ParametersService>().init();
+
+      setState(() => _status = 'Opening Eidetic memory...');
+      log.info('Opening Eidetic memory...', source: 'Splash');
+      await Get.find<EideticMemoryEngine>().init();
+      // CI smoke marker: the storage/DB layer (the part that crashed on Android
+      // when WAL was set via execute) opened cleanly. The emulator smoke test
+      // asserts this line appears and no DatabaseException does.
+      debugPrint('AETHER_SMOKE_DB_OK');
 
       setState(() => _status = 'Loading model catalog...');
       log.info('Loading model catalog...', source: 'Splash');
@@ -53,6 +65,9 @@ class _SplashScreenState extends State<SplashScreen> {
       log.info('Setting up background services...', source: 'Splash');
       await Get.find<WakelockService>().init();
 
+      // Start health monitoring + run arming checks now that services exist.
+      Get.find<SystemHealthMonitor>().start();
+
       setState(() => _status = 'Ready!');
       log.info('All services initialized successfully', source: 'Splash');
       await Future.delayed(const Duration(milliseconds: 500));
@@ -62,8 +77,10 @@ class _SplashScreenState extends State<SplashScreen> {
         await BackgroundOptimizerService.checkAndPrompt(context);
       }
 
+      debugPrint('AETHER_SMOKE_OK');
       Get.offAllNamed(AppRoutes.home);
     } catch (e) {
+      debugPrint('AETHER_SMOKE_FAIL: $e');
       setState(() => _status = 'Error: $e');
       try {
         Get.find<LogService>().error('Init failed: $e', source: 'Splash');

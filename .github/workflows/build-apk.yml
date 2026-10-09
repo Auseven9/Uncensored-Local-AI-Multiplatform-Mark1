@@ -3,12 +3,14 @@ name: Build APK (Spanish Translation)
 on:
   workflow_dispatch:
   push:
-    branches: [ main, spanish-translation, traduccion-al-espanol ]
+    branches: [ main, spanish-translation, traduccion-al-espanol, claude/eidetic-local-ai-dojo-shdbx2 ]
 
+# Three independent jobs. `build` always uploads the shipping APK, so a flaky
+# emulator or a failing test never blocks getting an artifact. `test` and
+# `smoke` provide real red/green signals on top of that.
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -42,3 +44,86 @@ jobs:
           name: app-arm64-v8a-release-spanish
           path: build/app/outputs/flutter-apk/*.apk
           if-no-files-found: warn
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Java JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      # Informational for now: the codebase predates CI analysis, so this
+      # surfaces issues without gating. Tighten to a hard gate once clean.
+      - name: Analyze (informational)
+        continue-on-error: true
+        run: flutter analyze
+
+      - name: Unit tests
+        run: flutter test
+
+  smoke-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Gating: proven to run this app to DB-init on an x86_64 emulator (run #12).
+    # This is the Android-runtime guard the WAL startup crash showed we needed —
+    # it catches init crashes that only reproduce on real Android SQLite. If it
+    # turns out flaky over time, downgrade to continue-on-error rather than
+    # deleting it.
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Java JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      # Debug x86_64 build so it installs on a fast (KVM) x86_64 emulator. This
+      # verifies the app boots far enough to open the storage layer — the class
+      # of failure the WAL PRAGMA crash belonged to, which only reproduces on a
+      # real Android SQLite (not FFI/desktop).
+      - name: Build debug APK (x86_64 for emulator)
+        run: flutter build apk --debug --target-platform android-x64
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: DB-init smoke test on Android emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-snapshot -no-window -gpu swiftshader_indirect -no-boot-anim -camera-back none
+          # A standalone script — the runner executes an inline `script:` line by
+          # line, which breaks multi-line shell (see .github/scripts/smoke_check.sh).
+          script: bash .github/scripts/smoke_check.sh

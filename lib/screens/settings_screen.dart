@@ -3,6 +3,10 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
 import '../theme/app_colors.dart';
+import '../core/app_version.dart';
+import '../core/diagnostics/gpu_pentest.dart';
+import '../core/diagnostics/gpu_trial.dart';
+import 'autopilot_screen.dart';
 import '../controllers/chat_controller.dart';
 import '../controllers/theme_controller.dart';
 import '../controllers/model_controller.dart';
@@ -10,6 +14,9 @@ import '../services/local_api_server_service.dart';
 import '../services/model_manager.dart';
 import '../services/background_optimizer_service.dart';
 import '../services/chat_storage_service.dart';
+import '../services/embedding_service.dart';
+import '../services/llm_service.dart';
+import '../core/memory/memory_service.dart';
 
 class SettingsScreen extends StatelessWidget {
   /// When true, no Scaffold — just the body content for embedding in tabs.
@@ -281,6 +288,20 @@ class _SettingsBody extends StatelessWidget {
               _sectionHeader(context, 'Hardware Configuration'),
               const SizedBox(height: 8),
               _HardwareSettingsCard(storage: storage),
+
+              const SizedBox(height: 28),
+
+              // ── Performance / Speed ─────────────────────────────
+              _sectionHeader(context, 'Performance / Speed'),
+              const SizedBox(height: 8),
+              _PerformanceSettingsCard(storage: storage),
+
+              const SizedBox(height: 28),
+
+              // ── Meaning-based Memory (Embeddings) ───────────────
+              _sectionHeader(context, 'Meaning-based Memory'),
+              const SizedBox(height: 8),
+              _EmbeddingSettingsCard(storage: storage),
 
               const SizedBox(height: 28),
 
@@ -654,12 +675,17 @@ class _SettingsBody extends StatelessWidget {
               Center(
                 child: Column(
                   children: [
-                    Text(
-                      'Uncensored Local AI v2.0.0',
-                      style: TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w500,
-                        color: context.textM,
+                    // Long-press the version to open the Autopilot self-test
+                    // harness (a hidden dev tool).
+                    GestureDetector(
+                      onLongPress: () => Get.to(() => const AutopilotScreen()),
+                      child: Text(
+                        'Uncensored Local AI v$kAppVersion',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w500,
+                          color: context.textM,
+                        ),
                       ),
                     ),
                     const SizedBox(height: 4),
@@ -670,6 +696,135 @@ class _SettingsBody extends StatelessWidget {
                   ],
                 ),
               ),
+              const SizedBox(height: 28),
+
+              // ── Eidetic Dojo ──────────────────────────────
+              _sectionHeader(context, 'Eidetic Dojo'),
+              const SizedBox(height: 8),
+              _card(
+                context,
+                child: ListTile(
+                  leading: Container(
+                    width: 36,
+                    height: 36,
+                    decoration: BoxDecoration(
+                      color: AppColors.custom.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Icon(Icons.memory_rounded,
+                        size: 18, color: AppColors.custom),
+                  ),
+                  title: Text(
+                    'Memory',
+                    style: TextStyle(color: context.text, fontSize: 14),
+                  ),
+                  subtitle: Text(
+                    'View & edit every memory · see remember/recall calls',
+                    style: TextStyle(color: context.textD, fontSize: 12),
+                  ),
+                  trailing: Icon(Icons.arrow_forward_ios_rounded,
+                      size: 14, color: context.textD),
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 4,
+                  ),
+                  onTap: () => Get.toNamed('/memory'),
+                ),
+              ),
+              const SizedBox(height: 12),
+              _card(
+                context,
+                child: ListTile(
+                  leading: Container(
+                    width: 36,
+                    height: 36,
+                    decoration: BoxDecoration(
+                      color: AppColors.orange.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Icon(Icons.tune_rounded,
+                        size: 18, color: AppColors.orange),
+                  ),
+                  title: Text(
+                    'Parameters',
+                    style: TextStyle(color: context.text, fontSize: 14),
+                  ),
+                  subtitle: Text(
+                    'Adjust every AETHER tunable',
+                    style: TextStyle(color: context.textD, fontSize: 12),
+                  ),
+                  trailing: Icon(Icons.arrow_forward_ios_rounded,
+                      size: 14, color: context.textD),
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 4,
+                  ),
+                  onTap: () => Get.toNamed('/parameters'),
+                ),
+              ),
+              const SizedBox(height: 12),
+              _card(
+                context,
+                child: ListTile(
+                  leading: Container(
+                    width: 36,
+                    height: 36,
+                    decoration: BoxDecoration(
+                      color: AppColors.accent.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Icon(Icons.forum_outlined,
+                        size: 18, color: AppColors.accent),
+                  ),
+                  title: Text(
+                    'Debate Arena',
+                    style: TextStyle(color: context.text, fontSize: 14),
+                  ),
+                  subtitle: Text(
+                    'Watch two AI personas debate a topic',
+                    style: TextStyle(color: context.textD, fontSize: 12),
+                  ),
+                  trailing: Icon(Icons.arrow_forward_ios_rounded,
+                      size: 14, color: context.textD),
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 4,
+                  ),
+                  onTap: () => Get.toNamed('/arena'),
+                ),
+              ),
+              const SizedBox(height: 12),
+              _card(
+                context,
+                child: ListTile(
+                  leading: Container(
+                    width: 36,
+                    height: 36,
+                    decoration: BoxDecoration(
+                      color: AppColors.custom.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Icon(Icons.psychology_rounded,
+                        size: 18, color: AppColors.custom),
+                  ),
+                  title: Text(
+                    'Introspection Dojo',
+                    style: TextStyle(color: context.text, fontSize: 14),
+                  ),
+                  subtitle: Text(
+                    'Consolidate memory into durable long-term facts',
+                    style: TextStyle(color: context.textD, fontSize: 12),
+                  ),
+                  trailing: Icon(Icons.arrow_forward_ios_rounded,
+                      size: 14, color: context.textD),
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 4,
+                  ),
+                  onTap: () => Get.toNamed('/introspection'),
+                ),
+              ),
+
               const SizedBox(height: 28),
 
               // ── App Logs ──────────────────────────────────
@@ -769,7 +924,29 @@ class _HardwareSettingsCard extends StatefulWidget {
 class _HardwareSettingsCardState extends State<_HardwareSettingsCard> {
   late String _backend;
   late double _gpuLayers;
+  late int _contextSize;
+  late final TextEditingController _ctxController;
   bool _showManual = false;
+
+  // GPU self-test results.
+  List<String>? _gpuDevices;
+  bool _gpuProbing = false;
+  String? _gpuProbeError;
+
+  Future<void> _detectGpu() async {
+    setState(() {
+      _gpuProbing = true;
+      _gpuProbeError = null;
+    });
+    try {
+      final lines = await Get.find<LlmService>().probeGpuDeviceLines();
+      setState(() => _gpuDevices = lines);
+    } catch (e) {
+      setState(() => _gpuProbeError = e.toString());
+    } finally {
+      if (mounted) setState(() => _gpuProbing = false);
+    }
+  }
 
   // Auto-detect the best backend and GPU layers for this device
   static Map<String, dynamic> _detectBestConfig() {
@@ -782,11 +959,18 @@ class _HardwareSettingsCardState extends State<_HardwareSettingsCard> {
     final cores = Platform.numberOfProcessors;
     
     if (cores >= 8) {
-      // High-end device (e.g. Snapdragon 8 Gen 2+, Dimensity 9000+)
+      // High-end device (e.g. Snapdragon 8 Gen 2+, Dimensity 9000+). Recommend
+      // Vulkan — the GPU backend most builds actually ship — not OpenCL, which
+      // needs a native bundle compiled with the Adreno OpenCL backend and will
+      // silently fall back to CPU if it isn't present. "Apply" probes the real
+      // device and upgrades to OpenCL automatically when the build has it.
       return {
-        'backend': 'opencl',
-        'gpuLayers': 33,
-        'reason': 'OpenCL GPU — best for high-end SoC ($cores cores detected)',
+        'backend': 'vulkan',
+        'gpuLayers': 1,
+        'reason': 'GPU available on this SoC ($cores cores). Tap Apply — it '
+            'uses your GPU pen-test best if you\'ve measured one, else starts '
+            'LOW (full offload is often slower than a few layers on a phone). '
+            'Run the GPU pen test for the exact fastest config.',
       };
     } else if (cores >= 6) {
       // Mid-range device
@@ -810,21 +994,113 @@ class _HardwareSettingsCardState extends State<_HardwareSettingsCard> {
     super.initState();
     _backend = widget.storage.backendType;
     _gpuLayers = widget.storage.gpuLayers.toDouble();
+    _contextSize = widget.storage.contextSize;
+    _ctxController = TextEditingController(
+        text: _contextSize == 0 ? '' : _contextSize.toString());
   }
 
-  void _applyAutoConfig() {
-    final config = _detectBestConfig();
+  @override
+  void dispose() {
+    _ctxController.dispose();
+    super.dispose();
+  }
+
+  void _saveContextSize(String raw) {
+    final parsed = int.tryParse(raw.trim());
+    final val = (parsed == null || parsed < 0) ? 0 : parsed;
+    setState(() => _contextSize = val);
+    widget.storage.contextSize = val;
+  }
+
+  Future<void> _applyAutoConfig() async {
+    // 1) Prefer the GPU pen test's MEASURED best for this exact device, if it
+    //    has run. This beats any heuristic: on a shared-memory mobile GPU the
+    //    fastest config is often a LOW layer count, not full offload (measured
+    //    on Adreno: vulkan ×1 ≫ vulkan ×99).
+    try {
+      final pt = GpuPenTest(Get.find<LlmService>());
+      await pt.load();
+      final best = pt.bestOk;
+      if (best != null) {
+        final backend = best.backend.label; // 'vulkan' | 'opencl'
+        final layers = best.layers;
+        widget.storage.backendType = backend;
+        widget.storage.gpuLayers = layers;
+        if (!mounted) return;
+        setState(() {
+          _backend = backend;
+          _gpuLayers = layers.toDouble();
+        });
+        Get.snackbar(
+          'Applied measured best',
+          '$backend ×$layers · ${best.tps.toStringAsFixed(2)} t/s '
+              '(from the GPU pen test). Reload the model.',
+          snackPosition: SnackPosition.BOTTOM,
+          duration: const Duration(seconds: 3),
+        );
+        return;
+      }
+    } catch (_) {
+      // Fall through to the heuristic below.
+    }
+
+    // 2) No measurement yet → probe-aware guess. Never recommend a backend the
+    //    build can't expose, and START LOW: full offload is frequently SLOWER
+    //    than a few layers on a shared-memory mobile GPU, so a conservative
+    //    starting point beats "99 layers" until the pen test measures the
+    //    device's real sweet spot.
+    List<String> devices = _gpuDevices ?? const [];
+    if (_gpuDevices == null) {
+      setState(() {
+        _gpuProbing = true;
+        _gpuProbeError = null;
+      });
+      try {
+        devices = await Get.find<LlmService>().probeGpuDeviceLines();
+        if (mounted) setState(() => _gpuDevices = devices);
+      } catch (e) {
+        if (mounted) setState(() => _gpuProbeError = e.toString());
+        devices = const [];
+      } finally {
+        if (mounted) setState(() => _gpuProbing = false);
+      }
+    }
+
+    final hasVulkan =
+        devices.any((l) => l.toLowerCase().startsWith('vulkan'));
+    final hasOpencl =
+        devices.any((l) => l.toLowerCase().startsWith('opencl'));
+    final hasGpu = hasVulkan || hasOpencl;
+
+    final String backend;
+    final int layers;
+    final String reason;
+    if (hasGpu) {
+      // Prefer Vulkan as the conservative starting backend (broadest support);
+      // the pen test will find whether OpenCL or a higher layer count wins.
+      backend = hasVulkan ? 'vulkan' : 'opencl';
+      layers = 1;
+      reason = '$backend GPU detected — starting LOW (1 layer). Run the GPU '
+          'pen test (dev screen) to find this device\'s fastest config, then '
+          'tap "Apply best measured". Reload the model to apply.';
+    } else {
+      backend = 'cpu';
+      layers = 0;
+      reason = 'No GPU backend available — staying on CPU.';
+    }
+
+    widget.storage.backendType = backend;
+    widget.storage.gpuLayers = layers;
+    if (!mounted) return;
     setState(() {
-      _backend = config['backend'] as String;
-      _gpuLayers = (config['gpuLayers'] as int).toDouble();
+      _backend = backend;
+      _gpuLayers = layers.toDouble();
     });
-    widget.storage.backendType = _backend;
-    widget.storage.gpuLayers = _gpuLayers.toInt();
     Get.snackbar(
       'Auto Config Applied',
-      config['reason'] as String,
+      reason,
       snackPosition: SnackPosition.BOTTOM,
-      duration: const Duration(seconds: 2),
+      duration: const Duration(seconds: 4),
     );
   }
 
@@ -926,6 +1202,210 @@ class _HardwareSettingsCardState extends State<_HardwareSettingsCard> {
             ),
           ),
 
+          const SizedBox(height: 20),
+
+          // ── GPU offload self-test ──────────────────────────────
+          // Asks the device what GPU backends it actually exposes (Vulkan /
+          // OpenCL on the Adreno), without loading a model. The honest way to
+          // know whether GPU offload is even possible here before trying it.
+          Row(
+            children: [
+              Icon(Icons.developer_board_rounded,
+                  size: 18, color: AppColors.accent),
+              const SizedBox(width: 8),
+              Text('GPU Offload',
+                  style: TextStyle(
+                      color: context.text,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600)),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'GPU offload (Vulkan / OpenCL) moves the matrix math to the Adreno '
+            'GPU. On a phone the GPU shares the same RAM as the CPU, so the win '
+            'is compute throughput, not more memory — it can be a big speed-up '
+            'or can fail/stall depending on drivers. Detect first, then try it '
+            'and watch the t/s readout.',
+            style: TextStyle(color: context.textM, fontSize: 11, height: 1.35),
+          ),
+          const SizedBox(height: 10),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: _gpuProbing ? null : _detectGpu,
+              icon: _gpuProbing
+                  ? const SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Icon(Icons.search_rounded, size: 16),
+              label: Text(_gpuProbing ? 'Detecting…' : 'Detect GPU devices'),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: AppColors.accent,
+                side: BorderSide(color: AppColors.accent.withValues(alpha: 0.5)),
+                padding: const EdgeInsets.symmetric(vertical: 11),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8)),
+              ),
+            ),
+          ),
+          if (_gpuProbeError != null) ...[
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: AppColors.red.withValues(alpha: 0.10),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: AppColors.red.withValues(alpha: 0.3)),
+              ),
+              child: Text('Probe failed: $_gpuProbeError',
+                  style: TextStyle(color: AppColors.red, fontSize: 11)),
+            ),
+          ] else if (_gpuDevices != null) ...[
+            const SizedBox(height: 8),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: context.bgInput,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: context.border),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: _gpuDevices!.isEmpty
+                    ? [
+                        Text(
+                          'No GPU devices found — this device/build is CPU-only '
+                          'for inference. Keep Compute Device on CPU.',
+                          style:
+                              TextStyle(color: context.textM, fontSize: 12),
+                        ),
+                      ]
+                    : [
+                        Text('GPU devices available:',
+                            style: TextStyle(
+                                color: context.text,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600)),
+                        const SizedBox(height: 6),
+                        for (final line in _gpuDevices!)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 3),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Icon(Icons.check_circle_outline_rounded,
+                                    size: 13, color: AppColors.accent),
+                                const SizedBox(width: 6),
+                                Expanded(
+                                  child: Text(line,
+                                      style: TextStyle(
+                                          color: context.text, fontSize: 12)),
+                                ),
+                              ],
+                            ),
+                          ),
+                        const SizedBox(height: 4),
+                        Text(
+                          'To use one: open Manual Override below, pick its '
+                          'backend, set GPU layers high, then reload the model.',
+                          style:
+                              TextStyle(color: context.textM, fontSize: 11),
+                        ),
+                      ],
+              ),
+            ),
+          ],
+
+          const SizedBox(height: 20),
+
+          // ── Context Window (always visible: it decides whether a model
+          //    even loads on this device) ──
+          Row(
+            children: [
+              Icon(Icons.memory_rounded, size: 18, color: AppColors.accent),
+              const SizedBox(width: 8),
+              Text(
+                'Context Window',
+                style: TextStyle(
+                    color: context.text,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600),
+              ),
+              const Spacer(),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                decoration: BoxDecoration(
+                  color: context.bgInput,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  _contextSize == 0 ? 'Auto (max)' : '$_contextSize tok',
+                  style:
+                      TextStyle(color: context.text, fontWeight: FontWeight.bold),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          // Quick presets — the fast way to find a value that loads.
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _buildContextPreset('2K', 2048),
+              _buildContextPreset('4K', 4096),
+              _buildContextPreset('8K', 8192),
+              _buildContextPreset('16K', 16384),
+              _buildContextPreset('32K', 32768),
+              _buildContextPreset('Auto', 0),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _ctxController,
+                  keyboardType: TextInputType.number,
+                  style: TextStyle(color: context.text, fontSize: 14),
+                  decoration: InputDecoration(
+                    hintText: 'Custom (tokens). 0 = Auto',
+                    hintStyle: TextStyle(color: context.textD, fontSize: 13),
+                    filled: true,
+                    fillColor: context.bgInput,
+                    contentPadding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide: BorderSide(color: context.border),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide: BorderSide(color: context.border),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide: BorderSide(color: AppColors.accent),
+                    ),
+                  ),
+                  onChanged: _saveContextSize,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Larger = more memory + longer history, but more RAM. On CPU the '
+            'whole context lives in RAM, so too high a value crashes the model '
+            'at load — raise it in steps and reload. 4K is a safe default; Auto '
+            'uses the model\'s full ceiling (largest, most likely to be killed '
+            'for memory). Reload the model after changing.',
+            style: TextStyle(color: context.textD, fontSize: 11, height: 1.4),
+          ),
+
           const SizedBox(height: 16),
 
           // ── Manual Override Toggle ──
@@ -957,6 +1437,16 @@ class _HardwareSettingsCardState extends State<_HardwareSettingsCard> {
 
           if (_showManual) ...[
             const SizedBox(height: 12),
+            Text(
+              'Compute backend — where the model runs:\n'
+              '• CPU — most compatible, uses the processor cores. Default.\n'
+              '• Vulkan — Adreno GPU via the cross-platform Vulkan driver.\n'
+              '• OpenCL — Adreno GPU via Qualcomm\'s native compute path '
+              '(often the fastest on Snapdragon, when it works).\n'
+              'Use "Detect GPU devices" above to see what this phone supports.',
+              style: TextStyle(color: context.textM, fontSize: 11, height: 1.4),
+            ),
+            const SizedBox(height: 10),
             Row(
               children: [
                 _buildBackendButton('CPU', 'cpu'),
@@ -1003,11 +1493,48 @@ class _HardwareSettingsCardState extends State<_HardwareSettingsCard> {
               ),
             ),
             Text(
-              'If the app crashes when loading a model, reduce GPU layers or switch to CPU. Reload the model after changing settings.',
+              'GPU Layers — how many of the model\'s transformer layers run on '
+              'the GPU instead of the CPU (only applies with a GPU backend). A '
+              'typical 4B model has ~34 layers; set it at or above that to '
+              'offload the whole model, or lower to split work with the CPU if '
+              'GPU memory is tight. If the app crashes or stalls on load, reduce '
+              'this or switch to CPU. Reload the model after changing settings.',
               style: TextStyle(color: context.textD, fontSize: 11, height: 1.4),
             ),
           ],
         ],
+      ),
+    );
+  }
+
+  Widget _buildContextPreset(String label, int value) {
+    final selected = _contextSize == value;
+    return InkWell(
+      onTap: () {
+        setState(() {
+          _contextSize = value;
+          _ctxController.text = value == 0 ? '' : value.toString();
+        });
+        widget.storage.contextSize = value;
+      },
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          color: selected ? AppColors.accent : context.bgInput,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: selected ? AppColors.accent : context.border,
+          ),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: selected ? Colors.white : context.text,
+            fontSize: 12,
+            fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+          ),
+        ),
       ),
     );
   }
@@ -1040,6 +1567,422 @@ class _HardwareSettingsCardState extends State<_HardwareSettingsCard> {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Selects and loads the embedding model that powers meaning-based recall
+/// (Phase 2b). Opt-in: recall works on keyword + graph seeding until a model
+/// is loaded here.
+/// Speed-tuning knobs backed by llamadart 0.8.24 ModelParams / GenerationParams.
+/// All safe: defaults preserve current behaviour, and each change applies on
+/// the next model load. The chat's live t/s readout is the measurement tool.
+class _PerformanceSettingsCard extends StatefulWidget {
+  final ChatStorageService storage;
+
+  const _PerformanceSettingsCard({required this.storage});
+
+  @override
+  State<_PerformanceSettingsCard> createState() =>
+      _PerformanceSettingsCardState();
+}
+
+class _PerformanceSettingsCardState extends State<_PerformanceSettingsCard> {
+  ChatStorageService get _s => widget.storage;
+
+  Widget _label(String text, String help) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(text,
+            style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: context.text)),
+        const SizedBox(height: 2),
+        Text(help, style: TextStyle(fontSize: 11, color: context.textM)),
+      ],
+    );
+  }
+
+  Widget _seg<T>(List<(T, String)> options, T current, ValueChanged<T> onPick) {
+    return Wrap(
+      spacing: 6,
+      runSpacing: 6,
+      children: [
+        for (final (value, text) in options)
+          GestureDetector(
+            onTap: () => onPick(value),
+            child: Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+              decoration: BoxDecoration(
+                color: value == current
+                    ? AppColors.accent.withValues(alpha: 0.16)
+                    : context.bgInput,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: value == current
+                      ? AppColors.accent
+                      : context.border,
+                  width: value == current ? 1.2 : 0.7,
+                ),
+              ),
+              child: Text(
+                text,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight:
+                      value == current ? FontWeight.w700 : FontWeight.w500,
+                  color: value == current ? AppColors.accent : context.textM,
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _row(String title, String help, Widget control) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _label(title, help),
+          const SizedBox(height: 8),
+          control,
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+      decoration: BoxDecoration(
+        color: context.bgPanel,
+        border: Border.all(color: context.border),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.speed_rounded, size: 16, color: AppColors.accent),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  'Reload the model after changing these. Compare with the live '
+                  't/s readout in chat.',
+                  style: TextStyle(fontSize: 11, color: context.textM),
+                ),
+              ),
+            ],
+          ),
+          const Divider(height: 22),
+
+          // CPU threads (0 = auto → big-core estimate).
+          _row(
+            'CPU threads',
+            'Pin decode to the fast cores. 6 suits an 8-core flagship; Auto lets '
+                'the engine choose.',
+            _seg<int>(
+              const [(0, 'Auto'), (4, '4'), (6, '6'), (8, '8')],
+              _s.cpuThreads,
+              (v) => setState(() => _s.cpuThreads = v),
+            ),
+          ),
+
+          // Flash attention.
+          _row(
+            'Flash attention',
+            'Tiled attention → faster first token. Auto lets llamadart decide.',
+            _seg<String>(
+              const [('auto', 'Auto'), ('on', 'On'), ('off', 'Off')],
+              _s.flashAttention,
+              (v) => setState(() => _s.flashAttention = v),
+            ),
+          ),
+
+          // KV cache quantization.
+          _row(
+            'KV cache precision',
+            'q8_0 ≈ half the KV memory bandwidth (faster decode); q4_0 ≈ a '
+                'quarter. Non-f16 turns flash attention on automatically.',
+            _seg<String>(
+              const [('f16', 'f16'), ('q8_0', 'q8_0'), ('q4_0', 'q4_0')],
+              _s.kvCacheType,
+              (v) => setState(() => _s.kvCacheType = v),
+            ),
+          ),
+
+          // Batch alignment (sets n_batch + n_ubatch together).
+          _row(
+            'Batch size',
+            'Auto uses llama.cpp defaults. 512 aligns matmuls to the Snapdragon '
+                '8 Gen 3 cache.',
+            _seg<int>(
+              const [(0, 'Auto'), (512, '512')],
+              _s.batchSize == 512 ? 512 : 0,
+              (v) => setState(() {
+                _s.batchSize = v;
+                _s.microBatchSize = v == 0 ? 0 : 512;
+              }),
+            ),
+          ),
+
+          const Divider(height: 22),
+
+          // N-gram speculative decoding (per-generation).
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            dense: true,
+            value: _s.speculativeNgram,
+            activeColor: AppColors.accent,
+            onChanged: (v) => setState(() => _s.speculativeNgram = v),
+            title: Text('N-gram speculative decoding',
+                style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: context.text)),
+            subtitle: Text(
+              'Drafts tokens from history for a speedup on repetitive/structured '
+              'replies. No extra model or RAM. Applies to the next reply.',
+              style: TextStyle(fontSize: 11, color: context.textM),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _EmbeddingSettingsCard extends StatefulWidget {
+  final ChatStorageService storage;
+
+  const _EmbeddingSettingsCard({required this.storage});
+
+  @override
+  State<_EmbeddingSettingsCard> createState() => _EmbeddingSettingsCardState();
+}
+
+class _EmbeddingSettingsCardState extends State<_EmbeddingSettingsCard> {
+  EmbeddingService get _emb => Get.find<EmbeddingService>();
+  ModelManager get _models => Get.find<ModelManager>();
+
+  late bool _enabled;
+  String? _selected;
+
+  @override
+  void initState() {
+    super.initState();
+    _enabled = widget.storage.embeddingsEnabled;
+    final fn = widget.storage.embeddingModelFilename;
+    _selected = fn.isEmpty ? null : fn;
+  }
+
+  Future<void> _loadSelected() async {
+    final fn = _selected;
+    if (fn == null || fn.isEmpty) return;
+    // Never load the second (embedding) engine while the chat model is
+    // generating — two concurrent native engines crash the process.
+    try {
+      if (Get.find<LlmService>().isGenerating.value) {
+        Get.snackbar(
+          'Chat is busy',
+          'Wait for the current reply to finish before loading the embedding model.',
+          snackPosition: SnackPosition.BOTTOM,
+          duration: const Duration(seconds: 3),
+        );
+        return;
+      }
+    } catch (_) {}
+    final path = _models.getModelPathByFilename(fn);
+    final ok = await _emb.load(path);
+    Get.snackbar(
+      ok ? 'Embedding model loaded' : 'Load failed',
+      ok ? fn : (_emb.lastError.value ?? 'Unknown error'),
+      snackPosition: SnackPosition.BOTTOM,
+      duration: const Duration(seconds: 3),
+    );
+
+    // Now that the embedder is loaded (and the chat model is idle), index any
+    // existing memories that don't have an embedding yet — so meaning-based
+    // recall can actually match the back catalogue instead of waiting for
+    // future consolidations. Best-effort and off the UI thread; the recall
+    // chips' "idx N" reflects progress.
+    if (ok) {
+      try {
+        final mem = Get.find<MemoryService>();
+        final added = await mem.backfillEmbeddings();
+        if (added > 0) {
+          Get.snackbar(
+            'Meaning index built',
+            'Embedded $added memory item(s) for meaning-based recall.',
+            snackPosition: SnackPosition.BOTTOM,
+            duration: const Duration(seconds: 3),
+          );
+        }
+      } catch (_) {}
+    }
+  }
+
+  Future<void> _onToggle(bool value) async {
+    setState(() => _enabled = value);
+    widget.storage.embeddingsEnabled = value;
+    // Enabling only allows recall to USE an embedder — it does NOT auto-load
+    // one. Loading spins up a second native engine, which must happen only by
+    // explicit action below (and only while chat is idle). Disabling unloads.
+    if (!value) await _emb.unload();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: context.bgPanel,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: context.border),
+      ),
+      padding: const EdgeInsets.all(16),
+      child: Obx(() {
+        final downloaded = _models.downloadedModels.toList();
+        final ready = _emb.isReady.value;
+        final dim = _emb.dimensions;
+        final err = _emb.lastError.value;
+        final value = downloaded.contains(_selected) ? _selected : null;
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.hub_rounded, size: 18, color: AppColors.accent),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Meaning-based recall',
+                    style: TextStyle(
+                        color: context.text,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600),
+                  ),
+                ),
+                Switch(
+                  value: _enabled,
+                  activeColor: AppColors.accent,
+                  onChanged: _onToggle,
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Recalls memories by meaning, not just keywords, using a small '
+              'embedding model loaded alongside the chat model. Off = recall '
+              'runs on keyword + graph only.',
+              style: TextStyle(color: context.textM, fontSize: 12),
+            ),
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Colors.orangeAccent.withValues(alpha: 0.10),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(
+                'Experimental. Loads a second model into memory — on some '
+                'devices this can close the app. Load it only while not '
+                'chatting; if the app closes on load, leave this off — recall '
+                'still works fully on keyword + graph.',
+                style: TextStyle(
+                    color: context.textM, fontSize: 11, height: 1.35),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text('Embedding model',
+                style: TextStyle(color: context.text, fontSize: 13)),
+            const SizedBox(height: 6),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              decoration: BoxDecoration(
+                color: context.bgInput,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: context.border),
+              ),
+              child: downloaded.isEmpty
+                  ? Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      child: Text(
+                        'No models downloaded. Add a small embedding GGUF '
+                        '(e.g. nomic-embed-text) on the Models screen first.',
+                        style: TextStyle(color: context.textD, fontSize: 12),
+                      ),
+                    )
+                  : DropdownButtonHideUnderline(
+                      child: DropdownButton<String>(
+                        isExpanded: true,
+                        value: value,
+                        hint: Text('Select a model',
+                            style: TextStyle(
+                                color: context.textD, fontSize: 13)),
+                        dropdownColor: context.bgPanel,
+                        style: TextStyle(color: context.text, fontSize: 13),
+                        items: [
+                          for (final m in downloaded)
+                            DropdownMenuItem(value: m, child: Text(m)),
+                        ],
+                        onChanged: (v) {
+                          setState(() => _selected = v);
+                          widget.storage.embeddingModelFilename = v ?? '';
+                        },
+                      ),
+                    ),
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                ElevatedButton.icon(
+                  onPressed: value == null ? null : _loadSelected,
+                  icon: const Icon(Icons.download_done_rounded, size: 16),
+                  label: Text(ready ? 'Reload' : 'Load model'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.accent,
+                    foregroundColor: Colors.white,
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8)),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    ready
+                        ? '● Ready${dim > 0 ? ' · $dim-dim' : ''}'
+                        : (err != null ? '● Error' : '○ Not loaded'),
+                    style: TextStyle(
+                      color: ready
+                          ? Colors.green
+                          : (err != null ? Colors.redAccent : context.textD),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            if (err != null && !ready) ...[
+              const SizedBox(height: 6),
+              Text(err,
+                  style: TextStyle(color: context.textD, fontSize: 11),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis),
+            ],
+          ],
+        );
+      }),
     );
   }
 }

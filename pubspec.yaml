@@ -1,7 +1,7 @@
 name: portable_ai_flutter
 description: "Portable AI — Run uncensored local LLMs natively on any device."
 publish_to: 'none'
-version: 1.1.0+2
+version: 3.16.0-beta+35
 
 environment:
   sdk: ^3.11.4
@@ -11,7 +11,10 @@ dependencies:
     sdk: flutter
 
   # ── LLM Engine ──────────────────────────────────────────────────
-  llamadart: ^0.6.10
+  # 0.8.x adds GBNF grammar-constrained sampling (GenerationParams.grammar),
+  # used by the Eidetic tool/JSON grammar path. Pinned <0.9.0 to the API
+  # verified against this app's call sites.
+  llamadart: ^0.8.24
 
   # ── State Management ────────────────────────────────────────────
   get: ^4.7.2                      # GetX - controllers, routing, state
@@ -19,6 +22,16 @@ dependencies:
   # ── Local Storage ───────────────────────────────────────────────
   hive_flutter: ^1.1.0             # Hive with Flutter init helpers
   hive: ^2.2.3                     # Hive core key-value + box storage
+
+  # ── Eidetic Memory (SQLite ledger) ──────────────────────────────
+  sqflite: ^2.3.0                  # SQLite ledger on Android/iOS/macOS
+  sqflite_common_ffi: ^2.3.3       # SQLite via FFI on Linux/Windows + unit tests
+
+  # ── Integrity (Archive hash chain) ─────────────────────────────
+  # Pure-Dart SHA-256 (official dart.dev package, no native code) for the
+  # append-only, tamper-evident Archive chain. Already resolved transitively;
+  # promoted to a direct dependency now that the Archive uses it.
+  crypto: ^3.0.0
 
   # ── Networking / Downloads ──────────────────────────────────────
   http: ^1.2.2                     # HTTP requests + model downloading
@@ -35,10 +48,22 @@ dependencies:
   flutter_animate: ^4.5.0          # Micro-animations
   cupertino_icons: ^1.0.8
 
+  # ── Monitor tab: live camera preview (Vision card) ──
+  # Camera2-backed CameraPreview. On-device/offline: it opens the local
+  # camera sensor directly, no network. Plugin internals are native (Kotlin
+  # Camera2 + a platform Texture) — no WebView/HTML/JS.
+  camera: ^0.11.0
+
   # ── Background / Wake Lock ─────────────────────────────────────
   wakelock_plus: ^1.2.10             # Keep screen on during downloads
   flutter_foreground_task: ^9.2.2    # Foreground service for downloads/inference
   disable_battery_optimization: ^1.1.1 # Guide users to disable battery optimization
+
+  # ── Monitor tab ─────────────────────────────────────────────────
+  # The full sensor/telemetry suite streams natively over the Kotlin
+  # `aether/stream` EventChannel (see MainActivity.kt) — no sensor plugins.
+  # Every value is a real hardware reading or an exact derivation of one;
+  # anything unavailable is reported as "no socket", never simulated.
 
 dev_dependencies:
   flutter_test:
@@ -55,6 +80,9 @@ hooks:
           linux-x64: [vulkan]
           windows-x64: [vulkan]
           android-arm64: [cpu, vulkan, opencl]
+          # x86_64 is only used by the CI emulator smoke test (a portable CPU
+          # backend); shipping devices are arm64. Does not affect arm64 builds.
+          android-x64: [cpu]
 
 flutter:
   uses-material-design: true

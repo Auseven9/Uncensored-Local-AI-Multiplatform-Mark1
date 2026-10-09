@@ -46,9 +46,19 @@ void main() {
     }
   });
 
-  test('init starts the localhost server by default', () async {
+  test('init does NOT auto-start the server when disabled (opt-in default)',
+      () async {
+    // local_api_server_enabled defaults to false: an offline app must not open
+    // a network socket on launch without the user opting in. init() must be a
+    // no-op for the server in that state.
+    await apiServer.init();
+    expect(apiServer.isRunning.value, isFalse);
+  });
+
+  test('init starts the server when it was previously enabled', () async {
     final port = await _freePort();
     Get.find<ChatStorageService>().localApiServerPort = port;
+    Get.find<ChatStorageService>().localApiServerEnabled = true;
 
     await apiServer.init();
 

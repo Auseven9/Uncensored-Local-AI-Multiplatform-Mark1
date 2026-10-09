@@ -1,0 +1,848 @@
+import 'dart:typed_data';
+
+import 'package:flutter/foundation.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
+import 'package:sqflite/sqflite.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+
+import 'archive_chain.dart';
+import 'eidetic_store.dart';
+import 'event_records.dart';
+import 'memory_dynamics.dart';
+import 'memory_records.dart';
+import 'procedural_records.dart';
+import 'vector_search.dart';
+
+/// Native (dart:io) factory: a SQLite-backed store. Selected via conditional
+/// import from `eidetic_store.dart`.
+EideticStore createEideticStore() => SqliteEideticStore();
+
+/// SQLite-backed [EideticStore] for Android/iOS/macOS/Linux/Windows.
+///
+/// On Linux/Windows it initialises the FFI database factory; on the other
+/// native platforms sqflite's default plugin factory is used. The database
+/// lives next to the app's documents directory as `eidetic_memory_dojo.db`.
+class SqliteEideticStore implements EideticStore {
+  /// [path] overrides the database location. Production leaves it null (the
+  /// path is derived from the app documents directory); tests pass an explicit
+  /// path — a temp file, or `inMemoryDatabasePath` — so the real SQLite open /
+  /// migrate / query path can be exercised without the path_provider plugin.
+  SqliteEideticStore({String? path}) : _pathOverride = path;
+
+  final String? _pathOverride;
+  Database? _db;
+
+  @override
+  bool get isPersistent => true;
+
+  Database get _database {
+    final db = _db;
+    if (db == null) {
+      throw StateError('EideticStore.initialize() has not completed.');
+    }
+    return db;
+  }
+
+  @override
+  Future<void> initialize() async {
+    if (_db != null) return;
+
+    // Desktop platforms need the FFI factory wired up explicitly.
+    if (defaultTargetPlatform == TargetPlatform.linux ||
+        defaultTargetPlatform == TargetPlatform.windows) {
+      sqfliteFfiInit();
+      databaseFactory = databaseFactoryFfi;
+    }
+
+    final String path;
+    if (_pathOverride != null) {
+      path = _pathOverride;
+    } else {
+      final dir = await getApplicationDocumentsDirectory();
+      path = p.join(dir.path, 'eidetic_memory_dojo.db');
+    }
+
+    _db = await openDatabase(
+      path,
+      // v2: event_log (Phase 1). v3: epistemic-graph columns + tables (Phase 2a).
+      // v4: claim_embeddings for meaning-based recall (Phase 2b).
+      // v5: identity/attribution columns on semantic_facts (Phase 5).
+      // v6: attribute slot column + open_questions table (2.0 Living Memory).
+      // v7: procedures table — procedural memory, the "how" (multi-step agent).
+      // v8: archive table — append-only, SHA-256 hash-chained ground truth.
+      version: 8,
+      onConfigure: (db) async {
+        // Write-Ahead Logging: durable, low-latency appends for the event log.
+        //
+        // `PRAGMA journal_mode=WAL` RETURNS a row (the resulting mode), so it
+        // must go through rawQuery — on Android db.execute() maps to execSQL(),
+        // which throws "Queries can be performed using ... query or rawQuery
+        // methods only." on any result-returning statement. Best-effort: if WAL
+        // can't be set we fall back to the default journal mode rather than
+        // failing app startup.
+        try {
+          await db.rawQuery('PRAGMA journal_mode=WAL;');
+        } catch (_) {}
+      },
+      onCreate: _onCreate,
+      onUpgrade: _onUpgrade,
+    );
+  }
+
+  /// Migrations for databases created by an older app version. Runs in order;
+  /// each step is idempotent-safe via CREATE TABLE IF NOT EXISTS so a partial
+  /// upgrade can be re-applied without error.
+  Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      await _createEventLog(db);
+    }
+    if (oldVersion < 3) {
+      // Upgrade semantic_facts into epistemic-graph claim nodes, and add the
+      // relation/provenance tables. ADD COLUMN with a DEFAULT back-fills every
+      // existing row, so no user data is lost.
+      await db.execute(
+          "ALTER TABLE semantic_facts ADD COLUMN salience REAL NOT NULL DEFAULT 0.5");
+      await db.execute(
+          "ALTER TABLE semantic_facts ADD COLUMN status TEXT NOT NULL DEFAULT 'active'");
+      await db.execute(
+          "ALTER TABLE semantic_facts ADD COLUMN supersedes INTEGER");
+      await _createGraphTables(db);
+    }
+    if (oldVersion < 4) {
+      // Meaning-based recall: one embedding vector per claim.
+      await _createEmbeddingsTable(db);
+    }
+    if (oldVersion < 5) {
+      // Identity/attribution: who a claim is about and whose view it is, so a
+      // user's fact can never be adopted as the agent's own. ADD COLUMN with a
+      // DEFAULT back-fills every existing row (presumed about the user, which
+      // also reframes legacy second-person facts safely) — no data lost.
+      await db.execute(
+          "ALTER TABLE semantic_facts ADD COLUMN subject TEXT NOT NULL DEFAULT ''");
+      await db.execute(
+          "ALTER TABLE semantic_facts ADD COLUMN subject_type TEXT NOT NULL DEFAULT 'user'");
+      await db.execute(
+          "ALTER TABLE semantic_facts ADD COLUMN holder TEXT NOT NULL DEFAULT 'user'");
+    }
+    if (oldVersion < 6) {
+      // Active self-curation (2.0): a slot key + bare value per claim, and a
+      // table of noticed contradictions the agent surfaces and resolves.
+      await db.execute(
+          "ALTER TABLE semantic_facts ADD COLUMN attribute TEXT NOT NULL DEFAULT ''");
+      await db.execute(
+          "ALTER TABLE semantic_facts ADD COLUMN value TEXT NOT NULL DEFAULT ''");
+      // Same slot index fresh installs get in _onCreate, so upgraded devices
+      // don't full-scan on every slot lookup.
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_facts_slot ON semantic_facts(subject, attribute)');
+      await _createOpenQuestionsTable(db);
+    }
+    if (oldVersion < 7) {
+      // Procedural memory: the agent's skills/workflows/tools/snippets — the
+      // "how", read by the multi-step agent loop. Additive; empty on upgrade.
+      await _createProceduresTable(db);
+    }
+    if (oldVersion < 8) {
+      // Archive (ALESIS ground truth): append-only, SHA-256 hash-chained ledger
+      // of every turn. Additive; empty on upgrade; nothing rewrites it.
+      await _createArchiveTable(db);
+    }
+  }
+
+  /// Procedural memory (v7): the fourth memory tier — stored skills, workflows,
+  /// tool definitions, snippets and heuristics the multi-step agent reaches for.
+  /// Created fresh in [_onCreate] and back-filled in [_onUpgrade].
+  Future<void> _createProceduresTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS procedures (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_utc TEXT NOT NULL,
+        name TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        trigger TEXT NOT NULL DEFAULT '',
+        body TEXT NOT NULL DEFAULT '',
+        params_json TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'active',
+        salience REAL NOT NULL DEFAULT 0.5,
+        confidence REAL NOT NULL DEFAULT 0.5,
+        usage_count INTEGER NOT NULL DEFAULT 0,
+        last_used_utc TEXT
+      )
+    ''');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_proc_name ON procedures(name)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_proc_kind_status ON procedures(kind, status)');
+  }
+
+  /// Open questions (2.0): contradictions the agent noticed in its own memory,
+  /// to surface to the user and resolve. Created fresh in [_onCreate] and
+  /// back-filled in [_onUpgrade].
+  Future<void> _createOpenQuestionsTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS open_questions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        subject TEXT NOT NULL,
+        attribute TEXT NOT NULL,
+        claim_ids_json TEXT NOT NULL,
+        question TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'open',
+        created_utc TEXT NOT NULL,
+        resolved_utc TEXT
+      )
+    ''');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_oq_status ON open_questions(status)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_oq_slot ON open_questions(subject, attribute)');
+  }
+
+  /// Per-claim embedding vectors (Phase 2b), stored as compact little-endian
+  /// Float32 BLOBs. Created for fresh installs in [_onCreate] and back-filled
+  /// in [_onUpgrade]. Empty on upgrade — vectors are (re)built as claims are
+  /// embedded, so no data is lost by adding it late.
+  Future<void> _createEmbeddingsTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS claim_embeddings (
+        fact_id INTEGER PRIMARY KEY,
+        dim INTEGER NOT NULL,
+        model TEXT,
+        vec BLOB NOT NULL,
+        created_utc TEXT NOT NULL
+      )
+    ''');
+  }
+
+  /// The append-only event log (Phase 1 grounding spine). Created for fresh
+  /// installs in [_onCreate] and back-filled for upgrades in [_onUpgrade].
+  Future<void> _createEventLog(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS event_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp_utc TEXT NOT NULL,
+        timestamp_millis INTEGER NOT NULL,
+        source TEXT NOT NULL,
+        type TEXT NOT NULL,
+        payload_json TEXT,
+        parent_events_json TEXT,
+        sensor_state_json TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        monotonic_ms INTEGER NOT NULL
+      )
+    ''');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_event_session ON event_log(session_id)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_event_millis ON event_log(timestamp_millis)');
+  }
+
+  /// The epistemic-graph tables (Phase 2): directed relation edges between
+  /// claims, and provenance linking a claim to the event(s) it came from.
+  /// Created for fresh installs in [_onCreate] and back-filled in [_onUpgrade].
+  Future<void> _createGraphTables(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS relation_edges (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        from_fact INTEGER NOT NULL,
+        to_fact INTEGER NOT NULL,
+        type TEXT NOT NULL,
+        weight REAL NOT NULL DEFAULT 1.0,
+        created_utc TEXT NOT NULL
+      )
+    ''');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_edge_from ON relation_edges(from_fact)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_edge_to ON relation_edges(to_fact)');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS provenance (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        fact_id INTEGER NOT NULL,
+        event_id INTEGER NOT NULL,
+        created_utc TEXT NOT NULL
+      )
+    ''');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_prov_fact ON provenance(fact_id)');
+  }
+
+  Future<void> _onCreate(Database db, int version) async {
+    await db.execute('''
+      CREATE TABLE episodic_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        timestamp_utc TEXT NOT NULL,
+        timestamp_millis INTEGER NOT NULL,
+        sequence INTEGER NOT NULL,
+        kind TEXT NOT NULL,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        metadata_json TEXT,
+        consolidated INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
+    await db.execute(
+        'CREATE INDEX idx_episodic_consolidated ON episodic_log(consolidated)');
+    await db.execute(
+        'CREATE INDEX idx_episodic_session ON episodic_log(session_id, sequence)');
+
+    await db.execute('''
+      CREATE TABLE semantic_facts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_utc TEXT NOT NULL,
+        category TEXT NOT NULL,
+        text TEXT NOT NULL,
+        source_session_id TEXT,
+        confidence REAL NOT NULL DEFAULT 0.5,
+        dedupe_hash TEXT NOT NULL UNIQUE,
+        embedding_json TEXT,
+        salience REAL NOT NULL DEFAULT 0.5,
+        status TEXT NOT NULL DEFAULT 'active',
+        supersedes INTEGER,
+        subject TEXT NOT NULL DEFAULT '',
+        subject_type TEXT NOT NULL DEFAULT 'user',
+        holder TEXT NOT NULL DEFAULT 'user',
+        attribute TEXT NOT NULL DEFAULT '',
+        value TEXT NOT NULL DEFAULT ''
+      )
+    ''');
+    await db.execute(
+        'CREATE INDEX idx_facts_category ON semantic_facts(category)');
+    await db.execute(
+        'CREATE INDEX idx_facts_slot ON semantic_facts(subject, attribute)');
+
+    await _createEventLog(db);
+    await _createGraphTables(db);
+    await _createEmbeddingsTable(db);
+    await _createOpenQuestionsTable(db);
+    await _createProceduresTable(db);
+    await _createArchiveTable(db);
+  }
+
+  /// The Archive (v8): append-only, SHA-256 hash-chained ground truth of every
+  /// turn. `seq` is the explicit 0-based chain position (PRIMARY KEY, assigned by
+  /// the engine off the current tip — not autoincrement). Nothing updates or
+  /// deletes a row except the panel's "clear all"; the chain makes any in-place
+  /// edit or middle deletion evident. Created fresh in [_onCreate], back-filled
+  /// in [_onUpgrade].
+  Future<void> _createArchiveTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS archive (
+        seq INTEGER PRIMARY KEY,
+        timestamp_utc TEXT NOT NULL,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        prev_hash TEXT NOT NULL,
+        hash TEXT NOT NULL
+      )
+    ''');
+  }
+
+  @override
+  Future<int> nextSequence(String sessionId) async {
+    final rows = await _database.rawQuery(
+      'SELECT COALESCE(MAX(sequence), 0) + 1 AS next '
+      'FROM episodic_log WHERE session_id = ?',
+      [sessionId],
+    );
+    return (rows.first['next'] as num).toInt();
+  }
+
+  @override
+  Future<int> insertEpisodic(EpisodicEntry entry) async {
+    return _database.insert('episodic_log', entry.toRow());
+  }
+
+  @override
+  Future<List<EpisodicEntry>> recentEpisodic(
+      {String? sessionId, int limit = 50}) async {
+    final rows = await _database.query(
+      'episodic_log',
+      where: sessionId == null ? null : 'session_id = ?',
+      whereArgs: sessionId == null ? null : [sessionId],
+      orderBy: 'id DESC',
+      limit: limit,
+    );
+    return rows.map(EpisodicEntry.fromRow).toList();
+  }
+
+  @override
+  Future<List<EpisodicEntry>> searchEpisodic(String query,
+      {int limit = 20, bool includeConsolidated = true}) async {
+    final tokens = tokenizeQuery(query);
+    if (tokens.isEmpty) return recentEpisodic(limit: limit);
+    final clause = tokens.map((_) => 'LOWER(content) LIKE ?').join(' OR ');
+    final args = tokens.map((t) => '%$t%').toList();
+    final where =
+        includeConsolidated ? '($clause)' : '($clause) AND consolidated = 0';
+    final rows = await _database.query(
+      'episodic_log',
+      where: where,
+      whereArgs: args,
+      orderBy: 'id DESC',
+      limit: limit,
+    );
+    return rows.map(EpisodicEntry.fromRow).toList();
+  }
+
+  @override
+  Future<List<EpisodicEntry>> pendingEpisodic({int limit = 200}) async {
+    final rows = await _database.query(
+      'episodic_log',
+      where: 'consolidated = 0',
+      orderBy: 'id ASC',
+      limit: limit,
+    );
+    return rows.map(EpisodicEntry.fromRow).toList();
+  }
+
+  @override
+  Future<int> pendingCount() async {
+    final rows = await _database
+        .rawQuery('SELECT COUNT(*) AS c FROM episodic_log WHERE consolidated = 0');
+    return (rows.first['c'] as num).toInt();
+  }
+
+  @override
+  Future<void> markConsolidated(List<int> ids) async {
+    if (ids.isEmpty) return;
+    final placeholders = List.filled(ids.length, '?').join(', ');
+    await _database.rawUpdate(
+      'UPDATE episodic_log SET consolidated = 1 WHERE id IN ($placeholders)',
+      ids,
+    );
+  }
+
+  @override
+  Future<int?> insertFact(SemanticFact fact) async {
+    final id = await _database.insert(
+      'semantic_facts',
+      fact.toRow(),
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
+    // insert() returns 0 when the row was ignored due to the UNIQUE dedupe_hash.
+    return id == 0 ? null : id;
+  }
+
+  @override
+  Future<List<SemanticFact>> searchFacts(String query, {int limit = 8}) async {
+    final tokens = tokenizeQuery(query);
+    if (tokens.isEmpty) return recentFacts(limit: limit);
+
+    final clause = tokens.map((_) => 'LOWER(text) LIKE ?').join(' OR ');
+    final args = tokens.map((t) => '%$t%').toList();
+    final rows = await _database.query(
+      'semantic_facts',
+      where: clause,
+      whereArgs: args,
+      orderBy: 'confidence DESC, created_utc DESC',
+      limit: limit,
+    );
+    return rows.map(SemanticFact.fromRow).toList();
+  }
+
+  @override
+  Future<List<SemanticFact>> recentFacts({int limit = 50}) async {
+    final rows = await _database.query(
+      'semantic_facts',
+      orderBy: 'created_utc DESC',
+      limit: limit,
+    );
+    return rows.map(SemanticFact.fromRow).toList();
+  }
+
+  @override
+  Future<int> factCount() async {
+    final rows =
+        await _database.rawQuery('SELECT COUNT(*) AS c FROM semantic_facts');
+    return (rows.first['c'] as num).toInt();
+  }
+
+  @override
+  Future<int> appendEvent(AppEvent event) async {
+    return _database.insert('event_log', event.toRow());
+  }
+
+  @override
+  Future<List<AppEvent>> recentEvents({int limit = 100}) async {
+    final rows = await _database.query(
+      'event_log',
+      orderBy: 'id DESC',
+      limit: limit,
+    );
+    return rows.map(AppEvent.fromRow).toList();
+  }
+
+  @override
+  Future<int> eventCount() async {
+    final rows =
+        await _database.rawQuery('SELECT COUNT(*) AS c FROM event_log');
+    return (rows.first['c'] as num).toInt();
+  }
+
+  // ── Archive (immutable, hash-chained ground truth — v8) ─────
+
+  ArchiveEntry _archiveFromRow(Map<String, Object?> r) => ArchiveEntry(
+        seq: (r['seq'] as num).toInt(),
+        timestampUtc: r['timestamp_utc'] as String,
+        role: r['role'] as String,
+        content: r['content'] as String,
+        prevHash: r['prev_hash'] as String,
+        hash: r['hash'] as String,
+      );
+
+  @override
+  Future<void> appendArchiveEntry(ArchiveEntry entry) async {
+    await _database.insert('archive', {
+      'seq': entry.seq,
+      'timestamp_utc': entry.timestampUtc,
+      'role': entry.role,
+      'content': entry.content,
+      'prev_hash': entry.prevHash,
+      'hash': entry.hash,
+    });
+  }
+
+  @override
+  Future<ArchiveEntry?> archiveTip() async {
+    final rows = await _database.query('archive', orderBy: 'seq DESC', limit: 1);
+    if (rows.isEmpty) return null;
+    return _archiveFromRow(rows.first);
+  }
+
+  @override
+  Future<List<ArchiveEntry>> loadArchive({int limit = 1000000}) async {
+    final rows =
+        await _database.query('archive', orderBy: 'seq ASC', limit: limit);
+    return rows.map(_archiveFromRow).toList();
+  }
+
+  @override
+  Future<int> archiveCount() async {
+    final rows = await _database.rawQuery('SELECT COUNT(*) AS c FROM archive');
+    return (rows.first['c'] as num).toInt();
+  }
+
+  // ── Epistemic graph (Phase 2) ───────────────────────────────
+
+  @override
+  Future<int> addEdge(RelationEdge edge) async {
+    return _database.insert('relation_edges', edge.toRow());
+  }
+
+  @override
+  Future<List<RelationEdge>> allEdges() async {
+    final rows = await _database.query('relation_edges');
+    return rows.map(RelationEdge.fromRow).toList();
+  }
+
+  @override
+  Future<void> addProvenance(int factId, int eventId) async {
+    await _database.insert('provenance', {
+      'fact_id': factId,
+      'event_id': eventId,
+      'created_utc': DateTime.now().toUtc().toIso8601String(),
+    });
+  }
+
+  @override
+  Future<List<SemanticFact>> factsByIds(List<int> ids) async {
+    if (ids.isEmpty) return const [];
+    final placeholders = List.filled(ids.length, '?').join(', ');
+    final rows = await _database.query(
+      'semantic_facts',
+      where: 'id IN ($placeholders)',
+      whereArgs: ids,
+    );
+    return rows.map(SemanticFact.fromRow).toList();
+  }
+
+  @override
+  Future<int> reinforceClaims(List<int> ids, {required double alpha}) async {
+    if (ids.isEmpty || alpha <= 0.0) return 0;
+    final placeholders = List.filled(ids.length, '?').join(', ');
+    final rows = await _database.query(
+      'semantic_facts',
+      columns: ['id', 'salience', 'confidence'],
+      where: 'id IN ($placeholders)',
+      whereArgs: ids,
+    );
+    if (rows.isEmpty) return 0;
+    final batch = _database.batch();
+    for (final r in rows) {
+      final id = (r['id'] as num).toInt();
+      final sal = (r['salience'] as num?)?.toDouble() ?? 0.5;
+      final conf = (r['confidence'] as num?)?.toDouble() ?? 0.5;
+      batch.update(
+        'semantic_facts',
+        {
+          'salience': reinforcedSalience(sal, alpha),
+          'confidence': reinforcedConfidence(conf, alpha),
+        },
+        where: 'id = ?',
+        whereArgs: [id],
+      );
+    }
+    await batch.commit(noResult: true);
+    return rows.length;
+  }
+
+  @override
+  Future<int> decayAllSalience({
+    required double cyclesElapsed,
+    required double tau,
+    required double beta,
+  }) async {
+    if (cyclesElapsed <= 0.0 || tau <= 0.0) return 0;
+    // SQLite has no exp(); read the small claim set and apply the pure curve in
+    // Dart, then write back only the rows that actually changed. At on-device
+    // scale (hundreds–low thousands of claims) this is a few milliseconds, and
+    // it runs off the turn path (unawaited) every N turns.
+    final rows = await _database.query(
+      'semantic_facts',
+      columns: ['id', 'salience', 'confidence'],
+      where: "status != 'superseded'",
+    );
+    if (rows.isEmpty) return 0;
+    final batch = _database.batch();
+    var n = 0;
+    for (final r in rows) {
+      final id = (r['id'] as num).toInt();
+      final sal = (r['salience'] as num?)?.toDouble() ?? 0.5;
+      final conf = (r['confidence'] as num?)?.toDouble() ?? 0.5;
+      final floor = permanenceFloor(conf, beta);
+      final ns = decayedSalience(sal,
+          cyclesElapsed: cyclesElapsed, tau: tau, floor: floor);
+      if ((ns - sal).abs() > 1e-9) {
+        batch.update('semantic_facts', {'salience': ns},
+            where: 'id = ?', whereArgs: [id]);
+        n++;
+      }
+    }
+    if (n > 0) await batch.commit(noResult: true);
+    return n;
+  }
+
+  // ── Active self-curation (2.0) ──────────────────────────────
+
+  @override
+  Future<List<SemanticFact>> claimsForSlot(
+      String subject, String attribute) async {
+    if (subject.trim().isEmpty || attribute.trim().isEmpty) return const [];
+    final rows = await _database.query(
+      'semantic_facts',
+      where: "LOWER(subject) = ? AND LOWER(attribute) = ? AND status = 'active'",
+      whereArgs: [subject.toLowerCase().trim(), attribute.toLowerCase().trim()],
+      orderBy: 'created_utc DESC',
+    );
+    return rows.map(SemanticFact.fromRow).toList();
+  }
+
+  @override
+  Future<List<SemanticFact>> allSlotClaims({int limit = 2000}) async {
+    final rows = await _database.query(
+      'semantic_facts',
+      where: "status = 'active' AND attribute != ''",
+      orderBy: 'created_utc DESC',
+      limit: limit,
+    );
+    return rows.map(SemanticFact.fromRow).toList();
+  }
+
+  @override
+  Future<void> supersedeClaim(int oldId, {required int byId}) async {
+    await _database.update('semantic_facts', {'status': 'superseded'},
+        where: 'id = ?', whereArgs: [oldId]);
+    await _database.update('semantic_facts', {'supersedes': oldId},
+        where: 'id = ?', whereArgs: [byId]);
+  }
+
+  @override
+  Future<void> setClaimStatus(int id, ClaimStatus status) async {
+    await _database.update('semantic_facts', {'status': status.name},
+        where: 'id = ?', whereArgs: [id]);
+  }
+
+  @override
+  Future<int> addOpenQuestion(OpenQuestion q) async =>
+      _database.insert('open_questions', q.toRow());
+
+  @override
+  Future<List<OpenQuestion>> openQuestions({int limit = 50}) async {
+    final rows = await _database.query('open_questions',
+        where: "status = 'open'", orderBy: 'id DESC', limit: limit);
+    return rows.map(OpenQuestion.fromRow).toList();
+  }
+
+  @override
+  Future<OpenQuestion?> openQuestionForSlot(
+      String subject, String attribute) async {
+    final rows = await _database.query('open_questions',
+        where: "status = 'open' AND LOWER(subject) = ? AND LOWER(attribute) = ?",
+        whereArgs: [subject.toLowerCase().trim(), attribute.toLowerCase().trim()],
+        limit: 1);
+    if (rows.isEmpty) return null;
+    return OpenQuestion.fromRow(rows.first);
+  }
+
+  @override
+  Future<void> resolveOpenQuestion(int id) async {
+    await _database.update(
+      'open_questions',
+      {
+        'status': 'resolved',
+        'resolved_utc': DateTime.now().toUtc().toIso8601String(),
+      },
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  // ── Procedural memory (v7) ──────────────────────────────────
+
+  @override
+  Future<int> addProcedure(ProcedureRecord p) async =>
+      _database.insert('procedures', p.toRow());
+
+  @override
+  Future<List<ProcedureRecord>> procedures(
+      {ProcedureKind? kind, ProcedureStatus? status, int limit = 100}) async {
+    final where = <String>[];
+    final args = <Object?>[];
+    if (kind != null) {
+      where.add('kind = ?');
+      args.add(kind.name);
+    }
+    if (status != null) {
+      where.add('status = ?');
+      args.add(status.name);
+    }
+    final rows = await _database.query(
+      'procedures',
+      where: where.isEmpty ? null : where.join(' AND '),
+      whereArgs: where.isEmpty ? null : args,
+      orderBy: 'id DESC',
+      limit: limit,
+    );
+    return rows.map(ProcedureRecord.fromRow).toList();
+  }
+
+  @override
+  Future<ProcedureRecord?> procedureByName(String name) async {
+    final rows = await _database.query('procedures',
+        where: 'name = ?', whereArgs: [name], orderBy: 'id DESC', limit: 1);
+    return rows.isEmpty ? null : ProcedureRecord.fromRow(rows.first);
+  }
+
+  @override
+  Future<void> recordProcedureUse(int id) async {
+    await _database.rawUpdate(
+      'UPDATE procedures SET usage_count = usage_count + 1, '
+      'last_used_utc = ?, salience = MIN(1.0, salience + 0.05) WHERE id = ?',
+      [DateTime.now().toUtc().toIso8601String(), id],
+    );
+  }
+
+  @override
+  Future<void> setProcedureStatus(int id, ProcedureStatus status) async {
+    await _database.update('procedures', {'status': status.name},
+        where: 'id = ?', whereArgs: [id]);
+  }
+
+  @override
+  Future<void> deleteProcedure(int id) async {
+    await _database.delete('procedures', where: 'id = ?', whereArgs: [id]);
+  }
+
+  @override
+  Future<void> updateFact(int id,
+      {String? text, SemanticCategory? category, double? confidence}) async {
+    final values = <String, Object?>{};
+    if (text != null) {
+      values['text'] = text;
+      values['dedupe_hash'] = stableContentHash(text);
+    }
+    if (category != null) values['category'] = category.name;
+    if (confidence != null) values['confidence'] = confidence;
+    if (values.isEmpty) return;
+    await _database
+        .update('semantic_facts', values, where: 'id = ?', whereArgs: [id]);
+  }
+
+  @override
+  Future<void> deleteFact(int id) async {
+    await _database.delete('semantic_facts', where: 'id = ?', whereArgs: [id]);
+    await _database
+        .delete('claim_embeddings', where: 'fact_id = ?', whereArgs: [id]);
+  }
+
+  @override
+  Future<void> upsertEmbedding(int factId, List<double> vector,
+      {String? model}) async {
+    await _database.insert(
+      'claim_embeddings',
+      {
+        'fact_id': factId,
+        'dim': vector.length,
+        'model': model,
+        'vec': encodeVectorF32(vector),
+        'created_utc': DateTime.now().toUtc().toIso8601String(),
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  @override
+  Future<Map<int, List<double>>> allEmbeddings() async {
+    final rows = await _database.query('claim_embeddings',
+        columns: ['fact_id', 'vec']);
+    final out = <int, List<double>>{};
+    for (final r in rows) {
+      final id = r['fact_id'] as int;
+      final blob = r['vec'];
+      if (blob is Uint8List) {
+        out[id] = decodeVectorF32(blob);
+      } else if (blob is List<int>) {
+        out[id] = decodeVectorF32(Uint8List.fromList(blob));
+      }
+    }
+    return out;
+  }
+
+  @override
+  Future<void> deleteEmbedding(int factId) async {
+    await _database
+        .delete('claim_embeddings', where: 'fact_id = ?', whereArgs: [factId]);
+  }
+
+  @override
+  Future<void> updateEpisodicContent(int id, String content) async {
+    await _database.update('episodic_log', {'content': content},
+        where: 'id = ?', whereArgs: [id]);
+  }
+
+  @override
+  Future<void> deleteEpisodic(int id) async {
+    await _database.delete('episodic_log', where: 'id = ?', whereArgs: [id]);
+  }
+
+  @override
+  Future<void> clearAll() async {
+    await _database.delete('episodic_log');
+    await _database.delete('semantic_facts');
+    await _database.delete('event_log');
+    await _database.delete('relation_edges');
+    await _database.delete('provenance');
+    await _database.delete('claim_embeddings');
+    await _database.delete('open_questions');
+    await _database.delete('procedures');
+    await _database.delete('archive');
+  }
+
+  @override
+  Future<void> close() async {
+    await _db?.close();
+    _db = null;
+  }
+}
