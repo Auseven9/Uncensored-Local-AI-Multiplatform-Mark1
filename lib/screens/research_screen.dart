@@ -78,7 +78,8 @@ class _ResearchScreenState extends State<ResearchScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final body = _buildBody(context);
+    // Everything in the research view is selectable/copyable.
+    final body = SelectionArea(child: _buildBody(context));
     if (widget.embedded) return SafeArea(bottom: false, child: body);
     return Scaffold(
       backgroundColor: context.bg,
@@ -607,7 +608,8 @@ class _ResearchScreenState extends State<ResearchScreen> {
       backgroundColor: context.bgPanel,
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
-      builder: (_) => DraggableScrollableSheet(
+      builder: (_) => SelectionArea(
+        child: DraggableScrollableSheet(
         expand: false,
         initialChildSize: 0.75,
         maxChildSize: 0.95,
@@ -664,6 +666,7 @@ class _ResearchScreenState extends State<ResearchScreen> {
             ),
           ],
         ),
+      ),
       ),
     );
   }

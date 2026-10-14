@@ -67,6 +67,12 @@ class ChatController extends GetxController {
 
   StreamSubscription<String>? _genSub;
 
+  /// During streaming we no longer rebuild the whole chat list per token — the
+  /// StreamingBubble renders the live text self-driven. This throttles the list
+  /// refresh (which drives auto-scroll) to a few times a second so a long reply
+  /// doesn't re-parse every finished markdown bubble on every token.
+  DateTime _lastStreamRefresh = DateTime.fromMillisecondsSinceEpoch(0);
+
   @override
   void onInit() {
     super.onInit();
@@ -274,6 +280,7 @@ class ChatController extends GetxController {
       );
 
       var tok = 0;
+      _lastStreamRefresh = DateTime.fromMillisecondsSinceEpoch(0);
       await for (final token in stream) {
         streamedResponse.value += token;
         aiMsg.content = streamedResponse.value;
@@ -282,8 +289,15 @@ class ChatController extends GetxController {
         // is visibly producing information instead of stalling.
         _status?.setGeneration(
             tokens: tok, tps: _llm.tokensPerSecond.value, budget: maxTokens);
-        // Throttle UI refreshes
-        chats.refresh();
+        // The StreamingBubble animates the live text itself (reads
+        // streamedResponse at 60fps); here we only refresh the list a few times
+        // a second to keep auto-scroll following, without a per-token
+        // whole-list markdown re-parse (the old stutter source).
+        final now = DateTime.now();
+        if (now.difference(_lastStreamRefresh).inMilliseconds >= 120) {
+          _lastStreamRefresh = now;
+          chats.refresh();
+        }
       }
       _log?.info('sendMessage: stream complete · responseLen=${aiMsg.content.length}',
           source: 'Chat');

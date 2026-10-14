@@ -10,7 +10,7 @@ import '../core/memory/memory_service.dart';
 import '../core/memory/recall_ranker.dart';
 import '../widgets/chat_sidebar.dart';
 import '../widgets/chat_bubble.dart';
-import '../widgets/typing_indicator.dart';
+import '../widgets/streaming_bubble.dart';
 import '../widgets/pipeline_status_strip.dart';
 import 'model_library_screen.dart';
 import 'settings_screen.dart';
@@ -1005,27 +1005,29 @@ class _HomeScreenState extends State<HomeScreen> {
 
             _scrollToBottom();
 
-            return ListView.builder(
-              controller: _scrollController,
-              padding: const EdgeInsets.symmetric(vertical: 16),
-              itemCount:
-                  chat.messages.length + (_chatCtrl.isGenerating.value ? 1 : 0),
-              itemBuilder: (context, index) {
-                if (index < chat.messages.length) {
+            // SelectionArea makes the WHOLE conversation selectable — user
+            // and AI text alike — so anything can be copied (not just via the
+            // per-message Copy button).
+            return SelectionArea(
+              child: ListView.builder(
+                controller: _scrollController,
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                itemCount: chat.messages.length,
+                itemBuilder: (context, index) {
                   final msg = chat.messages[index];
-                  // Show speed on the last AI message
-                  final isLastAi =
-                      msg.isAssistant && index == chat.messages.length - 1;
-                  return ChatBubble(message: msg, showSpeed: isLastAi);
-                }
-                return const Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-                  child: Align(
-                    alignment: Alignment.centerLeft,
-                    child: TypingIndicator(),
-                  ),
-                );
-              },
+                  final isLast = index == chat.messages.length - 1;
+                  // The in-progress assistant reply streams as a smooth
+                  // typewriter (plain text + blinking caret); it swaps to the
+                  // markdown ChatBubble once generation finishes.
+                  if (isLast &&
+                      msg.isAssistant &&
+                      _chatCtrl.isGenerating.value) {
+                    return const StreamingBubble();
+                  }
+                  return ChatBubble(
+                      message: msg, showSpeed: isLast && msg.isAssistant);
+                },
+              ),
             );
           }),
         ),

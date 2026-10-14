@@ -75,7 +75,10 @@ class ChatBubble extends StatelessWidget {
           padding: const EdgeInsets.only(top: 3),
           child: MarkdownBody(
             data: message.content,
-            selectable: true,
+            // Selection is owned by the SelectionArea wrapping the whole chat
+            // list (so user + AI text all copy as one); a nested selectable
+            // here would fight it.
+            selectable: false,
             styleSheet: MarkdownStyleSheet(
               p: TextStyle(fontSize: 15, color: context.text, height: 1.7),
               h1: TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: context.text),
