@@ -15,6 +15,7 @@ import '../widgets/pipeline_status_strip.dart';
 import 'model_library_screen.dart';
 import 'settings_screen.dart';
 import 'monitor_screen.dart';
+import 'research_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -42,8 +43,9 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _autoScrollToBottom = true;
   String? _lastRenderedChatId;
 
-  // Mobile bottom nav index: 0=Chat, 1=Models, 2=Settings
-  int _mobileTabIndex = 0;
+  // Mobile bottom nav index: 0=Research, 1=Chat, 2=Models, 3=Settings, 4=Monitor.
+  // Research sits directly to the left of Chat; the app still opens on Chat (1).
+  int _mobileTabIndex = 1;
 
   // Scaffold key for drawer
   final GlobalKey<ScaffoldState> _mobileScaffoldKey =
@@ -351,13 +353,15 @@ class _HomeScreenState extends State<HomeScreen> {
         child: IndexedStack(
           index: _mobileTabIndex,
           children: [
-            // Tab 0: Chat
+            // Tab 0: Research — the second chat, directly left of Chat
+            const ResearchScreen(embedded: true),
+            // Tab 1: Chat
             _buildMobileChatTab(),
-            // Tab 1: Models
+            // Tab 2: Models
             const ModelLibraryScreen(embedded: true),
-            // Tab 2: Settings
+            // Tab 3: Settings
             const SettingsScreen(embedded: true),
-            // Tab 3: Monitor
+            // Tab 4: Monitor
             const MonitorScreen(),
           ],
         ),
@@ -376,6 +380,14 @@ class _HomeScreenState extends State<HomeScreen> {
           labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
           height: 64,
           destinations: [
+            NavigationDestination(
+              icon: Icon(Icons.travel_explore_outlined, color: context.textM),
+              selectedIcon: const Icon(
+                Icons.travel_explore_rounded,
+                color: AppColors.accent,
+              ),
+              label: 'Research',
+            ),
             NavigationDestination(
               icon: Icon(Icons.chat_outlined, color: context.textM),
               selectedIcon: const Icon(
@@ -588,7 +600,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final downloaded = _modelCtrl.downloadedModels;
     if (downloaded.isEmpty) {
       // No models — nudge user to Models tab
-      setState(() => _mobileTabIndex = 1);
+      setState(() => _mobileTabIndex = 2);
       return;
     }
 
@@ -654,7 +666,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     TextButton(
                       onPressed: () {
                         Navigator.pop(context);
-                        setState(() => _mobileTabIndex = 1);
+                        setState(() => _mobileTabIndex = 2);
                       },
                       child: const Text(
                         'Browse All',
@@ -937,6 +949,14 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
 
           const SizedBox(width: 8),
+
+          // Research (the second chat) — opens to the left of chat conceptually
+          IconButton(
+            icon: Icon(Icons.travel_explore_outlined,
+                size: 20, color: context.textM),
+            onPressed: () => Get.toNamed('/research'),
+            tooltip: 'Research',
+          ),
 
           // Theme toggle
           Obx(

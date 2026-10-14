@@ -5,6 +5,8 @@ import '../screens/home_screen.dart';
 import '../screens/model_library_screen.dart';
 import '../screens/settings_screen.dart';
 import '../screens/api_endpoints_screen.dart';
+import '../screens/web_search_screen.dart';
+import '../screens/research_screen.dart';
 import '../screens/logs_screen.dart';
 import '../features/rooms/arena_screen.dart';
 import '../features/rooms/introspection_screen.dart';
@@ -17,6 +19,8 @@ class AppRoutes {
   static const modelLibrary = '/models';
   static const settings = '/settings';
   static const apiEndpoints = '/api-endpoints';
+  static const webSearch = '/web-search';
+  static const research = '/research';
   static const logs = '/logs';
   static const arena = '/arena';
   static const introspection = '/introspection';
@@ -39,6 +43,16 @@ class AppRoutes {
     GetPage(
       name: apiEndpoints,
       page: () => const ApiEndpointsScreen(),
+      transition: Transition.rightToLeft,
+    ),
+    GetPage(
+      name: webSearch,
+      page: () => const WebSearchScreen(),
+      transition: Transition.rightToLeft,
+    ),
+    GetPage(
+      name: research,
+      page: () => const ResearchScreen(),
       transition: Transition.rightToLeft,
     ),
     GetPage(

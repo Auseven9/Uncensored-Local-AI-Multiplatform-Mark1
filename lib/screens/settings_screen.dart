@@ -827,6 +827,42 @@ class _SettingsBody extends StatelessWidget {
 
               const SizedBox(height: 28),
 
+              // ── Web ───────────────────────────────────────
+              _sectionHeader(context, 'Web'),
+              const SizedBox(height: 8),
+              _card(
+                context,
+                child: ListTile(
+                  leading: Container(
+                    width: 36,
+                    height: 36,
+                    decoration: BoxDecoration(
+                      color: AppColors.accent.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Icon(Icons.travel_explore_rounded,
+                        size: 18, color: AppColors.accent),
+                  ),
+                  title: Text(
+                    'Web Search',
+                    style: TextStyle(color: context.text, fontSize: 14),
+                  ),
+                  subtitle: Text(
+                    'Give the LLM a search tool · Linkup or any provider + key',
+                    style: TextStyle(color: context.textD, fontSize: 12),
+                  ),
+                  trailing: Icon(Icons.arrow_forward_ios_rounded,
+                      size: 14, color: context.textD),
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 4,
+                  ),
+                  onTap: () => Get.toNamed('/web-search'),
+                ),
+              ),
+
+              const SizedBox(height: 28),
+
               // ── App Logs ──────────────────────────────────
               _sectionHeader(context, 'Debugging'),
               const SizedBox(height: 8),
