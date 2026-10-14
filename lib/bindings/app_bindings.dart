@@ -11,6 +11,7 @@ import '../services/system_health_monitor.dart';
 import '../services/pipeline_status_service.dart';
 import '../services/sensor_service.dart';
 import '../services/solver_service.dart';
+import '../services/search_service.dart';
 import '../core/params/parameters_service.dart';
 import '../controllers/chat_controller.dart';
 import '../controllers/model_controller.dart';
@@ -43,6 +44,8 @@ class AppBindings extends Bindings {
     Get.lazyPut(() => ParametersService(), fenix: true);
     // The Solver — System 2's deterministic exact-logic rail.
     Get.lazyPut(() => SolverService(), fenix: true);
+    // Pluggable web search (Linkup preset + any custom provider).
+    Get.lazyPut(() => SearchService(), fenix: true);
 
     // ── Eidetic Dojo engine ──────────────────────────────────────
     Get.lazyPut(() => InferenceWorker(), fenix: true);

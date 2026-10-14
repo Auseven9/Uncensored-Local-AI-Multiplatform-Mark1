@@ -195,4 +195,14 @@ class ChatStorageService extends GetxService {
 
   set embeddingsEnabled(bool value) =>
       _settingsBox.put('embeddings_enabled', value);
+
+  // ── Web search (pluggable provider config, stored as JSON) ──
+  // The whole SearchConfig (provider, endpoint, apiKey, field mapping) lives in
+  // one JSON blob so adding a provider never needs a new setting. Empty = the
+  // Linkup preset with no key (see SearchService.config()).
+  String get searchConfigJson =>
+      _settingsBox.get('search_config', defaultValue: '') as String;
+
+  set searchConfigJson(String value) =>
+      _settingsBox.put('search_config', value);
 }
