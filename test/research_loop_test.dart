@@ -215,4 +215,21 @@ void main() {
     expect(out.findings, 0);
     expect(h.synthesisCalls, 0);
   });
+
+  test('a title-only summary is retried then skipped, never stored empty',
+      () async {
+    // summaryBody '' → the planner only ever returns "TITLE: Finding N" with
+    // no body, so the finding must be skipped rather than stored blank.
+    final h = _Harness(
+      queries: ['has results'],
+      searchFor: _twoHits,
+      summaryBody: '',
+    );
+    final out = await h.runLoop(budget: 1);
+
+    expect(h.storedFindings, isEmpty); // never stored an empty finding
+    expect(out.findings, 0);
+    expect(out.status, 'empty');
+    expect(h.summaryCalls, 2); // initial attempt + one retry
+  });
 }

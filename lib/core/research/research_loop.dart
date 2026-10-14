@@ -123,7 +123,7 @@ class ResearchLoop {
     bool Function()? isCancelled,
     int maxResultsPerTurn = 6,
     int queryMaxTokens = 64,
-    int summaryMaxTokens = 512,
+    int summaryMaxTokens = 768,
     double queryTemperature = 0.5,
     double summaryTemperature = 0.4,
     int snippetCap = 2000,
@@ -294,7 +294,32 @@ class ResearchLoop {
             'Turn $turn: summary step failed, skipping ($e).', turn: turn);
         continue;
       }
-      final parsed = ResearchAgent.parseSummary(rawSummary, query: query);
+      var parsed = ResearchAgent.parseSummary(rawSummary, query: query);
+      // A title-only or empty reply is a non-finding. Retry once nudging for a
+      // real body; if still basically empty, skip rather than store blank.
+      if (parsed.content.trim().length < 40) {
+        try {
+          final retryRaw = await think(
+            system: ResearchAgent.summarySystemPrompt(),
+            user: '${ResearchAgent.summaryUserPrompt(goal: goal, query: query, fencedBlocks: fenced)}'
+                '\n\n(Your previous answer had no body. Write the TITLE line '
+                'and then a full paragraph of the actual findings.)',
+            temperature: summaryTemperature + 0.1,
+            maxTokens: summaryMaxTokens,
+            taskId: 'research-summary-$turn-retry',
+          );
+          final retry = ResearchAgent.parseSummary(retryRaw, query: query);
+          if (retry.content.trim().length > parsed.content.trim().length) {
+            parsed = retry;
+          }
+        } catch (_) {/* keep the first attempt */}
+      }
+      if (parsed.content.trim().length < 15) {
+        emit('summarize',
+            'Turn $turn: couldn\'t extract a usable summary — skipping.',
+            turn: turn, query: query);
+        continue; // never store an empty finding
+      }
       var content = parsed.content;
       if (injectionSeen) {
         content = '$content\n\n⚠ A source attempted prompt injection; its '
@@ -353,7 +378,7 @@ class ResearchLoop {
             contents: [for (final c in collected) c.content],
           ),
           temperature: 0.5,
-          maxTokens: 700,
+          maxTokens: 1024,
           taskId: 'research-synthesis',
         );
         final s = raw.trim();

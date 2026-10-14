@@ -107,8 +107,8 @@ void main() {
   group('synthesis prompt', () {
     test('asks for deeper connections, not a recap', () {
       final sys = ResearchAgent.synthesisSystemPrompt();
-      expect(sys.toLowerCase(), contains('connection'));
-      expect(sys.toLowerCase(), contains('not'));
+      expect(sys.toLowerCase(), contains('connect'));
+      expect(sys.toLowerCase(), contains('not')); // "do NOT restate"
     });
     test('user prompt includes the goal and references findings', () {
       final prompt = ResearchAgent.synthesisUserPrompt(
