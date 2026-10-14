@@ -37,18 +37,36 @@ class LoopSearch {
 }
 
 /// A progress event emitted as the loop runs (drives the research screen).
+/// Carries enough that the UI can show WHAT is being researched live — the
+/// query chosen, the sources pulled, and a finding as it lands — not just a
+/// status line.
 class ResearchProgress {
   final int turn;
   final int turnsBudget;
   final int findings;
-  final String phase; // query | search | summarize | store | organize | done | error
+  final String phase; // query | search | summarize | store | synthesize | done | error
   final String message;
+
+  /// The query chosen this turn (set from the search phase on).
+  final String? query;
+
+  /// Sources pulled this turn, as "title — url" display lines.
+  final List<String>? sources;
+
+  /// A finding that just landed (set on the store phase).
+  final String? findingTitle;
+  final String? findingContent;
+
   const ResearchProgress({
     required this.turn,
     required this.turnsBudget,
     required this.findings,
     required this.phase,
     required this.message,
+    this.query,
+    this.sources,
+    this.findingTitle,
+    this.findingContent,
   });
 }
 
@@ -58,13 +76,15 @@ class ResearchOutcome {
   final int findings;
   final String status; // done | stopped | error | empty
   final String? error;
-  final String? topicSummary;
+
+  /// The capstone synthesis — the cross-finding, deeper-connections pass.
+  final String? synthesis;
   const ResearchOutcome({
     required this.turnsUsed,
     required this.findings,
     required this.status,
     this.error,
-    this.topicSummary,
+    this.synthesis,
   });
 }
 
@@ -109,20 +129,32 @@ class ResearchLoop {
     int snippetCap = 2000,
   }) async {
     final budget = ResearchAgent.clampTurns(turnsBudget);
-    final seen = <String>{};
     final priorQueries = <String>[];
-    final collected = <ParsedSummary>[]; // for the organize pass
+    final coveredTitles = <String>[]; // facets covered, fed back to the planner
+    final collected = <ParsedSummary>[]; // for the synthesis pass
     var findings = 0;
     var turnsUsed = 0;
 
     bool cancelled() => isCancelled?.call() ?? false;
-    void emit(String phase, String message, {int turn = 0}) =>
+    void emit(
+      String phase,
+      String message, {
+      int turn = 0,
+      String? query,
+      List<String>? sources,
+      String? findingTitle,
+      String? findingContent,
+    }) =>
         onProgress?.call(ResearchProgress(
           turn: turn,
           turnsBudget: budget,
           findings: findings,
           phase: phase,
           message: message,
+          query: query,
+          sources: sources,
+          findingTitle: findingTitle,
+          findingContent: findingContent,
         ));
 
     String? fatalError;
@@ -134,41 +166,63 @@ class ResearchLoop {
         break;
       }
 
-      // 1 — the model picks the next query.
-      emit('query', 'Turn $turn: choosing a search query…', turn: turn);
-      String rawQuery;
-      try {
-        rawQuery = await think(
-          system: ResearchAgent.querySystemPrompt(),
-          user: ResearchAgent.queryUserPrompt(
-            goal: goal,
-            priorQueries: priorQueries,
-            turn: turn,
-            budget: budget,
-          ),
-          temperature: queryTemperature,
-          maxTokens: queryMaxTokens,
-          taskId: 'research-query-$turn',
-        );
-      } catch (e) {
-        fatalError = 'The model failed while choosing a query: $e';
-        hadErrorStop = true;
-        emit('error', fatalError, turn: turn);
-        break;
+      // 1 — the model picks the next query, from a DIFFERENT angle. If it
+      // comes back too similar to a facet already covered, retry (pushing it
+      // toward a new facet) a couple of times rather than stopping the whole
+      // run on the first near-duplicate.
+      emit('query', 'Turn $turn: choosing a fresh angle…', turn: turn);
+      var query = '';
+      var gotNovel = false;
+      String? avoidHint;
+      for (var attempt = 0; attempt < 3 && !gotNovel; attempt++) {
+        String rawQuery;
+        try {
+          rawQuery = await think(
+            system: ResearchAgent.querySystemPrompt(),
+            user: ResearchAgent.queryUserPrompt(
+              goal: goal,
+              priorQueries: priorQueries,
+              coveredTitles: coveredTitles,
+              turn: turn,
+              budget: budget,
+              avoidHint: avoidHint,
+            ),
+            temperature: queryTemperature + attempt * 0.2, // loosen on retry
+            maxTokens: queryMaxTokens,
+            taskId: 'research-query-$turn-$attempt',
+          );
+        } catch (e) {
+          fatalError = 'The model failed while choosing a query: $e';
+          hadErrorStop = true;
+          emit('error', fatalError, turn: turn);
+          break;
+        }
+        final candidate = ResearchAgent.parseQuery(rawQuery);
+        if (candidate.isEmpty) {
+          avoidHint = 'give an actual search query';
+          continue;
+        }
+        if (ResearchAgent.isNovelAngle(candidate, priorQueries)) {
+          query = candidate;
+          gotNovel = true;
+        } else {
+          avoidHint =
+              'it overlapped "$candidate" — switch to a clearly different facet';
+        }
       }
-      final query = ResearchAgent.parseQuery(rawQuery);
-      if (!ResearchAgent.isNovelQuery(query, seen)) {
-        // Empty or repeated query → the planner has nothing new; stop cleanly.
+      if (hadErrorStop) break;
+      if (!gotNovel) {
         emit('done',
-            'Turn $turn: no new query to try — wrapping up.', turn: turn);
+            'Turn $turn: no genuinely new angle left — wrapping up.',
+            turn: turn);
         break;
       }
-      seen.add(ResearchAgent.normalizeQuery(query));
       priorQueries.add(query);
 
       // 2 — real web search.
       if (cancelled()) break;
-      emit('search', 'Turn $turn: searching “$query”…', turn: turn);
+      emit('search', 'Turn $turn: searching “$query”…',
+          turn: turn, query: query);
       final LoopSearch result;
       try {
         result = await search(query);
@@ -186,10 +240,18 @@ class ResearchLoop {
             turn: turn);
         break;
       }
+      final sourceLines = [
+        for (final h in result.hits)
+          (h.title.trim().isNotEmpty ? h.title.trim() : h.url) +
+              (h.url.trim().isNotEmpty ? ' — ${h.url.trim()}' : ''),
+      ];
       if (result.hits.isEmpty) {
-        emit('search', 'Turn $turn: no results for “$query”.', turn: turn);
+        emit('search', 'Turn $turn: no results for “$query”.',
+            turn: turn, query: query);
         continue;
       }
+      emit('search', 'Turn $turn: ${result.hits.length} results for “$query”.',
+          turn: turn, query: query, sources: sourceLines);
 
       // 3 — fence each hit as UNTRUSTED DATA (the rogue-prompt guard).
       final fenced = <String>[];
@@ -208,10 +270,11 @@ class ResearchLoop {
         ));
       }
 
-      // 4 — summarize the fenced data.
+      // 4 — summarize the fenced data (the caller's think fn streams this live).
       if (cancelled()) break;
       emit('summarize',
-          'Turn $turn: summarizing ${result.hits.length} results…', turn: turn);
+          'Turn $turn: reading & summarizing ${result.hits.length} sources…',
+          turn: turn, query: query, sources: sourceLines);
       String rawSummary;
       try {
         rawSummary = await think(
@@ -259,32 +322,42 @@ class ResearchLoop {
       }
       findings++;
       collected.add(parsed);
+      coveredTitles.add(parsed.title);
       emit(
-          'store',
-          'Turn $turn: stored “${parsed.title}” from ${result.hits.length} '
-              'source(s)${injectionSeen ? ' · injection blocked' : ''}.',
-          turn: turn);
+        'store',
+        'Turn $turn: stored “${parsed.title}” from ${result.hits.length} '
+            'source(s)${injectionSeen ? ' · injection blocked' : ''}.',
+        turn: turn,
+        query: query,
+        sources: sourceLines,
+        findingTitle: parsed.title,
+        findingContent: content,
+      );
     }
 
-    // 6 — organize: roll the run's findings into a high-level topic summary.
-    String? topicSummary;
-    if (!hadErrorStop && !cancelled() && collected.isNotEmpty) {
-      emit('organize', 'Organizing ${collected.length} findings…',
+    // 6 — synthesis (the capstone): read ALL findings together and surface the
+    // deeper, non-obvious connections across them — NOT a recap. Needs at
+    // least two findings for there to be anything to connect. Streamed live.
+    String? synthesis;
+    if (!hadErrorStop && !cancelled() && collected.length >= 2) {
+      emit('synthesize',
+          'Synthesizing ${collected.length} findings — hunting for deeper '
+          'connections…',
           turn: turnsUsed);
       try {
         final raw = await think(
-          system: ResearchAgent.organizeSystemPrompt(),
-          user: ResearchAgent.organizeUserPrompt(
+          system: ResearchAgent.synthesisSystemPrompt(),
+          user: ResearchAgent.synthesisUserPrompt(
             goal: goal,
             titles: [for (final c in collected) c.title],
             contents: [for (final c in collected) c.content],
           ),
-          temperature: 0.4,
-          maxTokens: 400,
-          taskId: 'research-organize',
+          temperature: 0.5,
+          maxTokens: 700,
+          taskId: 'research-synthesis',
         );
         final s = raw.trim();
-        if (s.isNotEmpty) topicSummary = s;
+        if (s.isNotEmpty) synthesis = s;
       } catch (_) {
         // Non-fatal: the findings are already stored.
       }
@@ -303,7 +376,7 @@ class ResearchLoop {
       findings: findings,
       status: status,
       error: fatalError,
-      topicSummary: topicSummary,
+      synthesis: synthesis,
     );
   }
 

@@ -54,11 +54,17 @@ class ResearchService extends GetxService {
   final turnsBudget = 10.obs; // the 1–100 selector's current value
   final currentTurn = 0.obs;
   final findingsCount = 0.obs;
-  final phase = ''.obs; // query | search | summarize | store | organize | done …
+  final phase = ''.obs; // query | search | summarize | store | synthesize | done …
   final statusLine = ''.obs;
   final activity = <String>[].obs; // rolling step log for the UI
   final lastRunId = RxnInt();
   final lastTopicId = RxnInt();
+
+  // ── Live view (watch it research in real time) ──────────────
+  final currentQuery = ''.obs; // the query the agent chose this turn
+  final currentSources = <String>[].obs; // "title — url" lines pulled this turn
+  final liveText = ''.obs; // the summary / synthesis streaming token-by-token
+  final liveFindings = <Map<String, String>>[].obs; // findings as they land
 
   bool _cancel = false;
 
@@ -111,6 +117,10 @@ class ResearchService extends GetxService {
     findingsCount.value = 0;
     phase.value = '';
     activity.clear();
+    currentQuery.value = '';
+    currentSources.clear();
+    liveText.value = '';
+    liveFindings.clear();
 
     int? runId;
     try {
@@ -157,12 +167,16 @@ class ResearchService extends GetxService {
         isCancelled: () => _cancel,
       );
 
-      if (outcome.topicSummary != null &&
-          outcome.topicSummary!.trim().isNotEmpty) {
-        await _store.upsertTopic(name, summary: outcome.topicSummary!);
+      final syn = outcome.synthesis?.trim() ?? '';
+      if (syn.isNotEmpty) {
+        // The topic's rolling summary reflects the latest synthesis so the
+        // Library shows the deeper picture, not just a finding.
+        await _store.upsertTopic(name, summary: syn);
       }
       await _store.finishRun(runId,
-          status: outcome.status, turnsUsed: outcome.turnsUsed);
+          status: outcome.status,
+          turnsUsed: outcome.turnsUsed,
+          synthesis: syn);
       return runId;
     } catch (e) {
       statusLine.value = 'Research failed: $e';
@@ -190,6 +204,11 @@ class ResearchService extends GetxService {
     required int maxTokens,
     required String taskId,
   }) {
+    // Stream the long-form steps (per-turn summary + the final synthesis) into
+    // liveText so the UI shows them being written. The short query-planner
+    // calls aren't streamed.
+    final streaming = taskId.contains('summary') || taskId.contains('synth');
+    if (streaming) liveText.value = '';
     return _worker.run(
       id: 'research-${lastRunId.value ?? 0}-$taskId'
           '-${DateTime.now().microsecondsSinceEpoch}',
@@ -200,6 +219,7 @@ class ResearchService extends GetxService {
       temperature: temperature,
       maxTokens: maxTokens,
       priority: TaskPriority.userInteraction,
+      onToken: streaming ? (tok) => liveText.value += tok : null,
     );
   }
 
@@ -217,6 +237,15 @@ class ResearchService extends GetxService {
     findingsCount.value = p.findings;
     phase.value = p.phase;
     statusLine.value = p.message;
+    if (p.query != null) currentQuery.value = p.query!;
+    if (p.sources != null) currentSources.assignAll(p.sources!);
+    if (p.findingTitle != null) {
+      liveFindings.add({
+        'title': p.findingTitle!,
+        'content': p.findingContent ?? '',
+      });
+      liveText.value = ''; // this summary is now a stored finding card
+    }
     _append(p.message);
   }
 
@@ -229,6 +258,8 @@ class ResearchService extends GetxService {
       _store.findings(topicId: topicId);
   Future<List<ResearchSource>> sources(int findingId) =>
       _store.sources(findingId: findingId);
+  Future<String?> latestSynthesis(int topicId) =>
+      _store.latestSynthesis(topicId);
   Future<int> topicCount() => _store.topicCount();
   Future<int> findingCount() => _store.findingCount();
   Future<void> clearAll() => _store.clearAll();

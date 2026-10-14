@@ -108,6 +108,7 @@ class _ResearchScreenState extends State<ResearchScreen> {
               _runButton(context),
               const SizedBox(height: 14),
               _statusAndActivity(context),
+              _liveFindingsSection(context),
               const SizedBox(height: 22),
               _libraryHeader(context),
               const SizedBox(height: 8),
@@ -345,6 +346,10 @@ class _ResearchScreenState extends State<ResearchScreen> {
       final running = _research.isRunning.value;
       final turn = _research.currentTurn.value;
       final budget = _research.turnsBudget.value;
+      final phase = _research.phase.value;
+      final query = _research.currentQuery.value;
+      final sources = _research.currentSources.toList();
+      final live = _research.liveText.value;
       final log = _research.activity.toList();
       if (status.isEmpty && log.isEmpty) return const SizedBox.shrink();
       return Container(
@@ -384,10 +389,82 @@ class _ResearchScreenState extends State<ResearchScreen> {
                           TextStyle(color: context.textM, fontSize: 11)),
               ],
             ),
+
+            // What it's researching right now: the chosen query.
+            if (query.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.search_rounded, size: 14, color: AppColors.accent),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(query,
+                        style: TextStyle(
+                            color: context.text,
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.w600)),
+                  ),
+                ],
+              ),
+            ],
+
+            // The sources it pulled this turn.
+            if (sources.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              ...sources.take(8).map((s) => Padding(
+                    padding: const EdgeInsets.only(bottom: 2, left: 20),
+                    child: Text('• $s',
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style:
+                            TextStyle(color: context.textD, fontSize: 11)),
+                  )),
+            ],
+
+            // The summary / synthesis streaming in, token by token.
+            if (live.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: AppColors.accent
+                      .withValues(alpha: phase == 'synthesize' ? 0.10 : 0.05),
+                  border: Border.all(
+                      color: phase == 'synthesize'
+                          ? AppColors.accent.withValues(alpha: 0.4)
+                          : context.border),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      phase == 'synthesize'
+                          ? 'Synthesis (deeper connections)…'
+                          : 'Writing summary…',
+                      style: TextStyle(
+                          color: phase == 'synthesize'
+                              ? AppColors.accent
+                              : context.textM,
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: 0.3),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(live,
+                        style: TextStyle(
+                            color: context.text, fontSize: 12.5, height: 1.4)),
+                  ],
+                ),
+              ),
+            ],
+
             if (log.isNotEmpty) ...[
               const SizedBox(height: 10),
               Container(
-                constraints: const BoxConstraints(maxHeight: 170),
+                constraints: const BoxConstraints(maxHeight: 130),
                 decoration: BoxDecoration(
                   color: context.bgInput,
                   borderRadius: BorderRadius.circular(8),
@@ -412,6 +489,56 @@ class _ResearchScreenState extends State<ResearchScreen> {
             ],
           ],
         ),
+      );
+    });
+  }
+
+  /// Findings as they land this run — shown live, above the stored Library.
+  Widget _liveFindingsSection(BuildContext context) {
+    return Obx(() {
+      final items = _research.liveFindings.toList();
+      if (items.isEmpty) return const SizedBox.shrink();
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SizedBox(height: 18),
+          Row(
+            children: [
+              Icon(Icons.fiber_new_rounded, size: 16, color: AppColors.accent),
+              const SizedBox(width: 6),
+              Text('This run · ${items.length} finding(s)',
+                  style: TextStyle(
+                      color: context.textM,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600)),
+            ],
+          ),
+          const SizedBox(height: 8),
+          ...items.reversed.map((f) => Container(
+                margin: const EdgeInsets.only(bottom: 8),
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: context.bgInput,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(f['title'] ?? '',
+                        style: TextStyle(
+                            color: context.text,
+                            fontSize: 13.5,
+                            fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 4),
+                    Text(f['content'] ?? '',
+                        style: TextStyle(
+                            color: context.textM,
+                            fontSize: 12.5,
+                            height: 1.4)),
+                  ],
+                ),
+              )),
+        ],
       );
     });
   }
@@ -472,6 +599,7 @@ class _ResearchScreenState extends State<ResearchScreen> {
 
   Future<void> _openTopic(BuildContext context, ResearchTopic t) async {
     final findings = await _research.findings(t.id!);
+    final synthesis = (await _research.latestSynthesis(t.id!))?.trim();
     if (!mounted) return;
     showModalBottomSheet(
       context: context,
@@ -481,7 +609,7 @@ class _ResearchScreenState extends State<ResearchScreen> {
           borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
       builder: (_) => DraggableScrollableSheet(
         expand: false,
-        initialChildSize: 0.7,
+        initialChildSize: 0.75,
         maxChildSize: 0.95,
         builder: (_, scroll) => Column(
           children: [
@@ -502,29 +630,75 @@ class _ResearchScreenState extends State<ResearchScreen> {
                 ],
               ),
             ),
-            if (t.summary.trim().isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                child: Text(t.summary.trim(),
-                    style: TextStyle(
-                        color: context.textM, fontSize: 12.5, height: 1.4)),
-              ),
             const Divider(height: 1),
             Expanded(
-              child: findings.isEmpty
-                  ? Center(
-                      child: Text('No findings stored.',
-                          style:
-                              TextStyle(color: context.textD, fontSize: 13)))
-                  : ListView.builder(
-                      controller: scroll,
-                      padding: const EdgeInsets.all(12),
-                      itemCount: findings.length,
-                      itemBuilder: (_, i) => _findingTile(context, findings[i]),
+              child: ListView(
+                controller: scroll,
+                padding: const EdgeInsets.all(12),
+                children: [
+                  if (synthesis != null && synthesis.isNotEmpty)
+                    _synthesisCard(context, synthesis),
+                  if (findings.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 24),
+                      child: Center(
+                        child: Text('No findings stored.',
+                            style: TextStyle(
+                                color: context.textD, fontSize: 13)),
+                      ),
+                    )
+                  else ...[
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8, left: 2),
+                      child: Text('FINDINGS',
+                          style: TextStyle(
+                              color: context.textD,
+                              fontSize: 10.5,
+                              fontWeight: FontWeight.w700,
+                              letterSpacing: 0.4)),
                     ),
+                    ...findings.map((f) => _findingTile(context, f)),
+                  ],
+                ],
+              ),
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  /// The capstone: the cross-finding synthesis, rendered distinct from the
+  /// individual findings so the "deeper connections" pass reads as the star.
+  Widget _synthesisCard(BuildContext context, String synthesis) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 14),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppColors.accent.withValues(alpha: 0.08),
+        border: Border.all(color: AppColors.accent.withValues(alpha: 0.4)),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.hub_rounded, size: 16, color: AppColors.accent),
+              const SizedBox(width: 6),
+              Text('Findings Summary · deeper connections',
+                  style: TextStyle(
+                      color: AppColors.accent,
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 0.2)),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(synthesis,
+              style:
+                  TextStyle(color: context.text, fontSize: 13, height: 1.5)),
+        ],
       ),
     );
   }

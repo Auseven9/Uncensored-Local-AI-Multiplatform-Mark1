@@ -83,16 +83,43 @@ void main() {
     });
   });
 
-  group('organize prompt', () {
-    test('includes the goal and the finding titles', () {
-      final prompt = ResearchAgent.organizeUserPrompt(
+  group('angle novelty (near-duplicate dedupe)', () {
+    test('querySimilarity scores overlapping content words high', () {
+      expect(
+          ResearchAgent.querySimilarity(
+              'history of quantum computing', 'quantum computing history'),
+          greaterThan(0.6));
+      expect(
+          ResearchAgent.querySimilarity(
+              'quantum computing basics', 'economic impact of solar power'),
+          lessThan(0.2));
+    });
+    test('isNovelAngle rejects a rephrasing of a prior query', () {
+      final prior = ['history of quantum computing'];
+      expect(
+          ResearchAgent.isNovelAngle('quantum computing history', prior), false);
+      expect(ResearchAgent.isNovelAngle('quantum error correction', prior),
+          true);
+      expect(ResearchAgent.isNovelAngle('', prior), false);
+    });
+  });
+
+  group('synthesis prompt', () {
+    test('asks for deeper connections, not a recap', () {
+      final sys = ResearchAgent.synthesisSystemPrompt();
+      expect(sys.toLowerCase(), contains('connection'));
+      expect(sys.toLowerCase(), contains('not'));
+    });
+    test('user prompt includes the goal and references findings', () {
+      final prompt = ResearchAgent.synthesisUserPrompt(
         goal: 'the history of tea',
         titles: ['Origins', 'Trade routes'],
         contents: ['Tea began in China.', 'It spread along the Silk Road.'],
       );
       expect(prompt, contains('the history of tea'));
       expect(prompt, contains('Origins'));
-      expect(prompt, contains('Trade routes'));
+      expect(prompt, contains('[F1]'));
+      expect(prompt, contains('[F2]'));
     });
   });
 }

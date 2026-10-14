@@ -63,6 +63,12 @@ class ResearchRun {
   final String status; // running | done | stopped | error
   final String createdUtc;
 
+  /// The capstone synthesis — the cross-finding, deeper-connections pass
+  /// written once at the end of the run (empty while running / if too few
+  /// findings). This is the "Findings Summary", distinct from any single
+  /// finding or the topic's rolling summary.
+  final String synthesis;
+
   const ResearchRun({
     this.id,
     required this.topicId,
@@ -71,6 +77,7 @@ class ResearchRun {
     this.turnsUsed = 0,
     this.status = 'running',
     required this.createdUtc,
+    this.synthesis = '',
   });
 
   Map<String, Object?> toRow() => {
@@ -80,6 +87,7 @@ class ResearchRun {
         'turns_used': turnsUsed,
         'status': status,
         'created_utc': createdUtc,
+        'synthesis': synthesis,
       };
 
   factory ResearchRun.fromRow(Map<String, Object?> r) => ResearchRun(
@@ -90,6 +98,7 @@ class ResearchRun {
         turnsUsed: (r['turns_used'] as num?)?.toInt() ?? 0,
         status: (r['status'] as String?) ?? 'running',
         createdUtc: r['created_utc'] as String,
+        synthesis: (r['synthesis'] as String?) ?? '',
       );
 }
 

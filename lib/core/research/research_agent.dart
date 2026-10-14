@@ -54,27 +54,62 @@ class ResearchAgent {
 
   // ── Query selection ─────────────────────────────────────────
 
+  /// A menu of facets the planner rotates through so successive turns attack
+  /// the goal from genuinely different angles instead of rephrasing one query.
+  static const List<String> facets = [
+    'history and origins',
+    'how it works / the underlying mechanism',
+    'current state of the art',
+    'key people, organizations, or players',
+    'criticisms, controversies, and failure modes',
+    'comparisons and alternatives',
+    'hard data, statistics, and benchmarks',
+    'real-world applications and case studies',
+    'economic or market angle',
+    'risks, ethics, and second-order effects',
+    'recent developments and news',
+    'future outlook and open problems',
+    'primary sources and foundational work',
+  ];
+
   static String querySystemPrompt() =>
-      'You are the search planner for a local, on-device research agent. Given '
-      'a research goal and the queries already tried, output ONE short web '
-      'search query that will find NEW information toward the goal. Output the '
-      'query text ONLY — no quotes, no label, no numbering, no explanation. '
-      'Prefer specific, high-signal queries, and never repeat a query that has '
-      'already been tried.';
+      'You are the search planner for a local, on-device research agent. Each '
+      'turn you output ONE short web search query that attacks the goal from a '
+      'DIFFERENT ANGLE than every angle already covered. Vary the facet every '
+      'turn — e.g. history, mechanism, current state, key players, criticisms, '
+      'comparisons, hard data, applications, economics, risks, recent news, '
+      'future outlook, primary sources. Do NOT rephrase an earlier query or '
+      'stay on one facet. Output the query text ONLY — no quotes, no label, no '
+      'numbering, no explanation.';
 
   static String queryUserPrompt({
     required String goal,
     required List<String> priorQueries,
+    List<String> coveredTitles = const [],
     required int turn,
     required int budget,
+    String? avoidHint,
   }) {
     final tried = priorQueries.isEmpty
         ? '(none yet)'
         : priorQueries.map((q) => '- $q').join('\n');
+    final covered = coveredTitles.isEmpty
+        ? '(nothing yet)'
+        : coveredTitles.map((t) => '- $t').join('\n');
+    // Nudge toward a facet not obviously represented yet (advisory; the model
+    // still chooses). Rotate by turn so the suggestion itself varies.
+    final suggested = facets[(turn - 1) % facets.length];
+    final avoid = (avoidHint != null && avoidHint.trim().isNotEmpty)
+        ? '\nIMPORTANT: your previous suggestion was too similar to what is '
+            'already covered. Pick a CLEARLY DIFFERENT facet — $avoidHint\n'
+        : '';
     return 'Research goal: $goal\n\n'
         'This is turn $turn of $budget.\n'
-        'Queries already tried:\n$tried\n\n'
-        'Next search query:';
+        'Angles/queries already tried:\n$tried\n\n'
+        'Facets already covered (by finding title):\n$covered\n\n'
+        'A good UNcovered facet to consider this turn: $suggested.\n'
+        '$avoid'
+        'Give the next search query, attacking a facet not yet covered:';
   }
 
   /// Extract a single clean query from raw model output. Tolerant of tiny
@@ -94,10 +129,43 @@ class ResearchAgent {
       .replaceAll(RegExp(r'\s+'), ' ')
       .trim();
 
-  /// True when [q] is non-empty and not already in [seenNormalized].
+  /// Short, low-signal words ignored when comparing queries for overlap, so
+  /// "history of X" and "X history timeline" read as near-duplicates.
+  static const Set<String> _stop = {
+    'the', 'a', 'an', 'of', 'to', 'in', 'on', 'for', 'and', 'or', 'is', 'are',
+    'what', 'how', 'why', 'with', 'about', 'vs', 'versus', 'between',
+  };
+
+  static Set<String> _contentTokens(String q) => normalizeQuery(q)
+      .split(' ')
+      .where((w) => w.length > 2 && !_stop.contains(w))
+      .toSet();
+
+  /// Jaccard overlap of the content words of two queries (0..1).
+  static double querySimilarity(String a, String b) {
+    final ta = _contentTokens(a), tb = _contentTokens(b);
+    if (ta.isEmpty || tb.isEmpty) return 0;
+    final inter = ta.intersection(tb).length;
+    final union = ta.union(tb).length;
+    return union == 0 ? 0 : inter / union;
+  }
+
+  /// True when [q] is non-empty and not already in [seenNormalized] (exact).
   static bool isNovelQuery(String q, Set<String> seenNormalized) {
     final n = normalizeQuery(q);
     return n.isNotEmpty && !seenNormalized.contains(n);
+  }
+
+  /// True when [q] is non-empty AND not too similar to any [priorQueries]
+  /// (token-overlap below [threshold]). Catches near-duplicate rephrasings
+  /// that exact dedupe misses.
+  static bool isNovelAngle(String q, List<String> priorQueries,
+      {double threshold = 0.6}) {
+    if (normalizeQuery(q).isEmpty) return false;
+    for (final p in priorQueries) {
+      if (querySimilarity(q, p) >= threshold) return false;
+    }
+    return true;
   }
 
   // ── Summarization (the untrusted-data seam) ─────────────────
@@ -155,26 +223,41 @@ class ResearchAgent {
     return _truncateTitle(_capitalize(q));
   }
 
-  // ── Organize (high-level roll-up of a run's findings) ───────
+  // ── Synthesis (the capstone: deep, non-obvious connections) ──
+  //
+  // NOT a recap. After every per-turn finding is in, this one pass reads them
+  // ALL together and looks for the connections no single finding shows — the
+  // links a brilliant analyst would surface, not the obvious summary.
 
-  static String organizeSystemPrompt() =>
-      'You organize research findings into a single concise, high-level '
-      'summary of what is now known about the topic. Write plain prose, no '
-      'preamble, no bullet dump — the through-line a reader needs.';
+  static String synthesisSystemPrompt() =>
+      'You are a brilliant research synthesist. You are given all of the '
+      'findings gathered on a topic. Your job is NOT to summarize or restate '
+      'them. Your job is to find the DEEPER CONNECTIONS ACROSS findings that no '
+      'single finding reveals: hidden links between different facets, tensions '
+      'and contradictions, shared root causes, second-order implications, '
+      'patterns that only emerge when the findings are seen together, and the '
+      'non-obvious conclusions they add up to. Think like a superintelligence '
+      'connecting dots a casual reader would miss. Be specific and cite which '
+      'findings you are connecting. Write insight, not recap.';
 
-  static String organizeUserPrompt({
+  static String synthesisUserPrompt({
     required String goal,
     required List<String> titles,
     required List<String> contents,
   }) {
-    final b = StringBuffer('Research goal: $goal\n\nFindings gathered:\n');
+    final b = StringBuffer('Research goal: $goal\n\n'
+        'Here are all ${titles.length} findings gathered. Read them as a whole '
+        'and surface the deeper, non-obvious connections between them.\n\n');
     final n = titles.length < contents.length ? titles.length : contents.length;
     for (var i = 0; i < n; i++) {
       final c = contents[i].replaceAll(RegExp(r'\s+'), ' ').trim();
-      final snippet = c.length > 400 ? '${c.substring(0, 400).trimRight()}…' : c;
-      b.writeln('${i + 1}. ${titles[i]} — $snippet');
+      final snippet = c.length > 700 ? '${c.substring(0, 700).trimRight()}…' : c;
+      b.writeln('[F${i + 1}] ${titles[i]}\n$snippet\n');
     }
-    b.writeln('\nHigh-level summary of the topic:');
+    b.writeln('Now write the synthesis. Surface the connections, tensions, '
+        'shared causes, and non-obvious conclusions that emerge only when '
+        'these findings are seen together. Reference findings as [F1], [F2], '
+        'etc. where you connect them:');
     return b.toString();
   }
 

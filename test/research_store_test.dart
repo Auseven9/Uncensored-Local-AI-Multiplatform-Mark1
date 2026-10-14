@@ -31,10 +31,15 @@ void main() {
       turnsBudget: 10,
       createdUtc: DateTime.now().toUtc().toIso8601String(),
     ));
-    await store.finishRun(runId, status: 'done', turnsUsed: 3);
+    await store.finishRun(runId,
+        status: 'done',
+        turnsUsed: 3,
+        synthesis: 'deep links across findings');
     final runs = await store.runs(topicId: t1);
     expect(runs.single.status, 'done');
     expect(runs.single.turnsUsed, 3);
+    expect(runs.single.synthesis, 'deep links across findings');
+    expect(await store.latestSynthesis(t1), 'deep links across findings');
 
     // A finding + its sources (provenance).
     final fId = await store.addFinding(ResearchFinding(

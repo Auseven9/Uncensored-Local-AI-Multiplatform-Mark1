@@ -41,7 +41,18 @@ class ResearchStore {
       final dir = await getApplicationDocumentsDirectory();
       path = p.join(dir.path, 'research_corpus.db');
     }
-    _db = await openDatabase(path, version: 1, onCreate: _onCreate);
+    _db = await openDatabase(path,
+        version: 2, onCreate: _onCreate, onUpgrade: _onUpgrade);
+  }
+
+  /// Migrations for installs created before a column existed. v1 shipped
+  /// without `runs.synthesis`; v2 adds it. ALTER TABLE ADD COLUMN keeps all
+  /// existing topics/runs/findings/sources intact.
+  Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      await db.execute(
+          "ALTER TABLE runs ADD COLUMN synthesis TEXT NOT NULL DEFAULT ''");
+    }
   }
 
   Future<void> _onCreate(Database db, int version) async {
@@ -63,7 +74,8 @@ class ResearchStore {
         turns_budget INTEGER NOT NULL,
         turns_used INTEGER NOT NULL DEFAULT 0,
         status TEXT NOT NULL DEFAULT 'running',
-        created_utc TEXT NOT NULL
+        created_utc TEXT NOT NULL,
+        synthesis TEXT NOT NULL DEFAULT ''
       )
     ''');
     await db.execute('''
@@ -142,9 +154,30 @@ class ResearchStore {
       _database.insert('runs', run.toRow());
 
   Future<void> finishRun(int id,
-      {required String status, required int turnsUsed}) async {
-    await _database.update('runs', {'status': status, 'turns_used': turnsUsed},
-        where: 'id = ?', whereArgs: [id]);
+      {required String status,
+      required int turnsUsed,
+      String synthesis = ''}) async {
+    await _database.update(
+        'runs',
+        {'status': status, 'turns_used': turnsUsed, 'synthesis': synthesis},
+        where: 'id = ?',
+        whereArgs: [id]);
+  }
+
+  /// The most recent non-empty synthesis (the "Findings Summary") for a topic,
+  /// or null if no run has produced one yet.
+  Future<String?> latestSynthesis(int topicId) async {
+    final rows = await _database.query(
+      'runs',
+      columns: ['synthesis'],
+      where: "topic_id = ? AND synthesis != ''",
+      whereArgs: [topicId],
+      orderBy: 'id DESC',
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    final s = rows.first['synthesis'] as String?;
+    return (s == null || s.isEmpty) ? null : s;
   }
 
   Future<List<ResearchRun>> runs({int? topicId, int limit = 100}) async {
