@@ -12,6 +12,7 @@ import '../services/pipeline_status_service.dart';
 import '../services/sensor_service.dart';
 import '../services/solver_service.dart';
 import '../services/search_service.dart';
+import '../services/research_service.dart';
 import '../core/params/parameters_service.dart';
 import '../controllers/chat_controller.dart';
 import '../controllers/model_controller.dart';
@@ -46,6 +47,8 @@ class AppBindings extends Bindings {
     Get.lazyPut(() => SolverService(), fenix: true);
     // Pluggable web search (Linkup preset + any custom provider).
     Get.lazyPut(() => SearchService(), fenix: true);
+    // Research-agent mode: N-turn web procurement → on-machine corpus.
+    Get.lazyPut(() => ResearchService(), fenix: true);
 
     // ── Eidetic Dojo engine ──────────────────────────────────────
     Get.lazyPut(() => InferenceWorker(), fenix: true);

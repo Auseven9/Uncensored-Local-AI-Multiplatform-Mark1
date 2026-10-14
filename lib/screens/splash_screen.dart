@@ -11,6 +11,7 @@ import '../services/wakelock_service.dart';
 import '../services/log_service.dart';
 import '../services/background_optimizer_service.dart';
 import '../core/memory/eidetic_memory_engine.dart';
+import '../services/research_service.dart';
 import '../services/system_health_monitor.dart';
 import '../core/params/parameters_service.dart';
 import '../routes/app_routes.dart';
@@ -48,6 +49,14 @@ class _SplashScreenState extends State<SplashScreen> {
       // when WAL was set via execute) opened cleanly. The emulator smoke test
       // asserts this line appears and no DatabaseException does.
       debugPrint('AETHER_SMOKE_DB_OK');
+
+      // Open the research corpus — a SEPARATE on-machine DB for web-procured
+      // knowledge (not ALESIS's own memory). Boots like the eidetic DB; the
+      // emulator smoke test exercises this path too.
+      setState(() => _status = 'Opening research corpus...');
+      log.info('Opening research corpus...', source: 'Splash');
+      await Get.find<ResearchService>().initialize();
+      debugPrint('AETHER_SMOKE_RESEARCH_DB_OK');
 
       setState(() => _status = 'Loading model catalog...');
       log.info('Loading model catalog...', source: 'Splash');
