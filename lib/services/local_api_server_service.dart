@@ -7,6 +7,7 @@ import 'package:llamadart/llamadart.dart';
 
 import 'chat_storage_service.dart';
 import 'llm_service.dart';
+import 'model_manager.dart';
 import 'wakelock_service.dart';
 
 class LocalApiServerService extends GetxService {
@@ -15,6 +16,8 @@ class LocalApiServerService extends GetxService {
 
   final LlmService _llm = Get.find<LlmService>();
   final ChatStorageService _storage = Get.find<ChatStorageService>();
+  // Resolved lazily so the server can be constructed before ModelManager binds.
+  ModelManager get _models => Get.find<ModelManager>();
 
   HttpServer? _server;
 
@@ -32,6 +35,7 @@ class LocalApiServerService extends GetxService {
     return 'http://$defaultHost:${port.value}/v1';
   }
   bool get isBusy => _llm.isGenerating.value;
+  bool get isLoading => _llm.isLoadingModel.value;
   bool get hasLoadedModel => _llm.isLoaded.value;
   String get modelId => _llm.publicModelId;
 
@@ -88,7 +92,7 @@ class LocalApiServerService extends GetxService {
       _server = null;
       isRunning.value = false;
       errorMessage.value = e.toString();
-      // Do not rethrow here, so that app initialization can continue 
+      // Do not rethrow here, so that app initialization can continue
       // even if the local API server fails to bind.
     } finally {
       isStarting.value = false;
@@ -173,6 +177,19 @@ class LocalApiServerService extends GetxService {
         return;
       }
 
+      // Load a specific downloaded model by id or filename (so a client such as
+      // The Monad can pick through ALL local models, not only the loaded one).
+      if (request.method == 'POST' && path == '/v1/models/load') {
+        await _handleModelLoad(request);
+        return;
+      }
+
+      // Unload the current model and free memory.
+      if (request.method == 'POST' && path == '/v1/models/unload') {
+        await _handleModelUnload(request);
+        return;
+      }
+
       if (request.method == 'POST' && path == '/v1/chat/completions') {
         await _handleChatCompletions(request);
         return;
@@ -207,6 +224,7 @@ class LocalApiServerService extends GetxService {
     return {
       'status': 'ok',
       'ready': hasLoadedModel,
+      'loading': isLoading,
       'model': hasLoadedModel ? modelId : null,
       'busy': isBusy,
       'host': host,
@@ -215,19 +233,117 @@ class LocalApiServerService extends GetxService {
     };
   }
 
+  /// Turn a .gguf filename into the stable model id. Mirrors
+  /// LlmService.publicModelId so ids match the currently loaded model.
+  String _modelIdFromFilename(String filename) {
+    final lower = filename.toLowerCase();
+    final stem = lower.endsWith('.gguf')
+        ? filename.substring(0, filename.length - 5)
+        : filename;
+    return stem
+        .replaceAll(RegExp(r'[^A-Za-z0-9._-]+'), '-')
+        .replaceAll(RegExp(r'-+'), '-')
+        .replaceAll(RegExp(r'^-|-$'), '');
+  }
+
+  /// List EVERY downloaded model (not just the loaded one), flagging the loaded
+  /// one. Each entry carries its `filename` so a client can request it by name.
   Map<String, dynamic> _modelsJson() {
-    final data = hasLoadedModel
-        ? [
-            {
-              'id': modelId,
-              'object': 'model',
-              'created': 0,
-              'owned_by': 'uncensored-local-ai',
-            },
-          ]
-        : <Map<String, dynamic>>[];
+    final loaded = hasLoadedModel ? modelId : null;
+    final seen = <String>{};
+    final data = <Map<String, dynamic>>[];
+    for (final filename in _models.downloadedModels) {
+      final id = _modelIdFromFilename(filename);
+      if (id.isEmpty || !seen.add(id)) continue;
+      data.add({
+        'id': id,
+        'object': 'model',
+        'created': 0,
+        'owned_by': 'uncensored-local-ai',
+        'loaded': id == loaded,
+        'filename': filename,
+      });
+    }
+    // Make sure the loaded model is present even if the scan missed its file.
+    if (loaded != null && seen.add(loaded)) {
+      data.insert(0, {
+        'id': loaded,
+        'object': 'model',
+        'created': 0,
+        'owned_by': 'uncensored-local-ai',
+        'loaded': true,
+      });
+    }
 
     return {'object': 'list', 'data': data};
+  }
+
+  Future<void> _handleModelLoad(HttpRequest request) async {
+    if (isBusy) {
+      await _writeError(
+        request.response,
+        HttpStatus.tooManyRequests,
+        'A generation is in progress. Retry shortly.',
+        type: 'server_error',
+        code: 'busy',
+      );
+      return;
+    }
+
+    final body = await _readJsonObject(request);
+    final want = (body['model'] ?? body['id'] ?? body['filename'])
+        ?.toString()
+        .trim();
+    if (want == null || want.isEmpty) {
+      throw _OpenAiRequestException(
+        '`model` (an id or .gguf filename) is required.',
+        param: 'model',
+      );
+    }
+
+    String? filename;
+    for (final f in _models.downloadedModels) {
+      if (f == want || _modelIdFromFilename(f) == want) {
+        filename = f;
+        break;
+      }
+    }
+    if (filename == null) {
+      await _writeError(
+        request.response,
+        HttpStatus.notFound,
+        'No downloaded model matches `$want`.',
+        type: 'invalid_request_error',
+        code: 'model_not_found',
+      );
+      return;
+    }
+
+    // Already loaded? Nothing to do.
+    if (hasLoadedModel && _modelIdFromFilename(filename) == modelId) {
+      await _writeJson(request.response, {'status': 'ok', 'loaded': modelId});
+      return;
+    }
+
+    try {
+      await _llm.loadModel(_models.getModelPathByFilename(filename));
+    } catch (e) {
+      await _writeError(
+        request.response,
+        HttpStatus.internalServerError,
+        'Failed to load `$filename`: $e',
+        type: 'server_error',
+        code: 'load_failed',
+      );
+      return;
+    }
+
+    await _writeJson(request.response, {'status': 'ok', 'loaded': modelId});
+  }
+
+  Future<void> _handleModelUnload(HttpRequest request) async {
+    await _llm.unloadModel();
+    await _writeJson(request.response, {'status': 'ok', 'loaded': null});
   }
 
   Future<void> _handleChatCompletions(HttpRequest request) async {
@@ -235,7 +351,7 @@ class LocalApiServerService extends GetxService {
       await _writeError(
         request.response,
         HttpStatus.serviceUnavailable,
-        'No model loaded. Load a model in Uncensored Local AI first.',
+        'No model loaded. Load a model in Uncensored Local AI first, or POST /v1/models/load.',
         type: 'invalid_request_error',
         code: 'model_not_loaded',
       );
